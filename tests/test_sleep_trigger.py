@@ -45,3 +45,59 @@ def test_짧게_자는_사람에게는_같은_시간도_정상이다() -> None:
 def test_데이터가_부족하면_판단하지_않는다() -> None:
     trigger = SleepDropTrigger()
     assert trigger.check(_nights([7.0, 3.0])) is None
+
+
+def _night(value: float, day: int, segments: int) -> Observation:
+    return Observation(
+        source="apple_health",
+        kind="sleep_hours",
+        value=value,
+        at=BASE + timedelta(days=day),
+        meta={"segments": segments},
+    )
+
+
+def test_측정_실패한_밤은_판단하지_않는다() -> None:
+    """조각 1개짜리 0.18시간은 잔 게 아니라 워치가 못 잰 것이다."""
+    trigger = SleepDropTrigger()
+    nights = [_night(v, i, 15) for i, v in enumerate([7.0, 7.2, 6.9, 7.1])]
+    nights.append(_night(0.18, 4, segments=1))
+    assert trigger.check(nights) is None
+
+
+def test_측정_실패는_baseline도_오염시키지_않는다() -> None:
+    trigger = SleepDropTrigger()
+    nights = [_night(v, i, 15) for i, v in enumerate([7.0, 7.2, 6.9])]
+    nights.append(_night(0.18, 3, segments=1))  # 이게 평균에 들어가면 baseline이 무너진다
+    nights.append(_night(5.4, 4, 16))
+
+    insight = trigger.check(nights)
+    assert insight is not None
+    # 0.18이 섞였다면 평균이 5.3 아래로 내려가 감지되지 않았을 것이다.
+    assert "7.0시간" in insight.summary
+
+
+def test_값은_낮아도_제대로_잰_밤은_판단한다() -> None:
+    """통계만 봤다면 2.82시간을 정상으로 통과시켰을 것이다 — 조각 수가 갈라준다."""
+    trigger = SleepDropTrigger()
+    nights = [_night(v, i, 15) for i, v in enumerate([7.0, 7.2, 6.9, 7.1, 2.82])]
+    assert trigger.check(nights) is not None
+
+
+def test_품질_정보가_없으면_통과시킨다() -> None:
+    """단축어로 들어온 데이터엔 segments가 없다. 모르는 것과 나쁜 것은 다르다."""
+    trigger = SleepDropTrigger()
+    assert trigger.check(_nights([7.0, 7.2, 6.9, 7.1, 5.0])) is not None
+
+
+def test_URGENT는_절반_이하일_때다() -> None:
+    trigger = SleepDropTrigger()
+    insight = trigger.check(_nights([10.0, 10.0, 10.0, 10.0, 4.9]))
+    assert insight is not None and insight.severity is Severity.URGENT
+
+
+def test_절반보다_많이_잤으면_NOTABLE이다() -> None:
+    """감소량은 5시간이나 되지만 평소의 절반은 넘겼다."""
+    trigger = SleepDropTrigger()
+    insight = trigger.check(_nights([10.0, 10.0, 10.0, 10.0, 5.1]))
+    assert insight is not None and insight.severity is Severity.NOTABLE
