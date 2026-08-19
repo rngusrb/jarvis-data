@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # 브랜치를 한정하지 않는다. 한정하면 PR 위에 쌓은 PR(stacked PR)이
+  # CI를 못 받고 지나간다.
   pull_request:
-    branches: [main]
 
 jobs:
   lint:
