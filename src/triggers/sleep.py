@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from statistics import mean
 from typing import List, Optional, Sequence
 
@@ -50,7 +50,7 @@ class SleepDropTrigger:
         except (TypeError, ValueError):
             return True
 
-    def check(self, window: Sequence[Observation]) -> Optional[Insight]:
+    def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
         # 측정 실패는 판단 대상에서도, baseline에서도 뺀다. baseline에 남겨두면
         # 평균을 끌어내려서 그 뒤 며칠의 판단까지 오염시킨다.
         measured: List[Observation] = [o for o in window if self._is_measured(o)]

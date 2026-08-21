@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -29,6 +30,7 @@ from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
 from src.storage.sqlite import SQLiteStore
 from src.triggers.sleep import SleepDropTrigger
+from src.triggers.stale import StaleDataTrigger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -47,7 +49,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     store = SQLiteStore(settings.db_path)
 
-    gate = Gate()
+    # 수집 중단은 상태가 계속 유지되는 신호라 기본 쿨다운(6시간)이면
+    # 하루 네 번 같은 말을 한다. 하루에 한 번이면 충분하다.
+    stale_sleep = StaleDataTrigger(kind="sleep_hours", label="수면")
+    gate = Gate(cooldown_overrides={stale_sleep.name: timedelta(days=1)})
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
         gate=gate,
@@ -64,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     task = asyncio.create_task(
         run_forever(
             source=store,
-            triggers=(SleepDropTrigger(),),
+            triggers=(SleepDropTrigger(), stale_sleep),
             agent=agent,
             channel=build_channel(settings),
             interval_sec=settings.loop_interval_sec,

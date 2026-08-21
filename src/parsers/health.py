@@ -114,36 +114,52 @@ def merge_spans(spans: Iterable[Tuple[datetime, datetime]]) -> List[Tuple[dateti
     return merged
 
 
-def nightly_sleep(records: Iterable[HealthRecord], boundary_hour: int = 12) -> List[Observation]:
-    """수면 조각들을 "하룻밤" 단위로 묶어 총 수면 시간을 낸다.
+def nights_from_spans(
+    spans: Iterable[Tuple[datetime, datetime]], boundary_hour: int = 12
+) -> List[Observation]:
+    """수면 구간들을 "하룻밤" 단위로 묶어 총 수면 시간을 낸다.
 
     밤 11시에 자서 아침 7시에 깨면 날짜가 두 개다. 정오를 경계로 삼아
     '정오~다음날 정오'를 한 밤으로 본다 — 깨어난 날짜에 그 밤이 귀속된다.
     (낮잠은 다음 밤으로 딸려가는데, 이건 이 방식의 알려진 트레이드오프다.)
+
+    **HealthRecord가 아니라 구간을 받는 이유**: 백필(export.xml)과 단축어가
+    같은 계산을 거치게 하려는 것이다. 계산이 두 군데 있으면 경로에 따라 값이
+    달라지고, 그건 나중에 원인을 찾기 지독히 어려운 종류의 버그가 된다.
     """
     by_night: Dict[datetime, List[Tuple[datetime, datetime]]] = {}
 
-    for record in records:
-        if record.type != SLEEP_TYPE or not record.value.startswith(ASLEEP_PREFIX):
-            continue
-        night = (record.start + timedelta(hours=24 - boundary_hour)).replace(
+    for start, end in spans:
+        night = (start + timedelta(hours=24 - boundary_hour)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        by_night.setdefault(night, []).append((record.start, record.end))
+        by_night.setdefault(night, []).append((start, end))
 
     observations: List[Observation] = []
-    for night, spans in sorted(by_night.items()):
-        total = sum((end - start).total_seconds() for start, end in merge_spans(spans))
+    for night, night_spans in sorted(by_night.items()):
+        total = sum((end - start).total_seconds() for start, end in merge_spans(night_spans))
         observations.append(
             Observation(
                 source=SOURCE,
                 kind="sleep_hours",
                 value=round(total / 3600.0, 2),
                 at=night,
-                meta={"segments": len(spans)},
+                # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
+                # 쪼개므로, 한두 개뿐이면 측정이 실패한 것이다.
+                meta={"segments": len(night_spans)},
             )
         )
     return observations
+
+
+def nightly_sleep(records: Iterable[HealthRecord], boundary_hour: int = 12) -> List[Observation]:
+    """export.xml에서 읽은 레코드를 밤 단위 수면으로 집계한다."""
+    spans = [
+        (record.start, record.end)
+        for record in records
+        if record.type == SLEEP_TYPE and record.value.startswith(ASLEEP_PREFIX)
+    ]
+    return nights_from_spans(spans, boundary_hour=boundary_hour)
 
 
 def daily_total(records: Iterable[HealthRecord], record_type: str, kind: str) -> List[Observation]:

@@ -36,7 +36,7 @@ async def run_once(
 
     for trigger in triggers:
         window = source.recent(trigger.kind, since=now - trigger.lookback)
-        insight = trigger.check(window)
+        insight = trigger.check(window, now)
         if insight is None:
             continue
 

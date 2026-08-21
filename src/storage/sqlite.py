@@ -93,6 +93,16 @@ class SQLiteStore:
             cursor = conn.execute("SELECT DISTINCT kind FROM observations ORDER BY kind")
             return [row[0] for row in cursor.fetchall()]
 
+    def last_seen(self) -> Dict[str, datetime]:
+        """종류별 최신 관측 시각.
+
+        자동 수집은 요란하게 죽지 않고 조용히 멈춘다. 이 값이 그걸 알아채는
+        유일한 단서다 — StaleDataTrigger와 /health가 함께 본다.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute("SELECT kind, MAX(at) FROM observations GROUP BY kind")
+            return {kind: datetime.fromisoformat(at) for kind, at in cursor.fetchall()}
+
     def count(self) -> int:
         with self._connect() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM observations")
