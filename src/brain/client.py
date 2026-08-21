@@ -7,12 +7,15 @@ LangGraph 에이전트(:8001)를 거치지 않는다. 자비스의 '에이전트
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
 
-# DeepSeek R1 계열은 답변 앞에 사고 과정을 <think>...</think>로 뱉는다.
+logger = logging.getLogger(__name__)
+
+# 일부 추론 모델은 답변 앞에 사고 과정을 <think>...</think>로 뱉는다.
 REASONING_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
@@ -49,10 +52,16 @@ class VLLMClient:
         client: Optional[httpx.AsyncClient] = None,
         timeout: float = 120.0,
         temperature: float = 0.6,
-        # R1 계열은 사고 과정에만 1000토큰을 쉽게 쓴다. 너무 짜게 주면
+        # 사고 과정에만 1000토큰을 쉽게 쓰는 모델들이 있다. 너무 짜게 주면
         # 답변까지 못 가고 잘려서 자비스가 영영 입을 안 여는 버그가 된다.
         max_tokens: int = 2048,
-        fold_system: bool = True,
+        # 시스템 프롬프트를 user 메시지에 접어넣는 우회. DeepSeek R1이
+        # 시스템 프롬프트를 권장하지 않아서 넣었던 것으로, Qwen3에서는 불필요하다.
+        fold_system: bool = False,
+        # Judge가 하는 일은 "말할까 말까 + 한 문장"이고, 어려운 필터링(심각도·
+        # 쿨다운)은 이미 게이트가 끝냈다. 남은 판단에 사고 1000토큰을 쓰는 건
+        # 비싸서 기본은 끈다. 품질을 비교해보고 싶으면 켜면 된다.
+        enable_thinking: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model or None
@@ -62,6 +71,7 @@ class VLLMClient:
         # R1 계열은 시스템 프롬프트를 쓰지 말고 지시를 user 메시지에 넣으라고
         # 권고한다. 기본값을 True로 두되, 다른 모델로 바꾸면 끄면 된다.
         self._fold_system = fold_system
+        self._enable_thinking = enable_thinking
 
     async def _resolve_model(self) -> str:
         """모델 이름을 모르면 서버에 물어본다.
@@ -93,23 +103,40 @@ class VLLMClient:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": user_content})
 
-        response = await self._client.post(
-            f"{self._base_url}/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": self._temperature,
-                "max_tokens": self._max_tokens,
-            },
-        )
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+        }
+        if not self._enable_thinking:
+            # Qwen3는 기본이 사고 켜짐이라 끌 때만 보낸다. 이 키를 모르는
+            # 모델에 굳이 보내서 거절당할 이유가 없다.
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+        response = await self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
         response.raise_for_status()
         data: Dict[str, Any] = response.json()
 
         choices = data.get("choices") or []
         if not choices:
             return ""
-        content = choices[0].get("message", {}).get("content", "")
-        return strip_reasoning(str(content))
+
+        choice = choices[0]
+        content = (choice.get("message") or {}).get("content")
+        if not isinstance(content, str) or not content.strip():
+            # --reasoning-parser를 붙인 서버는 사고 과정을 message.reasoning으로
+            # 분리하고, 사고 중에 max_tokens에 걸리면 content를 **null**로 준다.
+            # 이때 str(None)을 하면 "None"이라는 문자열이 만들어져 그대로
+            # 사용자에게 발송된다. 조용히 넘어가는 편이 맞다.
+            logger.warning(
+                "모델이 답변을 내지 못했다 (finish_reason=%s). max_tokens가 부족할 수 있다.",
+                choice.get("finish_reason"),
+            )
+            return ""
+
+        # reasoning-parser가 없는 서버를 대비한 안전망. 파서가 붙어 있으면 no-op이다.
+        return strip_reasoning(content)
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -17,7 +17,7 @@ Apple 생태계(Apple Watch, iPhone, Mac)에서 개인 데이터를 자동 수�
 
 ## 인프라 (데스크탑 서버 — Ubuntu, RTX 3090)
 
-- vLLM: 포트 8000 (DeepSeek R1 Distill Llama 70B AWQ)
+- vLLM: 포트 8000 (Qwen3.8-27B-FP8, TP=2, `--reasoning-parser qwen3`)
 - FastAPI Agent: 포트 8001
 - Open WebUI: 포트 3000
 - SearXNG: 포트 8888
@@ -74,7 +74,8 @@ agent.py      ← JarvisAgent: 게이트 → 맥락 조립 → 추론 → 발화
 ### 레이어 규칙
 - `triggers/`는 네트워크·DB·LLM을 건드리지 않는다 (테스트 가능성 + 재현성)
 - 발화 판단은 **싼 게이트(severity·쿨다운) 먼저, 비싼 LLM 나중** — 알림 스팸이 이 프로덕트의 주된 실패 방식
-- 모델 응답은 반드시 `strip_reasoning()`을 거친다 (R1 distill이 `<think>` 독백을 뱉음)
+- 모델 응답에서 `content`가 `null`일 수 있다 — 사고 중 `max_tokens`에 걸린 경우다.
+  `str(None)`이 되면 `"None"`이 그대로 발송되므로 반드시 걸러낸다
 - 이상 감지는 절대 기준이 아니라 **개인 baseline 대비 편차**로 한다
 
 ## 데이터 소스 (수집 대상)
