@@ -18,8 +18,6 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 
-from app.ingest import router as ingest_router
-from app.loop import JarvisLoop
 from src.brain.agent import JarvisAgent
 from src.brain.client import VLLMClient
 from src.brain.gate import Gate
@@ -33,6 +31,8 @@ from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
 from src.core.metrics import MetricRegistry
+from src.runtime.ingest import router as ingest_router
+from src.runtime.loop import JarvisLoop
 from src.sectors.health import METRICS as HEALTH_METRICS
 from src.storage.sqlite import SQLiteStore
 from src.triggers.sleep import SleepDropTrigger

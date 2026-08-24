@@ -6,9 +6,9 @@ from typing import Any, Dict
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.ingest import router
 from src.core.config import Settings
 from src.core.metrics import MetricRegistry
+from src.runtime.ingest import router
 from src.sectors.health import METRICS as HEALTH_METRICS
 from src.storage.sqlite import SQLiteStore
 

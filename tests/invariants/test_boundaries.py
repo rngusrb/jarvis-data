@@ -15,7 +15,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # 이 폴더들은 섹터가 뭐든 안 바뀐다. 섹터를 알기 시작하면 섹터를 늘릴 때마다
 # 플랫폼도 고쳐야 하고, 갈라놓은 의미가 사라진다.
-PLATFORM_DIRS = ("src/core", "src/storage", "src/brain", "src/channels", "src/parsers")
+PLATFORM_DIRS = (
+    "src/core",
+    "src/storage",
+    "src/brain",
+    "src/channels",
+    "src/parsers",
+    "src/runtime",
+)
 
 # app/은 조립 지점이다 — "어떤 섹터를 켤지" 고르는 유일한 곳이라 예외.
 COMPOSITION_ROOT = "app/main.py"
@@ -61,7 +68,7 @@ def test_배선만_섹터를_고른다() -> None:
 
 def test_수신구는_지표_이름을_모른다() -> None:
     """지표 이름이 수신구에 박히면 섹터가 늘 때마다 이 파일이 자란다."""
-    source = ast.parse((ROOT / "app/ingest.py").read_text())
+    source = ast.parse((ROOT / "src/runtime/ingest.py").read_text())
     literals = {
         node.value
         for node in ast.walk(source)

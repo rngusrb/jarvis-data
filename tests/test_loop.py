@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 
-from app.loop import JarvisLoop
 from src.brain.agent import JarvisAgent
 from src.core.models import Observation
+from src.runtime.loop import JarvisLoop
 from src.triggers.sleep import SleepDropTrigger
 
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
