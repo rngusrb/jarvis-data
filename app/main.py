@@ -14,7 +14,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncIterator
+from typing import AsyncIterator, Dict, Optional
 
 from fastapi import FastAPI
 
@@ -42,10 +42,14 @@ logger = logging.getLogger(__name__)
 # 각 지표가 **어떻게** 들어오기로 되어 있는지. 코드가 알아낼 수 없는 설정 사실이라
 # 여기 적어둔다. 살아 있는지 여부는 선언이 아니라 데이터에서 판단한다 —
 # 선언만 믿으면 낡고, 낡은 선언은 없느니만 못하다.
-COLLECTORS = {
+COLLECTORS: Dict[str, Optional[str]] = {
     "sleep_hours": "아이폰 단축어가 기상할 때 자동 전송",
     "step_count": "아이폰 단축어가 기상할 때 자동 전송",
-    "heart_rate_avg": "아이폰 단축어가 기상할 때 자동 전송",
+    "resting_heart_rate": "아이폰 단축어가 기상할 때 자동 전송",
+    # 원본 심박은 하루 361개씩 쌓여 단축어가 버티지 못했고, 운동 중 심박까지
+    # 섞여 신호로도 둔했다. 워치가 이미 계산해두는 휴식기 심박으로 갈아탔다.
+    # 과거 데이터는 남기되 더 이상 수집하지 않는다는 뜻으로 None을 둔다.
+    "heart_rate_avg": None,
 }
 
 
@@ -68,7 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stale = [
         StaleDataTrigger(kind="sleep_hours", label="수면"),
         StaleDataTrigger(kind="step_count", label="걸음수"),
-        StaleDataTrigger(kind="heart_rate_avg", label="심박"),
+        StaleDataTrigger(kind="resting_heart_rate", label="휴식기 심박"),
     ]
     # 수집 중단은 상태가 계속 유지되는 신호라 기본 쿨다운(6시간)이면
     # 하루 네 번 같은 말을 한다. 하루에 한 번이면 충분하다.

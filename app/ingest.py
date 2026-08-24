@@ -31,7 +31,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from src.core.models import Observation
-from src.parsers.health import daily_mean, daily_sum, nights_from_spans
+from src.parsers.health import Sample, daily_mean, daily_sum, nights_from_spans
 from src.storage.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,10 @@ class SpanIn(BaseModel):
 class SampleIn(BaseModel):
     at: datetime
     value: float
+    # 아이폰과 워치가 같은 걸음을 각자 센다. 어느 기기 것인지 알아야
+    # 겹치는 구간을 걷어낼 수 있다. 없으면 중복 제거 없이 그냥 더한다.
+    end: Optional[datetime] = None
+    source: str = ""
 
 
 class SampleIngestRequest(BaseModel):
@@ -108,6 +112,9 @@ class IngestResponse(BaseModel):
     # 어떤 단계 값이 실제로 도착했는지 되돌려준다. 기기마다 언어마다 다르게 올 수
     # 있어서, written이 0일 때 "무엇이 걸러졌는지"가 안 보이면 원인을 못 찾는다.
     stages: List[str] = Field(default_factory=list)
+    # 저장된 결과만 보면 값이 왜 이상한지 알 수 없다. 폰에서 무엇이 떠났는지
+    # 서버 로그를 뒤지지 않고 응답만으로 보이게 한다.
+    received: Optional[Dict[str, Any]] = None
 
 
 def _verify_token(
@@ -233,9 +240,23 @@ def ingest_samples(
     걸음수는 더하고 심박은 평균 낸다. 폰에서 미리 접어 보내게 하면 그 규칙이
     두 군데 살게 되고, 백필과 값이 어긋나기 시작한다.
     """
-    points = [(sample.at, sample.value) for sample in payload.samples]
+    points = [
+        Sample(start=item.at, end=item.end or item.at, value=item.value, source=item.source)
+        for item in payload.samples
+    ]
     if not points:
         return IngestResponse(written=0)
+
+    values = [p.value for p in points]
+    received = {
+        "samples": len(points),
+        "min": min(values),
+        "max": max(values),
+        "sources": sorted({p.source for p in points if p.source}) or ["(없음)"],
+        "first_3": [
+            {"at": p.start.isoformat(), "value": p.value, "source": p.source} for p in points[:3]
+        ],
+    }
 
     if payload.kind in SUMMED_KINDS:
         observations = daily_sum(points, payload.kind)
@@ -254,7 +275,7 @@ def ingest_samples(
     written = store.write(observations)
     logger.info("표본 수집 — %s %d개 → %d일치", payload.kind, len(points), written)
     _wake_jarvis(request, background, written)
-    return IngestResponse(written=written, observations=_summarize(observations))
+    return IngestResponse(written=written, observations=_summarize(observations), received=received)
 
 
 @router.get("/health")
