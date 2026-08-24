@@ -162,69 +162,141 @@ def nightly_sleep(records: Iterable[HealthRecord], boundary_hour: int = 12) -> L
     return nights_from_spans(spans, boundary_hour=boundary_hour)
 
 
-def _bucket_by_day(points: Iterable[Tuple[datetime, float]]) -> Dict[datetime, List[float]]:
-    by_day: Dict[datetime, List[float]] = {}
-    for at, value in points:
-        day = at.replace(hour=0, minute=0, second=0, microsecond=0)
-        by_day.setdefault(day, []).append(value)
+@dataclass(frozen=True)
+class Sample:
+    """집계 이전의 측정값 하나. 어느 기기가 언제 쟀는지까지 들고 있다."""
+
+    start: datetime
+    end: datetime
+    value: float
+    source: str = ""
+
+
+def is_wrist(source: str) -> bool:
+    """손목에서 잰 것인지. 겹칠 때 워치를 우선한다 — 몸에 붙어 있으니 더 정확하다."""
+    lowered = source.lower()
+    return "watch" in lowered or "워치" in source
+
+
+def _day_of(moment: datetime) -> datetime:
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _bucket(samples: Iterable[Sample]) -> Dict[datetime, List[Sample]]:
+    by_day: Dict[datetime, List[Sample]] = {}
+    for sample in samples:
+        by_day.setdefault(_day_of(sample.start), []).append(sample)
     return by_day
 
 
-def daily_sum(points: Iterable[Tuple[datetime, float]], kind: str) -> List[Observation]:
-    """걸음수처럼 하루치를 더하는 지표.
+def _sum_one_day(samples: Sequence[Sample]) -> float:
+    """겹치는 기기 기록을 걷어내고 더한다.
 
-    수면의 nights_from_spans와 같은 이유로 원본 점들을 받는다 — 백필과
-    단축어가 같은 계산을 거치게 하려는 것이다.
+    아이폰과 워치는 같은 걸음을 각자 센다. 그냥 더하면 8천 걸음이 1만 5천이 된다
+    — 수면에서 겪은 것과 같은 문제이고, 애플 건강 앱이 조용히 해결해주던 일이다.
+
+    건강 앱과 같은 방식으로 **시간 구간마다 소스를 하나만** 채택한다. 워치를
+    먼저 깔고, 워치가 비워둔 구간만 다른 기기가 채운다. 일부만 겹치는 기록은
+    비어 있던 시간 비율만큼만 인정한다.
     """
-    return [
-        Observation(
-            source=SOURCE,
-            kind=kind,
-            value=round(sum(values), 2),
-            at=day,
-            # 표본 수는 값이 이상할 때 원인을 가르는 첫 단서다. 하루 걸음수가
-            # 9만이면, 표본이 5개인지 900개인지에 따라 원인이 완전히 달라진다.
-            meta={"samples": len(values)},
+    if len({s.source for s in samples}) < 2:
+        # 소스가 하나면 중복될 일이 없다. 소스 정보 없이 들어온 경로도 여기로 온다.
+        return sum(s.value for s in samples)
+
+    ordered = sorted(samples, key=lambda s: (not is_wrist(s.source), s.start))
+    taken: List[Tuple[datetime, datetime]] = []
+    total = 0.0
+
+    for sample in ordered:
+        span = (sample.end - sample.start).total_seconds()
+        if span <= 0:
+            if not any(lo <= sample.start <= hi for lo, hi in taken):
+                total += sample.value
+                taken.append((sample.start, sample.end))
+            continue
+
+        covered = 0.0
+        for lo, hi in taken:
+            overlap_lo, overlap_hi = max(lo, sample.start), min(hi, sample.end)
+            if overlap_hi > overlap_lo:
+                covered += (overlap_hi - overlap_lo).total_seconds()
+
+        total += sample.value * max(0.0, span - covered) / span
+        taken.append((sample.start, sample.end))
+
+    return total
+
+
+def daily_sum(samples: Iterable[Sample], kind: str) -> List[Observation]:
+    """걸음수처럼 하루치를 더하는 지표. 기기 중복은 걷어낸다."""
+    observations = []
+    for day, day_samples in sorted(_bucket(samples).items()):
+        sources = sorted({s.source for s in day_samples if s.source})
+        observations.append(
+            Observation(
+                source=SOURCE,
+                kind=kind,
+                value=round(_sum_one_day(day_samples), 2),
+                at=day,
+                meta={"samples": len(day_samples), "sources": sources},
+            )
         )
-        for day, values in sorted(_bucket_by_day(points).items())
-    ]
+    return observations
 
 
-def daily_mean(points: Iterable[Tuple[datetime, float]], kind: str) -> List[Observation]:
-    """심박처럼 하루치를 평균 내는 지표."""
-    return [
-        Observation(
-            source=SOURCE,
-            kind=kind,
-            value=round(sum(values) / len(values), 2),
-            at=day,
-            meta={"samples": len(values)},
+def daily_mean(samples: Iterable[Sample], kind: str) -> List[Observation]:
+    """심박처럼 하루치를 평균 내는 지표.
+
+    소스가 여럿이면 표본이 가장 많은 기기 하나만 쓴다. 기기마다 재는 시점이
+    달라서 섞어 평균 내면 어느 쪽도 아닌 값이 된다.
+    """
+    observations = []
+    for day, day_samples in sorted(_bucket(samples).items()):
+        chosen = day_samples
+        sources = sorted({s.source for s in day_samples if s.source})
+        if len(sources) > 1:
+            best = max(sources, key=lambda name: sum(1 for s in day_samples if s.source == name))
+            chosen = [s for s in day_samples if s.source == best]
+        observations.append(
+            Observation(
+                source=SOURCE,
+                kind=kind,
+                value=round(sum(s.value for s in chosen) / len(chosen), 2),
+                at=day,
+                meta={"samples": len(chosen), "sources": sources},
+            )
         )
-        for day, values in sorted(_bucket_by_day(points).items())
-    ]
+    return observations
 
 
-def _points(records: Iterable[HealthRecord], record_type: str) -> List[Tuple[datetime, float]]:
+def _samples(records: Iterable[HealthRecord], record_type: str) -> List[Sample]:
     found = []
     for record in records:
         if record.type != record_type:
             continue
         amount = record.numeric_value
         if amount is not None:
-            found.append((record.start, amount))
+            found.append(
+                Sample(
+                    start=record.start,
+                    end=record.end,
+                    value=amount,
+                    source=record.source_name,
+                )
+            )
     return found
 
 
 def daily_total(records: Iterable[HealthRecord], record_type: str, kind: str) -> List[Observation]:
     """export.xml 레코드를 하루 합계로 집계한다."""
-    return daily_sum(_points(records, record_type), kind)
+    return daily_sum(_samples(records, record_type), kind)
 
 
 def daily_average(
     records: Iterable[HealthRecord], record_type: str, kind: str
 ) -> List[Observation]:
     """export.xml 레코드를 하루 평균으로 집계한다."""
-    return daily_mean(_points(records, record_type), kind)
+    return daily_mean(_samples(records, record_type), kind)
 
 
 def parse_export(path: Path) -> Sequence[Observation]:

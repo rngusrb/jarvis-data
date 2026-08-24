@@ -31,7 +31,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from src.core.models import Observation
-from src.parsers.health import daily_mean, daily_sum, nights_from_spans
+from src.parsers.health import Sample, daily_mean, daily_sum, nights_from_spans
 from src.storage.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,10 @@ class SpanIn(BaseModel):
 class SampleIn(BaseModel):
     at: datetime
     value: float
+    # 아이폰과 워치가 같은 걸음을 각자 센다. 어느 기기 것인지 알아야
+    # 겹치는 구간을 걷어낼 수 있다. 없으면 중복 제거 없이 그냥 더한다.
+    end: Optional[datetime] = None
+    source: str = ""
 
 
 class SampleIngestRequest(BaseModel):
@@ -236,16 +240,22 @@ def ingest_samples(
     걸음수는 더하고 심박은 평균 낸다. 폰에서 미리 접어 보내게 하면 그 규칙이
     두 군데 살게 되고, 백필과 값이 어긋나기 시작한다.
     """
-    points = [(sample.at, sample.value) for sample in payload.samples]
+    points = [
+        Sample(start=item.at, end=item.end or item.at, value=item.value, source=item.source)
+        for item in payload.samples
+    ]
     if not points:
         return IngestResponse(written=0)
 
-    values = [value for _, value in points]
+    values = [p.value for p in points]
     received = {
         "samples": len(points),
         "min": min(values),
         "max": max(values),
-        "first_3": [{"at": at.isoformat(), "value": value} for at, value in points[:3]],
+        "sources": sorted({p.source for p in points if p.source}) or ["(없음)"],
+        "first_3": [
+            {"at": p.start.isoformat(), "value": p.value, "source": p.source} for p in points[:3]
+        ],
     }
 
     if payload.kind in SUMMED_KINDS:
