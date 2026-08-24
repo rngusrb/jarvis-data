@@ -14,3 +14,4 @@ data/processed/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+.harness_cache/

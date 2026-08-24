@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from tests.test_ingest_spans import AUTH, _client
+from tests.integration.test_ingest_spans import AUTH, _client
 
 
 def _payload(kind: str) -> Dict[str, Any]:

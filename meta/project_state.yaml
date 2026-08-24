@@ -1,0 +1,32 @@
+# meta/project_state.yaml — harness Doc Lint 의 검증 원천.
+# 설명·아키텍처는 DEV_GUIDE.md 로. 여기엔 "검증 가능한 사실"만 적는다.
+# 여기 적힌 경로가 존재하지 않으면 harness all 이 FAIL 한다.
+
+entry_points:
+  server: app/main.py
+  backfill: src/sectors/health/backfill.py
+
+archive_dir: docs/sprints
+
+# 플랫폼 6 + 섹터 1 + 배선 1.
+# 플랫폼은 섹터를 import 하지 않는다 — tests/invariants/test_boundaries.py 가 집행한다.
+folder_guides:
+  src/core: src/core/_GUIDE.md
+  src/storage: src/storage/_GUIDE.md
+  src/triggers: src/triggers/_GUIDE.md
+  src/brain: src/brain/_GUIDE.md
+  src/channels: src/channels/_GUIDE.md
+  src/runtime: src/runtime/_GUIDE.md
+  src/sectors/health: src/sectors/health/_GUIDE.md
+  app: app/_GUIDE.md
+
+harness:
+  max_active_tasks: 3
+  # 테스트는 각 _GUIDE.md 의 "## 하네스" 블록이 매니페스트다. 관례 glob 은
+  # 폴더명과 테스트 파일명이 어긋나서 쓰지 않는다.
+  test_globs: []
+  always_run:
+    - tests/invariants
+  ruff: true
+  static_paths: ["src", "app", "tests"]
+  typecheck_paths: ["src", "app"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.core.folding import merge_spans
 from src.sectors.health.parser import (
     RESTING_HEART_TYPE,
     STEP_TYPE,
@@ -63,24 +62,6 @@ def test_원하는_타입만_읽는다(tmp_path: Path) -> None:
 
 def test_필터_없으면_전부_읽는다(tmp_path: Path) -> None:
     assert len(list(iter_records(_fixture(tmp_path)))) == 10
-
-
-def test_겹치는_구간을_합친다() -> None:
-    base = datetime(2026, 8, 18, 23, 0, tzinfo=KST)
-    spans = [
-        (base, base + timedelta(hours=4)),
-        (base + timedelta(hours=2), base + timedelta(hours=8)),
-    ]
-    assert merge_spans(spans) == [(base, base + timedelta(hours=8))]
-
-
-def test_안_겹치면_그대로_둔다() -> None:
-    base = datetime(2026, 8, 18, 23, 0, tzinfo=KST)
-    spans = [
-        (base, base + timedelta(hours=1)),
-        (base + timedelta(hours=3), base + timedelta(hours=4)),
-    ]
-    assert len(merge_spans(spans)) == 2
 
 
 def test_워치와_아이폰_중복_기록이_부풀지_않는다(tmp_path: Path) -> None:

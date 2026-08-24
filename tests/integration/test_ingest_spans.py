@@ -13,7 +13,7 @@ from src.runtime.ingest import router
 from src.sectors.health import METRICS as HEALTH_METRICS
 from src.sectors.health.parser import iter_records, nightly_sleep
 from src.storage.sqlite import SQLiteStore
-from tests.test_health_parser import FIXTURE
+from tests.unit.test_health_parser import FIXTURE
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
