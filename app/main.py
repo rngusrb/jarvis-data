@@ -19,7 +19,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from app.ingest import router as ingest_router
-from app.loop import run_forever
+from app.loop import JarvisLoop
 from src.brain.agent import JarvisAgent
 from src.brain.client import VLLMClient
 from src.brain.gate import Gate
@@ -49,10 +49,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     store = SQLiteStore(settings.db_path)
 
+    # 수집이 멈춘 걸 종류별로 따로 본다. 단축어를 수면용으로만 만들어두면
+    # 심박·걸음수는 조용히 죽어 있는데 아무도 알려주지 않는다 — 실제로
+    # 그 상태로 며칠을 보냈다.
+    stale = [
+        StaleDataTrigger(kind="sleep_hours", label="수면"),
+        StaleDataTrigger(kind="step_count", label="걸음수"),
+        StaleDataTrigger(kind="heart_rate_avg", label="심박"),
+    ]
     # 수집 중단은 상태가 계속 유지되는 신호라 기본 쿨다운(6시간)이면
     # 하루 네 번 같은 말을 한다. 하루에 한 번이면 충분하다.
-    stale_sleep = StaleDataTrigger(kind="sleep_hours", label="수면")
-    gate = Gate(cooldown_overrides={stale_sleep.name: timedelta(days=1)})
+    gate = Gate(cooldown_overrides={t.name: timedelta(days=1) for t in stale})
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
         gate=gate,
@@ -66,15 +73,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.store = store
 
-    task = asyncio.create_task(
-        run_forever(
-            source=store,
-            triggers=(SleepDropTrigger(), stale_sleep),
-            agent=agent,
-            channel=build_channel(settings),
-            interval_sec=settings.loop_interval_sec,
-        )
+    jarvis = JarvisLoop(
+        source=store,
+        triggers=[SleepDropTrigger(), *stale],
+        agent=agent,
+        channel=build_channel(settings),
     )
+    # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
+    app.state.jarvis = jarvis
+
+    task = asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))
     logger.info("자비스 기동 — 관측치 %d건, 주기 %d초", store.count(), settings.loop_interval_sec)
 
     try:

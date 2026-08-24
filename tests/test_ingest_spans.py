@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
@@ -201,3 +202,40 @@ def test_영어_한국어_모두_깨어있음을_걸러낸다(tmp_path: Path) ->
         }
         body = _client(tmp_path).post("/ingest/spans", json=payload, headers=AUTH).json()
         assert body["written"] == 0, f"{stage}가 수면으로 잘못 통과됨"
+
+
+@dataclass
+class _SpyJarvis:
+    runs: int = 0
+
+    async def run_once(self) -> int:
+        self.runs += 1
+        return 0
+
+
+def test_수집되면_자비스를_바로_깨운다(tmp_path: Path) -> None:
+    """30분 주기를 기다리지 않는다 — 기상 직후의 말과 30분 뒤의 말은 쓸모가 다르다."""
+    client = _client(tmp_path)
+    spy = _SpyJarvis()
+    client.app.state.jarvis = spy  # type: ignore[attr-defined]
+
+    client.post("/ingest/spans", json=SPANS, headers=AUTH)
+    assert spy.runs == 1
+
+
+def test_저장할_게_없으면_깨우지_않는다(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    spy = _SpyJarvis()
+    client.app.state.jarvis = spy  # type: ignore[attr-defined]
+
+    payload = {
+        "spans": [
+            {
+                "start": "2026-08-18T22:00:00+09:00",
+                "end": "2026-08-18T23:00:00+09:00",
+                "stage": "깨어 있는 시간",
+            }
+        ]
+    }
+    client.post("/ingest/spans", json=payload, headers=AUTH)
+    assert spy.runs == 0

@@ -19,7 +19,15 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from src.core.models import Observation
@@ -114,8 +122,27 @@ def _summarize(observations: List[Observation]) -> List[Dict[str, Any]]:
     ]
 
 
+def _wake_jarvis(request: Request, background: BackgroundTasks, written: int) -> None:
+    """새 데이터가 들어왔으니 판단을 앞당긴다.
+
+    주기 루프만 있으면 아침에 데이터가 도착해도 최대 30분을 기다린 뒤에야
+    말을 건다. 기상 직후에 오는 말과 30분 뒤에 오는 말은 쓸모가 다르다.
+
+    주기 루프는 그대로 둔다 — 데이터가 **안** 들어오는 것도 신호이고,
+    그걸 알아채려면 시계가 계속 돌아야 한다.
+    """
+    if written <= 0:
+        return
+    jarvis = getattr(request.app.state, "jarvis", None)
+    if jarvis is None:
+        # 수신구만 띄운 구성(테스트 등)도 있다. 수집 자체는 성공했으므로
+        # 판단할 상대가 없다고 요청을 실패시킬 이유는 없다.
+        return
+    background.add_task(jarvis.run_once)
+
+
 @router.post("/ingest", response_model=IngestResponse, dependencies=[Depends(_verify_token)])
-def ingest(payload: IngestRequest, request: Request) -> IngestResponse:
+def ingest(payload: IngestRequest, request: Request, background: BackgroundTasks) -> IngestResponse:
     """이미 계산된 값을 받는다 — 걸음수, 심박처럼 품질 신호가 따로 없는 지표용."""
     store: SQLiteStore = request.app.state.store
     observations = [
@@ -131,11 +158,14 @@ def ingest(payload: IngestRequest, request: Request) -> IngestResponse:
     # 저장소가 (source, kind, at) 기준으로 덮어쓰므로 단축어가 두 번 울려도 안전하다.
     written = store.write(observations)
     logger.info("수집 %d건 (source=%s)", written, payload.source)
+    _wake_jarvis(request, background, written)
     return IngestResponse(written=written, observations=_summarize(observations))
 
 
 @router.post("/ingest/spans", response_model=IngestResponse, dependencies=[Depends(_verify_token)])
-def ingest_spans(payload: SpanIngestRequest, request: Request) -> IngestResponse:
+def ingest_spans(
+    payload: SpanIngestRequest, request: Request, background: BackgroundTasks
+) -> IngestResponse:
     """구간 원본을 받아 서버가 집계한다.
 
     백필(export.xml)이 쓰는 것과 **같은 함수**(nights_from_spans)를 거친다.
@@ -170,6 +200,7 @@ def ingest_spans(payload: SpanIngestRequest, request: Request) -> IngestResponse
         len(asleep),
         written,
     )
+    _wake_jarvis(request, background, written)
     return IngestResponse(
         written=written, observations=_summarize(observations), stages=seen_stages
     )
