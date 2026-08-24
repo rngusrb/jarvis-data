@@ -30,9 +30,9 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from src.core.folding import Sample, daily_mean, daily_sum, nights_from_spans
 from src.core.metrics import Fold, Metric, MetricRegistry
 from src.core.models import Observation
-from src.parsers.health import Sample, daily_mean, daily_sum, nights_from_spans
 from src.storage.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -253,7 +253,7 @@ def ingest_spans(
         )
         return IngestResponse(written=0, stages=seen_stages)
 
-    observations = nights_from_spans(asleep, kind=metric.kind)
+    observations = nights_from_spans(asleep, kind=metric.kind, source=payload.source)
     store: SQLiteStore = request.app.state.store
     written = store.write(observations)
     logger.info(
@@ -306,7 +306,7 @@ def ingest_samples(
                 f"'{payload.kind}'는 {metric.fold.value} 방식이다 — 이 경로는 {expected}만 받는다"
             ),
         )
-    observations = FOLDERS[metric.fold](points, payload.kind)
+    observations = FOLDERS[metric.fold](points, payload.kind, payload.source)
 
     store: SQLiteStore = request.app.state.store
     written = store.write(observations)

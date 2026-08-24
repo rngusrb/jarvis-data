@@ -20,8 +20,8 @@ PLATFORM_DIRS = (
     "src/storage",
     "src/brain",
     "src/channels",
-    "src/parsers",
     "src/runtime",
+    "src/triggers",
 )
 
 # app/은 조립 지점이다 — "어떤 섹터를 켤지" 고르는 유일한 곳이라 예외.
