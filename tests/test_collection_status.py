@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from src.brain.providers import CollectionStatusProvider
+from src.core.metrics import Fold, Metric
 from src.core.models import Insight, Severity
 
 NOW = datetime(2026, 8, 24, 11, 0, tzinfo=timezone.utc)
@@ -18,10 +19,14 @@ class FakeCatalog:
         return self._last_seen
 
 
+def _cards(collectors: Dict[str, Optional[str]]) -> List[Metric]:
+    return [Metric(kind=k, label=k, fold=Fold.SUM, collector=v) for k, v in collectors.items()]
+
+
 def _fetch(last_seen: Dict[str, datetime], collectors: Dict[str, Optional[str]]) -> str:
-    block = CollectionStatusProvider(catalog=FakeCatalog(last_seen), collectors=collectors).fetch(
-        INSIGHT, NOW
-    )
+    block = CollectionStatusProvider(
+        catalog=FakeCatalog(last_seen), metrics=_cards(collectors)
+    ).fetch(INSIGHT, NOW)
     assert block is not None
     return block.body
 
@@ -75,3 +80,9 @@ def test_일부러_접은_지표는_되살리라고_하지_않는다() -> None:
     )
     assert "수집 중단" in body
     assert "아직 만들지" not in body
+
+
+def test_접었다는데_데이터가_들어오면_그대로_말한다() -> None:
+    """선언과 현실이 어긋났으면 선언 쪽이 낡은 것이다."""
+    body = _fetch({"heart_rate_avg": NOW - timedelta(hours=2)}, {"heart_rate_avg": None})
+    assert "선언이 낡았다" in body

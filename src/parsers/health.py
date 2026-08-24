@@ -115,7 +115,9 @@ def merge_spans(spans: Iterable[Tuple[datetime, datetime]]) -> List[Tuple[dateti
 
 
 def nights_from_spans(
-    spans: Iterable[Tuple[datetime, datetime]], boundary_hour: int = 12
+    spans: Iterable[Tuple[datetime, datetime]],
+    boundary_hour: int = 12,
+    kind: str = "sleep_hours",
 ) -> List[Observation]:
     """수면 구간들을 "하룻밤" 단위로 묶어 총 수면 시간을 낸다.
 
@@ -141,7 +143,7 @@ def nights_from_spans(
         observations.append(
             Observation(
                 source=SOURCE,
-                kind="sleep_hours",
+                kind=kind,
                 value=round(total / 3600.0, 2),
                 at=night,
                 # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
