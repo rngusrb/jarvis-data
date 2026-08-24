@@ -9,9 +9,9 @@ from fastapi.testclient import TestClient
 
 from src.core.config import Settings
 from src.core.metrics import MetricRegistry
-from src.parsers.health import iter_records, nightly_sleep
 from src.runtime.ingest import router
 from src.sectors.health import METRICS as HEALTH_METRICS
+from src.sectors.health.parser import iter_records, nightly_sleep
 from src.storage.sqlite import SQLiteStore
 from tests.test_health_parser import FIXTURE
 

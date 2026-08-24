@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.parsers.health import (
-    HEART_RATE_TYPE,
+from src.core.folding import merge_spans
+from src.sectors.health.parser import (
+    RESTING_HEART_TYPE,
     STEP_TYPE,
     daily_average,
     daily_total,
     iter_records,
-    merge_spans,
     nightly_sleep,
     parse_export,
 )
@@ -41,6 +41,8 @@ FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
    startDate="2026-08-19 09:00:00 +0900" endDate="2026-08-19 09:00:05 +0900" value="70"/>
  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Apple Watch" unit="count/min"
    startDate="2026-08-19 09:30:00 +0900" endDate="2026-08-19 09:30:05 +0900" value="80"/>
+ <Record type="HKQuantityTypeIdentifierRestingHeartRate" sourceName="Apple Watch" unit="count/min"
+   startDate="2026-08-19 04:00:00 +0900" endDate="2026-08-19 04:00:00 +0900" value="61"/>
  <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="iPhone" unit="kg"
    startDate="2026-08-19 08:00:00 +0900" endDate="2026-08-19 08:00:00 +0900" value="70"/>
 </HealthData>
@@ -60,7 +62,7 @@ def test_원하는_타입만_읽는다(tmp_path: Path) -> None:
 
 
 def test_필터_없으면_전부_읽는다(tmp_path: Path) -> None:
-    assert len(list(iter_records(_fixture(tmp_path)))) == 9
+    assert len(list(iter_records(_fixture(tmp_path)))) == 10
 
 
 def test_겹치는_구간을_합친다() -> None:
@@ -109,14 +111,15 @@ def test_걸음수는_하루_단위로_합산된다(tmp_path: Path) -> None:
     assert steps[0].value == 200.0
 
 
-def test_심박수는_하루_단위로_평균낸다(tmp_path: Path) -> None:
+def test_휴식기_심박을_뽑는다(tmp_path: Path) -> None:
+    """원본 심박(하루 361개)이 아니라 워치가 이미 계산해둔 값을 쓴다."""
     records = list(iter_records(_fixture(tmp_path)))
-    heart = daily_average(records, HEART_RATE_TYPE, "heart_rate_avg")
-    assert heart[0].value == 75.0
-    assert heart[0].meta["samples"] == 2
+    heart = daily_average(records, RESTING_HEART_TYPE, "resting_heart_rate")
+    assert heart[0].value == 61.0
+    assert heart[0].meta["samples"] == 1
 
 
 def test_한_번_읽어서_전부_뽑는다(tmp_path: Path) -> None:
     observations = parse_export(_fixture(tmp_path))
     kinds = {o.kind for o in observations}
-    assert kinds == {"sleep_hours", "step_count", "heart_rate_avg"}
+    assert kinds == {"sleep_hours", "step_count", "resting_heart_rate"}

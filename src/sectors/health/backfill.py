@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from src.core.config import load_settings
-from src.parsers.health import parse_export
+from src.sectors.health.parser import parse_export
 from src.storage.sqlite import SQLiteStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s — %(message)s")
