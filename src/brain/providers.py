@@ -70,7 +70,9 @@ class CollectionStatusProvider:
     """
 
     catalog: ObservationCatalog
-    collectors: Mapping[str, str]
+    # 값이 None이면 '일부러 접은' 지표다. 선언에 아예 없는 것(= 아직 안 만듦)과
+    # 구별해야 한다. 안 그러면 자비스가 버린 지표를 만들라고 조른다.
+    collectors: Mapping[str, Optional[str]]
     name: str = "collection_status"
     stale_after: timedelta = timedelta(hours=36)
 
@@ -82,8 +84,10 @@ class CollectionStatusProvider:
             how = self.collectors.get(kind)
             at = last_seen.get(kind)
 
-            if how is None:
+            if kind not in self.collectors:
                 state = "수집기 없음 — 아직 만들지 않았다"
+            elif how is None:
+                state = "수집 중단 — 과거 데이터만 있다. 되살릴 필요 없다"
             elif at is None:
                 state = f"{how} (아직 한 번도 안 들어옴)"
             elif now - at > self.stale_after:

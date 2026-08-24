@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict
+from typing import Dict, Optional
 
 from src.brain.providers import CollectionStatusProvider
 from src.core.models import Insight, Severity
@@ -18,7 +18,7 @@ class FakeCatalog:
         return self._last_seen
 
 
-def _fetch(last_seen: Dict[str, datetime], collectors: Dict[str, str]) -> str:
+def _fetch(last_seen: Dict[str, datetime], collectors: Dict[str, Optional[str]]) -> str:
     block = CollectionStatusProvider(catalog=FakeCatalog(last_seen), collectors=collectors).fetch(
         INSIGHT, NOW
     )
@@ -65,3 +65,13 @@ def test_수집기_선언과_실제_데이터를_모두_훑는다() -> None:
     )
     for kind in ("sleep_hours", "step_count", "heart_rate_avg"):
         assert kind in body
+
+
+def test_일부러_접은_지표는_되살리라고_하지_않는다() -> None:
+    """안 만든 것과 버린 것은 다르다. 섞으면 자비스가 버린 지표를 조른다."""
+    body = _fetch(
+        {"heart_rate_avg": NOW - timedelta(days=6)},
+        {"heart_rate_avg": None},
+    )
+    assert "수집 중단" in body
+    assert "아직 만들지" not in body
