@@ -30,6 +30,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from src.core.metrics import Fold, Metric, MetricRegistry
 from src.core.models import Observation
 from src.parsers.health import Sample, daily_mean, daily_sum, nights_from_spans
 from src.storage.sqlite import SQLiteStore
@@ -42,12 +43,9 @@ router = APIRouter()
 # (source, kind, at)이라 같은 밤이 두 줄로 남고 baseline이 이중 계산된다.
 DEFAULT_SOURCE = "apple_health"
 
-SLEEP_KIND = "sleep_hours"
-
-# 하루치를 어떻게 접을지는 지표마다 다르다. 이 규칙이 백필과 단축어 양쪽에
-# 흩어져 있으면 경로에 따라 값이 달라진다 — 수면에서 이미 겪은 문제다.
-SUMMED_KINDS = {"step_count", "flights_climbed", "active_energy"}
-AVERAGED_KINDS = {"heart_rate_avg", "resting_heart_rate", "respiratory_rate"}
+# 접는 법의 **구현**은 플랫폼이 갖고, **어느 방식인지**는 지표 카드가 고른다.
+# 그래서 이 파일에는 "sleep_hours" 같은 지표 이름이 하나도 등장하지 않는다.
+FOLDERS = {Fold.SUM: daily_sum, Fold.MEAN: daily_mean}
 
 # 수면을 가리키는 말은 출처마다 다르다 — export.xml은 "AsleepCore",
 # 한국어 단축어는 "수면 시간", 영어로 바꾸면 또 달라진다. 반면 **수면이 아닌**
@@ -102,7 +100,9 @@ class SampleIngestRequest(BaseModel):
 
 class SpanIngestRequest(BaseModel):
     source: str = DEFAULT_SOURCE
-    kind: str = SLEEP_KIND
+    # 생략할 수 있다. 구간 방식 지표가 하나뿐이면 그것으로 본다 — 단축어가 이미
+    # kind 없이 쏘고 있는데, 그 편의 하나 때문에 플랫폼에 지표 이름을 박을 수는 없다.
+    kind: Optional[str] = None
     spans: List[SpanIn]
 
 
@@ -143,6 +143,49 @@ def _summarize(observations: List[Observation]) -> List[Dict[str, Any]]:
     return [
         {"kind": o.kind, "at": o.at.isoformat(), "value": o.value, **o.meta} for o in observations
     ]
+
+
+def _spans_metric(request: Request, kind: Optional[str]) -> Metric:
+    """구간 문으로 들어온 요청의 카드를 찾는다."""
+    if kind is not None:
+        return _metric(request, kind, Fold.SPANS)
+
+    registry: MetricRegistry = request.app.state.metrics
+    candidates = [m for m in registry.all() if m.fold is Fold.SPANS]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"kind를 지정해야 한다 — 구간 방식 지표가 {len(candidates)}개다",
+    )
+
+
+def _lookup(request: Request, kind: str) -> Metric:
+    """카드를 찾는다.
+
+    등록 안 된 것과 방식이 안 맞는 것을 구별한다 — 원인을 뭉뚱그려 알려주면
+    엉뚱한 데를 뒤지게 된다.
+    """
+    registry: MetricRegistry = request.app.state.metrics
+    metric = registry.get(kind)
+    if metric is None:
+        known = ", ".join(m.kind for m in registry.all()) or "(등록된 지표 없음)"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{kind}'는 등록되지 않은 지표다. 아는 것: {known}",
+        )
+    return metric
+
+
+def _metric(request: Request, kind: str, expected: Fold) -> Metric:
+    """카드를 찾고 접는 방식이 이 문으로 들어올 모양인지 확인한다."""
+    metric = _lookup(request, kind)
+    if metric.fold is not expected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{kind}'는 {metric.fold.value} 방식이다 — 이 경로는 {expected.value}만 받는다",
+        )
+    return metric
 
 
 def _wake_jarvis(request: Request, background: BackgroundTasks, written: int) -> None:
@@ -195,11 +238,7 @@ def ingest_spans(
     계산이 두 군데 있으면 경로에 따라 값이 달라지고, 그건 나중에 원인을 찾기
     지독히 어려운 종류의 버그가 된다.
     """
-    if payload.kind != SLEEP_KIND:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"구간 집계는 아직 {SLEEP_KIND}만 지원한다",
-        )
+    metric = _spans_metric(request, payload.kind)
 
     # 단계 필터링도 서버가 한다. 단축어에서 조건 분기를 짜는 것보다 훨씬 싸고,
     # 나중에 기준이 바뀌어도 아이폰을 열 필요가 없다.
@@ -214,7 +253,7 @@ def ingest_spans(
         )
         return IngestResponse(written=0, stages=seen_stages)
 
-    observations = nights_from_spans(asleep)
+    observations = nights_from_spans(asleep, kind=metric.kind)
     store: SQLiteStore = request.app.state.store
     written = store.write(observations)
     logger.info(
@@ -258,18 +297,16 @@ def ingest_samples(
         ],
     }
 
-    if payload.kind in SUMMED_KINDS:
-        observations = daily_sum(points, payload.kind)
-    elif payload.kind in AVERAGED_KINDS:
-        observations = daily_mean(points, payload.kind)
-    else:
+    metric = _lookup(request, payload.kind)
+    if metric.fold not in FOLDERS:
+        expected = ", ".join(f.value for f in FOLDERS)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"'{payload.kind}'를 어떻게 집계할지 모른다. "
-                f"합계: {sorted(SUMMED_KINDS)} / 평균: {sorted(AVERAGED_KINDS)}"
+                f"'{payload.kind}'는 {metric.fold.value} 방식이다 — 이 경로는 {expected}만 받는다"
             ),
         )
+    observations = FOLDERS[metric.fold](points, payload.kind)
 
     store: SQLiteStore = request.app.state.store
     written = store.write(observations)

@@ -139,3 +139,18 @@ def test_받은_원본의_윤곽을_돌려준다(tmp_path: Path) -> None:
     )
     assert body["received"]["samples"] == 3
     assert body["received"]["max"] == 120.0
+
+
+def test_등록_안_된_지표와_방식_불일치를_구별한다(tmp_path: Path) -> None:
+    """원인을 뭉뚱그리면 엉뚱한 데를 뒤지게 된다."""
+    client = _client(tmp_path)
+
+    unknown = client.post("/ingest/samples", json=_payload("혈중산소"), headers=AUTH)
+    assert unknown.status_code == 400
+    assert "등록되지 않은" in unknown.json()["detail"]
+
+    wrong_door = client.post(
+        "/ingest/spans", json={"kind": "step_count", "spans": []}, headers=AUTH
+    )
+    assert wrong_door.status_code == 400
+    assert "sum 방식" in wrong_door.json()["detail"]

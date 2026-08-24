@@ -14,7 +14,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncIterator, Dict, Optional
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 
@@ -32,25 +32,14 @@ from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
+from src.core.metrics import MetricRegistry
+from src.sectors.health import METRICS as HEALTH_METRICS
 from src.storage.sqlite import SQLiteStore
 from src.triggers.sleep import SleepDropTrigger
 from src.triggers.stale import StaleDataTrigger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
-
-# 각 지표가 **어떻게** 들어오기로 되어 있는지. 코드가 알아낼 수 없는 설정 사실이라
-# 여기 적어둔다. 살아 있는지 여부는 선언이 아니라 데이터에서 판단한다 —
-# 선언만 믿으면 낡고, 낡은 선언은 없느니만 못하다.
-COLLECTORS: Dict[str, Optional[str]] = {
-    "sleep_hours": "아이폰 단축어가 기상할 때 자동 전송",
-    "step_count": "아이폰 단축어가 기상할 때 자동 전송",
-    "resting_heart_rate": "아이폰 단축어가 기상할 때 자동 전송",
-    # 원본 심박은 하루 361개씩 쌓여 단축어가 버티지 못했고, 운동 중 심박까지
-    # 섞여 신호로도 둔했다. 워치가 이미 계산해두는 휴식기 심박으로 갈아탔다.
-    # 과거 데이터는 남기되 더 이상 수집하지 않는다는 뜻으로 None을 둔다.
-    "heart_rate_avg": None,
-}
 
 
 def build_channel(settings: Settings) -> Channel:
@@ -66,16 +55,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     store = SQLiteStore(settings.db_path)
 
-    # 수집이 멈춘 걸 종류별로 따로 본다. 단축어를 수면용으로만 만들어두면
-    # 심박·걸음수는 조용히 죽어 있는데 아무도 알려주지 않는다 — 실제로
-    # 그 상태로 며칠을 보냈다.
+    # 섹터가 자기 지표를 들고 들어온다. 여기가 "어떤 섹터를 켤지" 고르는 유일한 곳이고,
+    # 나머지(수신구·감시·맥락)는 전부 이 등록에서 파생된다.
+    metrics = MetricRegistry().register(HEALTH_METRICS)
+    app.state.metrics = metrics
+
+    # 수집이 멈춘 걸 종류별로 본다. 단축어를 수면용으로만 만들어두면 걸음수는
+    # 조용히 죽어 있는데 아무도 알려주지 않는다 — 실제로 그 상태로 며칠을 보냈다.
     stale = [
-        StaleDataTrigger(kind="sleep_hours", label="수면"),
-        StaleDataTrigger(kind="step_count", label="걸음수"),
-        StaleDataTrigger(kind="resting_heart_rate", label="휴식기 심박"),
+        StaleDataTrigger(kind=m.kind, label=m.label, stale_after=m.stale_after)
+        for m in metrics.active()
     ]
-    # 수집 중단은 상태가 계속 유지되는 신호라 기본 쿨다운(6시간)이면
-    # 하루 네 번 같은 말을 한다. 하루에 한 번이면 충분하다.
     gate = Gate(cooldown_overrides={t.name: timedelta(days=1) for t in stale})
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
@@ -86,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             SpeechHistoryProvider(log=gate.log),
             # 자기 수집 구조를 모르면 "배터리 최적화를 확인하라" 같은,
             # 이 시스템에 존재하지도 않는 조언을 지어낸다.
-            CollectionStatusProvider(catalog=store, collectors=COLLECTORS),
+            CollectionStatusProvider(catalog=store, metrics=metrics.all()),
         ),
     )
 

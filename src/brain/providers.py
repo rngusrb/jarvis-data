@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Mapping, Optional
+from typing import List, Optional, Sequence
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
+from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog
 
 
@@ -70,31 +71,38 @@ class CollectionStatusProvider:
     """
 
     catalog: ObservationCatalog
-    # 값이 None이면 '일부러 접은' 지표다. 선언에 아예 없는 것(= 아직 안 만듦)과
-    # 구별해야 한다. 안 그러면 자비스가 버린 지표를 만들라고 조른다.
-    collectors: Mapping[str, Optional[str]]
+    metrics: Sequence[Metric]
     name: str = "collection_status"
-    stale_after: timedelta = timedelta(hours=36)
 
     def fetch(self, insight: Insight, now: datetime) -> Optional[ContextBlock]:
         last_seen = self.catalog.last_seen()
+        known = {m.kind: m for m in self.metrics}
         lines: List[str] = []
 
-        for kind in sorted(set(self.collectors) | set(last_seen)):
-            how = self.collectors.get(kind)
+        for kind in sorted(set(known) | set(last_seen)):
+            metric = known.get(kind)
             at = last_seen.get(kind)
 
-            if kind not in self.collectors:
+            if metric is None:
                 state = "수집기 없음 — 아직 만들지 않았다"
-            elif how is None:
-                state = "수집 중단 — 과거 데이터만 있다. 되살릴 필요 없다"
+            elif not metric.active:
+                # 안 만든 것과 일부러 버린 것은 다르다. 섞으면 자비스가
+                # 버린 지표를 되살리라고 조른다.
+                if at is not None and now - at <= metric.stale_after:
+                    # 접었다고 선언해놓고 데이터는 계속 들어오는 상태.
+                    # 선언과 현실이 어긋났으니 그대로 말한다.
+                    state = "수집 중단했다고 선언됐는데 데이터는 계속 들어온다 — 선언이 낡았다"
+                else:
+                    state = "수집 중단 — 과거 데이터만 있다. 되살릴 필요 없다"
             elif at is None:
-                state = f"{how} (아직 한 번도 안 들어옴)"
-            elif now - at > self.stale_after:
+                state = f"{metric.collector} (아직 한 번도 안 들어옴)"
+            elif now - at > metric.stale_after:
                 hours = (now - at).total_seconds() / 3600
-                state = f"{how} — 그런데 {hours:.0f}시간째 끊김"
+                state = f"{metric.collector} — 그런데 {hours:.0f}시간째 끊김"
             else:
-                state = f"{how} — 정상"
-            lines.append(f"- {kind}: {state}")
+                state = f"{metric.collector} — 정상"
+
+            name = f"{metric.label}({kind})" if metric else kind
+            lines.append(f"- {name}: {state}")
 
         return ContextBlock(label="수집 경로 현황", body="\n".join(lines))

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 
 from app.ingest import router
 from src.core.config import Settings
+from src.core.metrics import MetricRegistry
 from src.parsers.health import iter_records, nightly_sleep
+from src.sectors.health import METRICS as HEALTH_METRICS
 from src.storage.sqlite import SQLiteStore
 from tests.test_health_parser import FIXTURE
 
@@ -47,6 +49,8 @@ def _client(tmp_path: Path) -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.state.store = SQLiteStore(tmp_path / "t.db")
+    # 섹터가 자기 카드를 등록하는 것이 수신구가 도는 전제다.
+    app.state.metrics = MetricRegistry().register(HEALTH_METRICS)
     app.state.settings = Settings(
         brain_base_url="http://localhost:8000",
         brain_model="",
