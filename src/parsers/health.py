@@ -162,40 +162,28 @@ def nightly_sleep(records: Iterable[HealthRecord], boundary_hour: int = 12) -> L
     return nights_from_spans(spans, boundary_hour=boundary_hour)
 
 
-def daily_total(records: Iterable[HealthRecord], record_type: str, kind: str) -> List[Observation]:
-    """걸음수처럼 하루 단위로 합산하는 수치를 낸다."""
-    by_day: Dict[datetime, float] = {}
+def _bucket_by_day(points: Iterable[Tuple[datetime, float]]) -> Dict[datetime, List[float]]:
+    by_day: Dict[datetime, List[float]] = {}
+    for at, value in points:
+        day = at.replace(hour=0, minute=0, second=0, microsecond=0)
+        by_day.setdefault(day, []).append(value)
+    return by_day
 
-    for record in records:
-        if record.type != record_type:
-            continue
-        amount = record.numeric_value
-        if amount is None:
-            continue
-        day = record.start.replace(hour=0, minute=0, second=0, microsecond=0)
-        by_day[day] = by_day.get(day, 0.0) + amount
 
+def daily_sum(points: Iterable[Tuple[datetime, float]], kind: str) -> List[Observation]:
+    """걸음수처럼 하루치를 더하는 지표.
+
+    수면의 nights_from_spans와 같은 이유로 원본 점들을 받는다 — 백필과
+    단축어가 같은 계산을 거치게 하려는 것이다.
+    """
     return [
-        Observation(source=SOURCE, kind=kind, value=round(total, 2), at=day)
-        for day, total in sorted(by_day.items())
+        Observation(source=SOURCE, kind=kind, value=round(sum(values), 2), at=day)
+        for day, values in sorted(_bucket_by_day(points).items())
     ]
 
 
-def daily_average(
-    records: Iterable[HealthRecord], record_type: str, kind: str
-) -> List[Observation]:
-    """심박수처럼 하루 단위로 평균을 내는 수치를 낸다."""
-    by_day: Dict[datetime, List[float]] = {}
-
-    for record in records:
-        if record.type != record_type:
-            continue
-        amount = record.numeric_value
-        if amount is None:
-            continue
-        day = record.start.replace(hour=0, minute=0, second=0, microsecond=0)
-        by_day.setdefault(day, []).append(amount)
-
+def daily_mean(points: Iterable[Tuple[datetime, float]], kind: str) -> List[Observation]:
+    """심박처럼 하루치를 평균 내는 지표."""
     return [
         Observation(
             source=SOURCE,
@@ -204,8 +192,31 @@ def daily_average(
             at=day,
             meta={"samples": len(values)},
         )
-        for day, values in sorted(by_day.items())
+        for day, values in sorted(_bucket_by_day(points).items())
     ]
+
+
+def _points(records: Iterable[HealthRecord], record_type: str) -> List[Tuple[datetime, float]]:
+    found = []
+    for record in records:
+        if record.type != record_type:
+            continue
+        amount = record.numeric_value
+        if amount is not None:
+            found.append((record.start, amount))
+    return found
+
+
+def daily_total(records: Iterable[HealthRecord], record_type: str, kind: str) -> List[Observation]:
+    """export.xml 레코드를 하루 합계로 집계한다."""
+    return daily_sum(_points(records, record_type), kind)
+
+
+def daily_average(
+    records: Iterable[HealthRecord], record_type: str, kind: str
+) -> List[Observation]:
+    """export.xml 레코드를 하루 평균으로 집계한다."""
+    return daily_mean(_points(records, record_type), kind)
 
 
 def parse_export(path: Path) -> Sequence[Observation]:

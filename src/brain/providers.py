@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import List, Mapping, Optional
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
-from src.core.models import Insight
+from src.core.models import Insight, ObservationCatalog
 
 
 @dataclass
@@ -54,3 +54,43 @@ class SpeechHistoryProvider:
             return None
         lines = [f"- {r.at:%m/%d %H:%M} ({r.trigger}) {r.text}" for r in records]
         return ContextBlock(label="최근 24시간 동안 내가 한 말", body="\n".join(lines))
+
+
+@dataclass
+class CollectionStatusProvider:
+    """자비스가 **자기 수집 구조**를 알게 한다.
+
+    이게 없으면 모델은 "걸음수가 며칠째 없다"만 보고 그럴듯한 일반론을 지어낸다.
+    실제로 "배터리 최적화를 해제하라"고 답한 적이 있는데, 안드로이드 개념이고
+    이 시스템엔 존재하지도 않는 이야기다. 원인은 그냥 걸음수 수집기를 아직
+    안 만든 것이었다.
+
+    수집 **방식**은 선언으로 받고(코드가 알 수 없는 설정 사실), 살아 있는지는
+    데이터에서 판단한다(선언만 믿으면 낡는다).
+    """
+
+    catalog: ObservationCatalog
+    collectors: Mapping[str, str]
+    name: str = "collection_status"
+    stale_after: timedelta = timedelta(hours=36)
+
+    def fetch(self, insight: Insight, now: datetime) -> Optional[ContextBlock]:
+        last_seen = self.catalog.last_seen()
+        lines: List[str] = []
+
+        for kind in sorted(set(self.collectors) | set(last_seen)):
+            how = self.collectors.get(kind)
+            at = last_seen.get(kind)
+
+            if how is None:
+                state = "수집기 없음 — 아직 만들지 않았다"
+            elif at is None:
+                state = f"{how} (아직 한 번도 안 들어옴)"
+            elif now - at > self.stale_after:
+                hours = (now - at).total_seconds() / 3600
+                state = f"{how} — 그런데 {hours:.0f}시간째 끊김"
+            else:
+                state = f"{how} — 정상"
+            lines.append(f"- {kind}: {state}")
+
+        return ContextBlock(label="수집 경로 현황", body="\n".join(lines))
