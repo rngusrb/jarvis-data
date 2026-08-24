@@ -54,6 +54,18 @@ class Insight:
     observations: Tuple[Observation, ...] = ()
 
 
+class ObservationCatalog(Protocol):
+    """무엇이 언제까지 들어와 있는지 아는 저장소.
+
+    ObservationSource와 나눠둔 이유는 둘의 쓰임이 다르기 때문이다. 트리거는
+    관측치를 읽고(Source), 맥락 제공자는 수집 상태를 읽는다(Catalog).
+    """
+
+    def last_seen(self) -> Dict[str, datetime]:
+        """종류별 최신 관측 시각."""
+        ...
+
+
 class ObservationSource(Protocol):
     """저장소가 만족해야 할 최소 계약.
 

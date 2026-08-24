@@ -31,7 +31,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from src.core.models import Observation
-from src.parsers.health import nights_from_spans
+from src.parsers.health import daily_mean, daily_sum, nights_from_spans
 from src.storage.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,11 @@ router = APIRouter()
 DEFAULT_SOURCE = "apple_health"
 
 SLEEP_KIND = "sleep_hours"
+
+# 하루치를 어떻게 접을지는 지표마다 다르다. 이 규칙이 백필과 단축어 양쪽에
+# 흩어져 있으면 경로에 따라 값이 달라진다 — 수면에서 이미 겪은 문제다.
+SUMMED_KINDS = {"step_count", "flights_climbed", "active_energy"}
+AVERAGED_KINDS = {"heart_rate_avg", "resting_heart_rate", "respiratory_rate"}
 
 # 수면을 가리키는 말은 출처마다 다르다 — export.xml은 "AsleepCore",
 # 한국어 단축어는 "수면 시간", 영어로 바꾸면 또 달라진다. 반면 **수면이 아닌**
@@ -78,6 +83,17 @@ class SpanIn(BaseModel):
     end: datetime
     # 단축어가 수면 단계를 못 실어 보낼 수도 있다. 없으면 전부 수면으로 본다.
     stage: Optional[str] = None
+
+
+class SampleIn(BaseModel):
+    at: datetime
+    value: float
+
+
+class SampleIngestRequest(BaseModel):
+    source: str = DEFAULT_SOURCE
+    kind: str
+    samples: List[SampleIn]
 
 
 class SpanIngestRequest(BaseModel):
@@ -204,6 +220,41 @@ def ingest_spans(
     return IngestResponse(
         written=written, observations=_summarize(observations), stages=seen_stages
     )
+
+
+@router.post(
+    "/ingest/samples", response_model=IngestResponse, dependencies=[Depends(_verify_token)]
+)
+def ingest_samples(
+    payload: SampleIngestRequest, request: Request, background: BackgroundTasks
+) -> IngestResponse:
+    """점 단위 측정값을 받아 서버가 하루치로 접는다.
+
+    걸음수는 더하고 심박은 평균 낸다. 폰에서 미리 접어 보내게 하면 그 규칙이
+    두 군데 살게 되고, 백필과 값이 어긋나기 시작한다.
+    """
+    points = [(sample.at, sample.value) for sample in payload.samples]
+    if not points:
+        return IngestResponse(written=0)
+
+    if payload.kind in SUMMED_KINDS:
+        observations = daily_sum(points, payload.kind)
+    elif payload.kind in AVERAGED_KINDS:
+        observations = daily_mean(points, payload.kind)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"'{payload.kind}'를 어떻게 집계할지 모른다. "
+                f"합계: {sorted(SUMMED_KINDS)} / 평균: {sorted(AVERAGED_KINDS)}"
+            ),
+        )
+
+    store: SQLiteStore = request.app.state.store
+    written = store.write(observations)
+    logger.info("표본 수집 — %s %d개 → %d일치", payload.kind, len(points), written)
+    _wake_jarvis(request, background, written)
+    return IngestResponse(written=written, observations=_summarize(observations))
 
 
 @router.get("/health")

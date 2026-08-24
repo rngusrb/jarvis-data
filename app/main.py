@@ -23,7 +23,11 @@ from app.loop import JarvisLoop
 from src.brain.agent import JarvisAgent
 from src.brain.client import VLLMClient
 from src.brain.gate import Gate
-from src.brain.providers import ObservationTrendProvider, SpeechHistoryProvider
+from src.brain.providers import (
+    CollectionStatusProvider,
+    ObservationTrendProvider,
+    SpeechHistoryProvider,
+)
 from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
@@ -34,6 +38,15 @@ from src.triggers.stale import StaleDataTrigger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
+
+# 각 지표가 **어떻게** 들어오기로 되어 있는지. 코드가 알아낼 수 없는 설정 사실이라
+# 여기 적어둔다. 살아 있는지 여부는 선언이 아니라 데이터에서 판단한다 —
+# 선언만 믿으면 낡고, 낡은 선언은 없느니만 못하다.
+COLLECTORS = {
+    "sleep_hours": "아이폰 단축어가 기상할 때 자동 전송",
+    "step_count": "아이폰 단축어가 기상할 때 자동 전송",
+    "heart_rate_avg": "아이폰 단축어가 기상할 때 자동 전송",
+}
 
 
 def build_channel(settings: Settings) -> Channel:
@@ -67,6 +80,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ObservationTrendProvider(),
             # 게이트와 같은 기억을 본다 — 무슨 말을 했는지 알아야 반복을 피한다.
             SpeechHistoryProvider(log=gate.log),
+            # 자기 수집 구조를 모르면 "배터리 최적화를 확인하라" 같은,
+            # 이 시스템에 존재하지도 않는 조언을 지어낸다.
+            CollectionStatusProvider(catalog=store, collectors=COLLECTORS),
         ),
     )
 
