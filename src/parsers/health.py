@@ -177,7 +177,15 @@ def daily_sum(points: Iterable[Tuple[datetime, float]], kind: str) -> List[Obser
     단축어가 같은 계산을 거치게 하려는 것이다.
     """
     return [
-        Observation(source=SOURCE, kind=kind, value=round(sum(values), 2), at=day)
+        Observation(
+            source=SOURCE,
+            kind=kind,
+            value=round(sum(values), 2),
+            at=day,
+            # 표본 수는 값이 이상할 때 원인을 가르는 첫 단서다. 하루 걸음수가
+            # 9만이면, 표본이 5개인지 900개인지에 따라 원인이 완전히 달라진다.
+            meta={"samples": len(values)},
+        )
         for day, values in sorted(_bucket_by_day(points).items())
     ]
 

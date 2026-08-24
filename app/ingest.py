@@ -108,6 +108,9 @@ class IngestResponse(BaseModel):
     # 어떤 단계 값이 실제로 도착했는지 되돌려준다. 기기마다 언어마다 다르게 올 수
     # 있어서, written이 0일 때 "무엇이 걸러졌는지"가 안 보이면 원인을 못 찾는다.
     stages: List[str] = Field(default_factory=list)
+    # 저장된 결과만 보면 값이 왜 이상한지 알 수 없다. 폰에서 무엇이 떠났는지
+    # 서버 로그를 뒤지지 않고 응답만으로 보이게 한다.
+    received: Optional[Dict[str, Any]] = None
 
 
 def _verify_token(
@@ -237,6 +240,14 @@ def ingest_samples(
     if not points:
         return IngestResponse(written=0)
 
+    values = [value for _, value in points]
+    received = {
+        "samples": len(points),
+        "min": min(values),
+        "max": max(values),
+        "first_3": [{"at": at.isoformat(), "value": value} for at, value in points[:3]],
+    }
+
     if payload.kind in SUMMED_KINDS:
         observations = daily_sum(points, payload.kind)
     elif payload.kind in AVERAGED_KINDS:
@@ -254,7 +265,7 @@ def ingest_samples(
     written = store.write(observations)
     logger.info("표본 수집 — %s %d개 → %d일치", payload.kind, len(points), written)
     _wake_jarvis(request, background, written)
-    return IngestResponse(written=written, observations=_summarize(observations))
+    return IngestResponse(written=written, observations=_summarize(observations), received=received)
 
 
 @router.get("/health")
