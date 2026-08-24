@@ -1,0 +1,89 @@
+# src/sectors/health/ — 폴더 가이드
+
+## 역할
+
+Apple Watch·iPhone에서 오는 지표를 소유한다. 지표 카드, 애플 XML 파서,
+백필 CLI.
+
+**이 폴더가 소유하지 않는 것**: 접는 계산(→ `core/folding`), 저장(→ `storage`),
+판단(→ `triggers`·`brain`). 다른 섹터는 더더욱 모른다.
+
+---
+
+## 핵심 패턴
+
+### 지표를 늘리려면 카드 한 장
+```python
+Metric(kind="...", label="...", fold=Fold.SUM, collector=SHORTCUT)
+```
+**이유**: 수신구·감시·맥락이 전부 카드에서 파생된다. 카드만 추가하면 나머지는 안 건드린다.
+
+### 스트리밍 파싱
+```python
+context = ET.iterparse(str(path), events=("start", "end"))
+...
+elem.clear(); root.clear()
+```
+**이유**: export.xml 이 279MB다. 통째로 읽으면 터진다. `root.clear()` 를 빠뜨리면
+iterparse 를 써도 트리가 루트 밑에 쌓여 결국 같은 결과가 된다.
+
+---
+
+## 금지사항
+
+### ❌ 여러 기기 표본을 그냥 더하지 않는다
+```python
+# ❌ 금지
+total = sum(r.value for r in records)
+```
+**사고 이력**: 2026-08-24. 걸음수가 15,480 으로 저장됐다 (실제 8천). 워치 7,980 +
+아이폰 7,500 — 같은 걸음을 두 기기가 각자 센 것이다. 건강 앱은 시간 구간마다 소스를
+하나만 고른다. `core/folding` 이 같은 방식을 쓴다.
+
+### ❌ 표본이 많은 지표를 원본 그대로 수집하지 않는다
+**사고 이력**: 2026-08-24. 원본 심박은 하루 **361개**(최대 1,157개)라 단축어가 반복을
+끝내지 못하고 멈췄다. HealthKit 그룹화는 평균이 아니라 합계로 묶어 심박이 13,732 로 왔다.
+워치가 이미 계산해두는 `휴식기 심박수`(하루 1개)로 갈아탔다.
+
+### ❌ 수면 단계를 "수면인 것만 통과"로 거르지 않는다
+**사고 이력**: 2026-08-24. 단축어는 한국어로 `"수면 시간"` 을 보낸다 — `Asleep` 이라는
+글자가 없어 전부 걸러졌고 `written: 0` 이 나왔다. 수면을 가리키는 말은 출처·언어마다
+늘어나지만 **수면이 아닌 상태는 둘뿐**이다. 아닌 것만 배제한다.
+
+---
+
+## GC 패턴
+
+```gc
+pattern: "sum\([^)]*\.value for [^)]*records"
+message: "기기 중복을 걷어내지 않고 더하면 걸음수가 두 배가 된다 — core/folding 을 쓴다"
+```
+
+```gc
+pattern: "from src\.sectors\.(?!health)"
+message: "섹터는 다른 섹터를 모른다"
+```
+
+---
+
+## 하네스
+
+```
+tests:
+  - tests/unit/test_health_parser.py
+  - tests/integration/test_ingest_spans.py
+```
+
+```bash
+python scripts/harness.py src/sectors/health/
+```
+
+---
+
+## 모듈 지도
+
+| 파일 | 책임 |
+|------|------|
+| `metrics.py` | 지표 카드 4장 (수면·걸음수·휴식기 심박 + 접은 원본 심박) |
+| `parser.py` | 애플 XML 스트리밍 파싱. 레코드 → 관측치 |
+| `backfill.py` | export.xml 일회성 주입 CLI |

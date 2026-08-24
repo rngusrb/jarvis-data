@@ -8,18 +8,9 @@ on:
   pull_request:
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff check src/ tests/ app/
-      - run: ruff format --check src/ tests/ app/
-
-  typecheck:
+  # "완료"의 정의는 하나여야 한다. harness all 이 ruff·mypy·pytest·GC·Doc Lint 를
+  # 전부 돌리므로, CI 가 따로 셋을 돌리면 판정이 두 개가 되고 반드시 갈라진다.
+  harness:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +18,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - run: mypy src/ app/
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -e ".[dev]"
-      - run: pytest -v
+      - run: python scripts/harness.py all --gc
