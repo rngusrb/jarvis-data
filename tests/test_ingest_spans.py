@@ -147,3 +147,57 @@ def test_마지막_수신_시각을_알려준다(tmp_path: Path) -> None:
     client.post("/ingest/spans", json=SPANS, headers=AUTH)
     last_seen = client.get("/health").json()["last_seen"]
     assert "sleep_hours" in last_seen
+
+
+def test_한국어_단계도_알아본다(tmp_path: Path) -> None:
+    """단축어는 한국어로 "수면 시간" / "깨어 있는 시간" 두 가지만 준다.
+
+    실제 아이폰에서 받은 값이다 — Core/Deep/REM 구분 없이 뭉뚱그려 온다.
+    """
+    payload = {
+        "spans": [
+            {
+                "start": "2026-08-24T04:28:47+09:00",
+                "end": "2026-08-24T07:28:47+09:00",
+                "stage": "수면 시간",
+            },
+            {
+                "start": "2026-08-24T07:28:47+09:00",
+                "end": "2026-08-24T08:28:47+09:00",
+                "stage": "깨어 있는 시간",
+            },
+        ]
+    }
+    body = _client(tmp_path).post("/ingest/spans", json=payload, headers=AUTH).json()
+    # 깨어 있던 1시간이 섞였다면 4.0이 나왔을 것이다.
+    assert body["observations"][0]["value"] == 3.0
+
+
+def test_모르는_표현은_수면으로_본다(tmp_path: Path) -> None:
+    """수면을 가리키는 말은 출처마다 다르다. 모른다고 버리면 데이터가 조용히 사라진다."""
+    payload = {
+        "spans": [
+            {
+                "start": "2026-08-24T04:00:00+09:00",
+                "end": "2026-08-24T06:00:00+09:00",
+                "stage": "Schlafenszeit",
+            }
+        ]
+    }
+    body = _client(tmp_path).post("/ingest/spans", json=payload, headers=AUTH).json()
+    assert body["observations"][0]["value"] == 2.0
+
+
+def test_영어_한국어_모두_깨어있음을_걸러낸다(tmp_path: Path) -> None:
+    for stage in ("Awake", "HKCategoryValueSleepAnalysisAwake", "깨어 있는 시간", "In Bed"):
+        payload = {
+            "spans": [
+                {
+                    "start": "2026-08-24T04:00:00+09:00",
+                    "end": "2026-08-24T06:00:00+09:00",
+                    "stage": stage,
+                }
+            ]
+        }
+        body = _client(tmp_path).post("/ingest/spans", json=payload, headers=AUTH).json()
+        assert body["written"] == 0, f"{stage}가 수면으로 잘못 통과됨"

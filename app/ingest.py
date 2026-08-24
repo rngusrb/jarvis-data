@@ -35,9 +35,22 @@ router = APIRouter()
 DEFAULT_SOURCE = "apple_health"
 
 SLEEP_KIND = "sleep_hours"
-# "AsleepCore"로 오든 "HKCategoryValueSleepAnalysisAsleepCore"로 오든 잡힌다.
-# InBed와 Awake에는 이 조각이 없으므로 자연히 제외된다.
-ASLEEP_MARKER = "asleep"
+
+# 수면을 가리키는 말은 출처마다 다르다 — export.xml은 "AsleepCore",
+# 한국어 단축어는 "수면 시간", 영어로 바꾸면 또 달라진다. 반면 **수면이 아닌**
+# 상태는 두 가지뿐이고 앞으로도 늘지 않는다: 깨어 있음, 침대에만 있음.
+#
+# 그래서 "수면인 것만 통과"가 아니라 "수면 아닌 것만 배제"로 판단한다.
+# 모르는 표현이 새로 나타나도 조용히 데이터를 잃지 않는다.
+NOT_ASLEEP_MARKERS = ("awake", "inbed", "깨어", "침대")
+
+
+def is_asleep(stage: Optional[str]) -> bool:
+    if not stage:
+        # 단계 정보 없이 오는 경로도 있다. 모르는 것과 깨어 있는 것은 다르다.
+        return True
+    normalized = stage.replace(" ", "").lower()
+    return not any(marker in normalized for marker in NOT_ASLEEP_MARKERS)
 
 
 class ObservationIn(BaseModel):
@@ -68,6 +81,9 @@ class SpanIngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     written: int
     observations: List[Dict[str, Any]] = Field(default_factory=list)
+    # 어떤 단계 값이 실제로 도착했는지 되돌려준다. 기기마다 언어마다 다르게 올 수
+    # 있어서, written이 0일 때 "무엇이 걸러졌는지"가 안 보이면 원인을 못 찾는다.
+    stages: List[str] = Field(default_factory=list)
 
 
 def _verify_token(
@@ -134,14 +150,16 @@ def ingest_spans(payload: SpanIngestRequest, request: Request) -> IngestResponse
 
     # 단계 필터링도 서버가 한다. 단축어에서 조건 분기를 짜는 것보다 훨씬 싸고,
     # 나중에 기준이 바뀌어도 아이폰을 열 필요가 없다.
-    asleep = [
-        (span.start, span.end)
-        for span in payload.spans
-        if span.stage is None or ASLEEP_MARKER in span.stage.lower()
-    ]
+    asleep = [(span.start, span.end) for span in payload.spans if is_asleep(span.stage)]
+    seen_stages = sorted({span.stage for span in payload.spans if span.stage})
+
     if not asleep:
-        logger.info("구간 수집 — 받은 %d개 중 수면 0개", len(payload.spans))
-        return IngestResponse(written=0)
+        logger.info(
+            "구간 수집 — 받은 %d개 전부 걸러짐. 도착한 단계: %s",
+            len(payload.spans),
+            seen_stages,
+        )
+        return IngestResponse(written=0, stages=seen_stages)
 
     observations = nights_from_spans(asleep)
     store: SQLiteStore = request.app.state.store
@@ -152,7 +170,9 @@ def ingest_spans(payload: SpanIngestRequest, request: Request) -> IngestResponse
         len(asleep),
         written,
     )
-    return IngestResponse(written=written, observations=_summarize(observations))
+    return IngestResponse(
+        written=written, observations=_summarize(observations), stages=seen_stages
+    )
 
 
 @router.get("/health")

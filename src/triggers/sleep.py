@@ -21,7 +21,12 @@ class SleepDropTrigger:
 
     name: str = "sleep_drop"
     kind: str = "sleep_hours"
-    lookback: timedelta = timedelta(days=8)
+    # 창이 8일이면 "매일 기록이 있다"를 전제하게 된다. 실제로는 워치를 안 찬
+    # 날이 섞여 커버리지가 70% 남짓이고 최장 6일까지 비는데, 그러면 창 안에
+    # 기록이 3건도 안 모여 판단 자체를 포기하는 밤이 생긴다.
+    # baseline은 "최근 7일"이 아니라 "최근 기록 7개"다. 창은 그 7개를
+    # 찾을 만큼만 넓으면 된다.
+    lookback: timedelta = timedelta(days=21)
     baseline_days: int = 7
     drop_hours: float = 1.5
     # 평소의 절반 이하로 잤으면 심각. 감소'량'이 아니라 '비율'인 이유는
