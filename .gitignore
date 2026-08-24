@@ -10,3 +10,7 @@ dist/
 *.xml
 data/raw/
 data/processed/
+# 관측치 DB — 개인 건강 데이터가 들어간다
+data/*.db
+data/*.db-wal
+data/*.db-shm

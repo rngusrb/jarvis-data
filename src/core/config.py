@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,8 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     loop_interval_sec: int
+    db_path: Path
+    ingest_token: str
 
     @property
     def telegram_enabled(self) -> bool:
@@ -40,4 +43,7 @@ def load_settings() -> Settings:
         telegram_bot_token=os.getenv("JARVIS_TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("JARVIS_TELEGRAM_CHAT_ID", ""),
         loop_interval_sec=int(os.getenv("JARVIS_LOOP_INTERVAL_SEC", "1800")),
+        db_path=Path(os.getenv("JARVIS_DB_PATH", "data/jarvis.db")),
+        # 아이폰 단축어가 들고 올 토큰. Tailscale 안이라도 한 겹 더 둔다.
+        ingest_token=os.getenv("JARVIS_INGEST_TOKEN", ""),
     )
