@@ -30,7 +30,14 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from src.core.folding import Sample, daily_mean, daily_sum, nights_from_spans
+from src.core.folding import (
+    Sample,
+    daily_first,
+    daily_last,
+    daily_mean,
+    daily_sum,
+    nights_from_spans,
+)
 from src.core.metrics import Fold, Metric, MetricRegistry
 from src.core.models import Observation
 from src.storage.sqlite import SQLiteStore
@@ -44,8 +51,13 @@ router = APIRouter()
 DEFAULT_SOURCE = "apple_health"
 
 # 접는 법의 **구현**은 플랫폼이 갖고, **어느 방식인지**는 지표 카드가 고른다.
-# 그래서 이 파일에는 "sleep_hours" 같은 지표 이름이 하나도 등장하지 않는다.
-FOLDERS = {Fold.SUM: daily_sum, Fold.MEAN: daily_mean}
+# 그래서 이 파일에는 지표 이름이 하나도 등장하지 않는다.
+FOLDERS = {
+    Fold.SUM: daily_sum,
+    Fold.MEAN: daily_mean,
+    Fold.FIRST: daily_first,
+    Fold.LAST: daily_last,
+}
 
 # 수면을 가리키는 말은 출처마다 다르다 — export.xml은 "AsleepCore",
 # 한국어 단축어는 "수면 시간", 영어로 바꾸면 또 달라진다. 반면 **수면이 아닌**

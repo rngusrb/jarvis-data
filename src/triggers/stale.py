@@ -18,8 +18,11 @@ from src.core.models import Insight, Observation, Severity
 
 @dataclass
 class StaleDataTrigger:
-    kind: str = "sleep_hours"
-    label: str = "수면"
+    # 기본값을 두지 않는다. 어느 지표를 감시할지는 부르는 쪽이 안다 —
+    # 기본값이 있으면 플랫폼이 특정 지표를 전제하게 되고, 그 전제는
+    # 지표를 접거나 이름을 바꿀 때 조용히 낡는다.
+    kind: str
+    label: str
     name: str = ""
     lookback: timedelta = timedelta(days=14)
     # 수면은 하루 한 번 들어온다. 36시간이면 하루를 통째로 건너뛴 것이라

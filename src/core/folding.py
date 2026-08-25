@@ -174,3 +174,37 @@ def nights_from_spans(
             )
         )
     return observations
+
+
+def daily_first(samples: Iterable[Sample], kind: str, source: str) -> List[Observation]:
+    """하루의 첫 값. 사건의 시각 자체가 값인 지표용."""
+    return _pick_one(samples, kind, source, last=False)
+
+
+def daily_last(samples: Iterable[Sample], kind: str, source: str) -> List[Observation]:
+    """하루의 마지막 값.
+
+    퇴근처럼 하루에 여러 번 일어날 수 있지만 의미 있는 건 마지막인 사건.
+    평균을 내면 "3시와 7시 사이 어딘가"라는, 실제로 일어나지 않은 값이 나온다.
+    """
+    return _pick_one(samples, kind, source, last=True)
+
+
+def _pick_one(samples: Iterable[Sample], kind: str, source: str, last: bool) -> List[Observation]:
+    observations = []
+    for day, day_samples in sorted(_bucket(samples).items()):
+        ordered = sorted(day_samples, key=lambda s: s.start)
+        chosen = ordered[-1] if last else ordered[0]
+        observations.append(
+            Observation(
+                source=source,
+                kind=kind,
+                value=chosen.value,
+                at=day,
+                # 몇 번 일어났는지는 남긴다. 퇴근이 하루 세 번이면 그 자체가 신호다.
+                # 키를 "at"으로 두면 응답 요약에서 관측치의 at 을 덮어쓴다 —
+                # 저장은 멀쩡한데 응답만 거짓말하는 상태가 된다.
+                meta={"samples": len(ordered), "event_at": chosen.start.isoformat()},
+            )
+        )
+    return observations

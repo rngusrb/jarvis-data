@@ -92,3 +92,26 @@ def test_섹터는_다른_섹터를_모른다() -> None:
                 ):
                     offenders.append(f"{path.relative_to(ROOT)} → {module}")
     assert not offenders, f"섹터끼리 참조: {offenders}"
+
+
+def test_플랫폼_트리거는_특정_지표를_전제하지_않는다() -> None:
+    """`src/triggers/` 는 프로토콜과 도메인 무관한 것만 갖는다.
+
+    이 폴더에 섹터별 트리거가 쌓이면 우리가 없애려던 서랍이 그대로 재현된다.
+    불변식이 이걸 놓쳤던 이유는 도메인 트리거가 섹터를 *import* 하지는 않기
+    때문이다 — 이름만으로는 안 잡힌다. 지표 이름이 박혀 있는지로 본다.
+    """
+    from src.core.metrics import MetricRegistry
+    from src.sectors.health import METRICS
+
+    known = {m.kind for m in MetricRegistry().register(METRICS).all()}
+    offenders = []
+    for path in (ROOT / "src/triggers").rglob("*.py"):
+        literals = {
+            node.value
+            for node in ast.walk(ast.parse(path.read_text()))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        if leaked := sorted(known & literals):
+            offenders.append(f"{path.relative_to(ROOT)}: {leaked}")
+    assert not offenders, f"플랫폼 트리거에 지표 이름이 박혀 있다: {offenders}"

@@ -8,7 +8,7 @@ from typing import List, Optional, Sequence
 from src.brain.agent import JarvisAgent
 from src.core.models import Observation
 from src.runtime.loop import JarvisLoop
-from src.triggers.sleep import SleepDropTrigger
+from src.sectors.health.triggers import SleepDropTrigger
 
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 

@@ -33,13 +33,15 @@ from src.core.config import Settings, load_settings
 from src.core.metrics import MetricRegistry
 from src.runtime.ingest import router as ingest_router
 from src.runtime.loop import JarvisLoop
-from src.sectors.health import METRICS as HEALTH_METRICS
+from src.sectors import commute, health
 from src.storage.sqlite import SQLiteStore
-from src.triggers.sleep import SleepDropTrigger
 from src.triggers.stale import StaleDataTrigger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
+
+# 켜져 있는 섹터. 각 섹터는 METRICS 와 TRIGGERS 를 내보낸다.
+SECTORS = [health, commute]
 
 
 def build_channel(settings: Settings) -> Channel:
@@ -55,13 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     store = SQLiteStore(settings.db_path)
 
-    # 섹터가 자기 지표를 들고 들어온다. 여기가 "어떤 섹터를 켤지" 고르는 유일한 곳이고,
-    # 나머지(수신구·감시·맥락)는 전부 이 등록에서 파생된다.
-    metrics = MetricRegistry().register(HEALTH_METRICS)
+    # 섹터를 켜는 유일한 자리. 새 섹터를 추가하려면 위 import 와 이 목록에
+    # 한 줄씩이면 되고, 플랫폼은 열지 않는다.
+    metrics = MetricRegistry()
+    sector_triggers = []
+    for sector in SECTORS:
+        metrics.register(sector.METRICS)
+        sector_triggers.extend(sector.TRIGGERS)
     app.state.metrics = metrics
 
-    # 수집이 멈춘 걸 종류별로 본다. 단축어를 수면용으로만 만들어두면 걸음수는
-    # 조용히 죽어 있는데 아무도 알려주지 않는다 — 실제로 그 상태로 며칠을 보냈다.
     stale = [
         StaleDataTrigger(kind=m.kind, label=m.label, stale_after=m.stale_after)
         for m in metrics.active()
@@ -85,7 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     jarvis = JarvisLoop(
         source=store,
-        triggers=[SleepDropTrigger(), *stale],
+        triggers=[*sector_triggers, *stale],
         agent=agent,
         channel=build_channel(settings),
     )

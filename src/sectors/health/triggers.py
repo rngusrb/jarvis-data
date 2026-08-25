@@ -1,4 +1,8 @@
-"""수면 관련 트리거."""
+"""health 섹터의 트리거.
+
+플랫폼(`src/triggers/`)에는 프로토콜과 도메인 무관한 것(수집 중단)만 남는다.
+"수면이 평소보다 짧다"는 health 의 지식이다.
+"""
 
 from __future__ import annotations
 
@@ -85,3 +89,7 @@ class SleepDropTrigger:
             at=latest.at,
             observations=tuple(ordered),
         )
+
+
+# 섹터가 자기 트리거를 들고 나간다. app/main.py 는 이 목록을 그대로 받는다.
+TRIGGERS = [SleepDropTrigger()]

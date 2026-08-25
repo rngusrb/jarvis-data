@@ -53,7 +53,7 @@ metric = registry.get(kind); FOLDERS[metric.fold](...)
 ## GC 패턴
 
 ```gc
-pattern: "\"(sleep_hours|step_count|resting_heart_rate|heart_rate_avg)\""
+pattern: "(sleep_hours|step_count|resting_heart_rate|work_departure|work_arrival)"
 message: "수신구·루프에 지표 이름을 박지 않는다 — 카드에서 읽는다"
 ```
 
