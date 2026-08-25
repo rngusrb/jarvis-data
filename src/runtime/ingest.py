@@ -36,6 +36,7 @@ from src.core.folding import (
     daily_last,
     daily_mean,
     daily_sum,
+    keep_points,
     nights_from_spans,
 )
 from src.core.metrics import Fold, Metric, MetricRegistry
@@ -57,6 +58,7 @@ FOLDERS = {
     Fold.MEAN: daily_mean,
     Fold.FIRST: daily_first,
     Fold.LAST: daily_last,
+    Fold.RAW: keep_points,
 }
 
 # 수면을 가리키는 말은 출처마다 다르다 — export.xml은 "AsleepCore",
@@ -102,6 +104,8 @@ class SampleIn(BaseModel):
     # 겹치는 구간을 걷어낼 수 있다. 없으면 중복 제거 없이 그냥 더한다.
     end: Optional[datetime] = None
     source: str = ""
+    # 숫자 하나로 안 담기는 관측치가 있다 — 위치는 좌표 두 개다.
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SampleIngestRequest(BaseModel):
@@ -292,7 +296,13 @@ def ingest_samples(
     두 군데 살게 되고, 백필과 값이 어긋나기 시작한다.
     """
     points = [
-        Sample(start=item.at, end=item.end or item.at, value=item.value, source=item.source)
+        Sample(
+            start=item.at,
+            end=item.end or item.at,
+            value=item.value,
+            source=item.source,
+            meta=item.meta,
+        )
         for item in payload.samples
     ]
     if not points:
