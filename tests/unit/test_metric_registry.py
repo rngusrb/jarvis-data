@@ -44,10 +44,9 @@ def test_health_섹터_카드가_실제로_등록된다() -> None:
     from src.sectors.health import METRICS
 
     registry = MetricRegistry().register(METRICS)
-    assert {m.kind for m in registry.active()} == {
-        "sleep_hours",
-        "step_count",
-        "resting_heart_rate",
-    }
-    heart = registry.get("heart_rate_avg")
-    assert heart is not None and not heart.active
+    assert {m.kind for m in registry.active()} == {"sleep_hours", "resting_heart_rate"}
+
+    # 접힌 지표도 카드는 남는다 — 과거 데이터가 있고, "안 만든 것"과 구별해야 한다.
+    for retired in ("heart_rate_avg", "step_count"):
+        card = registry.get(retired)
+        assert card is not None and not card.active
