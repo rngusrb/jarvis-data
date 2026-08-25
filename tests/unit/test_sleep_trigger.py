@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from src.core.models import Observation, Severity
-from src.triggers.sleep import SleepDropTrigger
+from src.sectors.health.triggers import SleepDropTrigger
 
 BASE = datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc)
 NOW = BASE + timedelta(days=10)

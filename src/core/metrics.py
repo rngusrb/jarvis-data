@@ -27,6 +27,10 @@ class Fold(str, Enum):
     SPANS = "spans"  # 구간들 → 밤 단위 (수면)
     SUM = "sum"  # 점들 → 하루 합계 (걸음수)
     MEAN = "mean"  # 점들 → 하루 평균 (심박)
+    # 사건의 시각 자체가 값인 지표를 위한 것. 하루에 여러 번 일어나도
+    # 의미가 있는 건 하나다 — 퇴근은 마지막, 출근 도착은 처음.
+    FIRST = "first"
+    LAST = "last"
 
 
 @dataclass(frozen=True)
