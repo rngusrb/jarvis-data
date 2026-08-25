@@ -31,6 +31,9 @@ class Fold(str, Enum):
     # 의미가 있는 건 하나다 — 퇴근은 마지막, 출근 도착은 처음.
     FIRST = "first"
     LAST = "last"
+    # 접지 않는다. 하루에 여러 점이 있어야 의미가 생기는 지표용 — 위치처럼
+    # "언제 어디였나"가 낱낱이 남아야 패턴을 찾을 수 있다.
+    RAW = "raw"
 
 
 @dataclass(frozen=True)

@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from src.core.models import Observation
 
@@ -26,6 +26,9 @@ class Sample:
     end: datetime
     value: float
     source: str = ""
+    # 숫자 하나로 안 담기는 관측치가 있다 — 위치는 위도·경도 두 개다.
+    # value 는 정확도 같은 품질 신호를 담고, 본체는 여기 싣는다.
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 
 def is_wrist(source: str) -> bool:
@@ -208,3 +211,24 @@ def _pick_one(samples: Iterable[Sample], kind: str, source: str, last: bool) -> 
             )
         )
     return observations
+
+
+def keep_points(samples: Iterable[Sample], kind: str, source: str) -> List[Observation]:
+    """접지 않고 점을 그대로 남긴다.
+
+    하루 단위로 접는 다른 fold 들과 달리 `at` 이 **표본의 실제 시각**이다.
+    저장소 키가 (source, kind, at) 이라 같은 날 여러 점이 서로 덮어쓰지 않는다.
+
+    위치가 이 모양을 요구한다 — "하루 평균 위치"는 아무 의미가 없고,
+    "9시에 여기, 18시에 저기"가 낱낱이 남아야 패턴이 보인다.
+    """
+    return [
+        Observation(
+            source=source,
+            kind=kind,
+            value=sample.value,
+            at=sample.start,
+            meta=dict(sample.meta),
+        )
+        for sample in sorted(samples, key=lambda s: s.start)
+    ]
