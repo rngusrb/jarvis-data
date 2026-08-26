@@ -271,7 +271,7 @@ def ingest_spans(
 
     observations = nights_from_spans(asleep, kind=metric.kind, source=payload.source)
     store: SQLiteStore = request.app.state.store
-    written = store.write(observations)
+    written = store.write(observations, on_conflict=metric.on_conflict)
     logger.info(
         "구간 수집 — 받은 %d개 중 수면 %d개 → 밤 %d건",
         len(payload.spans),

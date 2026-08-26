@@ -36,6 +36,20 @@ class Fold(str, Enum):
     RAW = "raw"
 
 
+class Conflict(str, Enum):
+    """같은 (출처, 종류, 시각)이 다시 들어왔을 때 무엇을 남길지.
+
+    수집 창이 밀리면서 **같은 밤이 잘린 채 다시 오는** 경로가 있다. 단축어의
+    "최근 1일"은 24시간 롤링이라, 어제보다 일찍 깬 날엔 창의 시작 경계가
+    어젯밤 한가운데를 지나간다. 그러면 8시간 잔 밤이 30분으로 덮어써진다.
+    """
+
+    REPLACE = "replace"  # 나중 것이 이긴다. 기본값
+    # 부분 창이 완전한 기록을 못 덮게. 창이 잘리면 값은 **짧아질 수만** 있고
+    # (겹침 병합이 부풀리는 걸 막는다) 길어질 수 없으므로, 긴 쪽이 더 완전하다.
+    KEEP_LARGER = "keep_larger"
+
+
 @dataclass(frozen=True)
 class Metric:
     kind: str
@@ -45,6 +59,7 @@ class Metric:
     # 되살릴 필요가 없다는 뜻. 레지스트리에 아예 없는 것(= 모르는 지표)과 다르다.
     collector: Optional[str] = None
     stale_after: timedelta = timedelta(hours=36)
+    on_conflict: Conflict = Conflict.REPLACE
 
     @property
     def active(self) -> bool:

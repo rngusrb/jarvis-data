@@ -6,7 +6,7 @@ Apple Watch와 iPhone에서 오는 것들. 지표를 늘리려면 여기에 카�
 
 from __future__ import annotations
 
-from src.core.metrics import Fold, Metric
+from src.core.metrics import Conflict, Fold, Metric
 
 SHORTCUT = "아이폰 단축어가 기상할 때 자동 전송"
 
@@ -18,6 +18,9 @@ METRICS = [
         # 조각 수 자체가 측정 품질 신호라 원본 구간이 서버까지 와야 한다.
         fold=Fold.SPANS,
         collector=SHORTCUT,
+        # 단축어의 "최근 1일" 창이 어제보다 일찍 깬 날 어젯밤을 반토막 낸다.
+        # 잘린 조각이 온전한 밤을 덮어쓰면 과거가 조용히 줄어든다.
+        on_conflict=Conflict.KEEP_LARGER,
     ),
     Metric(
         kind="step_count",

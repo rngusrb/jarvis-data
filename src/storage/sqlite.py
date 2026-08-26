@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Sequence
 
+from src.core.metrics import Conflict
 from src.core.models import Observation
 
 SCHEMA = """
@@ -56,8 +57,16 @@ class SQLiteStore:
         finally:
             conn.close()
 
-    def write(self, observations: Iterable[Observation]) -> int:
-        """관측치를 저장한다. 같은 (source, kind, at)이 이미 있으면 덮어쓴다."""
+    def write(
+        self,
+        observations: Iterable[Observation],
+        on_conflict: Conflict = Conflict.REPLACE,
+    ) -> int:
+        """관측치를 저장한다. 같은 (source, kind, at)이 이미 있으면 정책대로 처리한다.
+
+        `KEEP_LARGER`는 읽고-비교하고-쓰는 대신 SQLite 한 문장으로 처리한다.
+        동시에 두 요청이 들어와도 경합이 없다.
+        """
         rows = [
             (
                 observation.source,
@@ -70,12 +79,21 @@ class SQLiteStore:
         ]
         if not rows:
             return 0
-        with self._connect() as conn:
-            conn.executemany(
-                "INSERT OR REPLACE INTO observations (source, kind, at, value, meta) "
-                "VALUES (?, ?, ?, ?, ?)",
-                rows,
+        if on_conflict is Conflict.KEEP_LARGER:
+            sql = (
+                "INSERT INTO observations (source, kind, at, value, meta) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(source, kind, at) DO UPDATE SET "
+                "  value = excluded.value, meta = excluded.meta "
+                "WHERE excluded.value > observations.value"
             )
+        else:
+            sql = (
+                "INSERT OR REPLACE INTO observations (source, kind, at, value, meta) "
+                "VALUES (?, ?, ?, ?, ?)"
+            )
+        with self._connect() as conn:
+            conn.executemany(sql, rows)
         return len(rows)
 
     def recent(self, kind: str, since: datetime) -> Sequence[Observation]:

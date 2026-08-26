@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from src.core.config import load_settings
+from src.core.metrics import Conflict
 from src.sectors.health.parser import parse_export
 from src.storage.sqlite import SQLiteStore
 
@@ -38,8 +39,9 @@ def main(argv: list[str]) -> int:
     observations = parse_export(export_path)
     logger.info("관측치 %d건 추출", len(observations))
 
-    # 저장소가 (source, kind, at) 기준으로 덮어쓰므로 여러 번 돌려도 안전하다.
-    written = store.write(observations)
+    # 백필은 export.xml 전체를 읽으므로 **항상 완전한 값**이다. 수집 창이 잘려
+    # 짧게 저장된 밤이 있으면 여기서 바로잡혀야 하므로 정책을 덮어쓰기로 둔다.
+    written = store.write(observations, on_conflict=Conflict.REPLACE)
     logger.info("저장 완료 — %d건, 총 %d건, 종류 %s", written, store.count(), store.kinds())
     return 0
 

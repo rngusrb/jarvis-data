@@ -73,3 +73,42 @@ def test_시간순으로_돌려준다(tmp_path: Path) -> None:
     )
     values = [o.value for o in store.recent("sleep_hours", NIGHT - timedelta(days=7))]
     assert values == [7.0, 8.0, 6.0]
+
+
+def test_잘린_기록이_온전한_기록을_덮지_않는다(tmp_path: Path) -> None:
+    """수집 창이 밀리면 어젯밤이 반토막 난 채 다시 온다.
+
+    단축어의 "최근 1일"은 24시간 롤링이라, 어제보다 일찍 깬 날엔 창의 시작
+    경계가 어젯밤 한가운데를 지나간다. 그 조각이 온전한 밤을 덮으면 과거가
+    조용히 줄어든다.
+    """
+    from src.core.metrics import Conflict
+
+    store = SQLiteStore(tmp_path / "t.db")
+    store.write([_observation(8.0, NIGHT)], on_conflict=Conflict.KEEP_LARGER)
+    store.write([_observation(0.5, NIGHT)], on_conflict=Conflict.KEEP_LARGER)
+
+    assert store.recent("sleep_hours", NIGHT - timedelta(days=1))[0].value == 8.0
+
+
+def test_더_완전한_기록은_갱신한다(tmp_path: Path) -> None:
+    from src.core.metrics import Conflict
+
+    store = SQLiteStore(tmp_path / "t.db")
+    store.write([_observation(0.5, NIGHT)], on_conflict=Conflict.KEEP_LARGER)
+    store.write([_observation(8.0, NIGHT)], on_conflict=Conflict.KEEP_LARGER)
+
+    stored = store.recent("sleep_hours", NIGHT - timedelta(days=1))[0]
+    assert stored.value == 8.0
+    assert stored.meta["segments"] == 3  # meta 도 같이 갱신된다
+
+
+def test_백필은_짧은_값으로도_바로잡는다(tmp_path: Path) -> None:
+    """export.xml 은 항상 완전하므로, 잘못 부풀려진 값을 되돌릴 수 있어야 한다."""
+    from src.core.metrics import Conflict
+
+    store = SQLiteStore(tmp_path / "t.db")
+    store.write([_observation(99.0, NIGHT)])
+    store.write([_observation(8.0, NIGHT)], on_conflict=Conflict.REPLACE)
+
+    assert store.recent("sleep_hours", NIGHT - timedelta(days=1))[0].value == 8.0
