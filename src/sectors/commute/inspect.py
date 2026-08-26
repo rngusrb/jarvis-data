@@ -58,6 +58,19 @@ def cluster(points: Sequence[Observation]) -> List[List[Observation]]:
     return sorted(groups, key=len, reverse=True)
 
 
+def by_trigger(points: Sequence[Observation]) -> Dict[str, List[Observation]]:
+    """어느 자동화가 보낸 점인지로 나눈다.
+
+    같은 좌표라도 의미가 다르다 — 집을 나선 지점과 교통카드를 찍은 지점은
+    전혀 다른 사실이고, 후자가 곧 "타는 곳"이다. 라벨이 없으면 6개 점 중
+    무엇이 무엇인지 알 수 없다.
+    """
+    groups: Dict[str, List[Observation]] = {}
+    for point in points:
+        groups.setdefault(str(point.meta.get("trigger") or "(라벨 없음)"), []).append(point)
+    return groups
+
+
 def main() -> int:
     store = SQLiteStore(load_settings().db_path)
     since = datetime.now(timezone.utc) - timedelta(days=60)
@@ -81,6 +94,15 @@ def main() -> int:
         hours = Counter(o.at.hour for o in group)
         busiest = ", ".join(f"{h}시({n})" for h, n in hours.most_common(3))
         print(f"  {i}. {len(group):3}회  {lat:.4f},{lon:.4f}   주로 {busiest}")
+
+    labelled = by_trigger(usable)
+    if set(labelled) != {"(라벨 없음)"}:
+        print("\n=== 자동화별 ===")
+        for name, group in sorted(labelled.items(), key=lambda kv: -len(kv[1])):
+            spots = cluster(group)
+            top = coords(spots[0][0]) if spots else None
+            where = f"  주로 {top[0]:.4f},{top[1]:.4f} ({len(spots[0])}회)" if top else ""
+            print(f"  {name:14} {len(group):3}개, 장소 {len(spots)}군데{where}")
 
     print("\n=== 시간대별 출발 횟수 ===")
     by_hour: Dict[int, int] = defaultdict(int)

@@ -44,3 +44,27 @@ def test_좌표가_없으면_건너뛴다() -> None:
 
 def test_빈_입력() -> None:
     assert cluster([]) == []
+
+
+def test_자동화별로_나눈다() -> None:
+    """집을 나선 지점과 카드를 찍은 지점은 전혀 다른 사실이다."""
+    from src.sectors.commute.inspect import by_trigger
+
+    leave = _at(*CITY_HALL, 7)
+    tap = Observation(
+        source="shortcuts",
+        kind="location",
+        value=20.0,
+        at=BASE.replace(hour=8),
+        meta={"lat": GANGNAM[0], "lon": GANGNAM[1], "trigger": "tmoney"},
+    )
+    groups = by_trigger([leave, tap])
+    assert set(groups) == {"(라벨 없음)", "tmoney"}
+    assert len(groups["tmoney"]) == 1
+
+
+def test_라벨이_없어도_죽지_않는다() -> None:
+    from src.sectors.commute.inspect import by_trigger
+
+    groups = by_trigger([_at(*CITY_HALL, 9)])
+    assert list(groups) == ["(라벨 없음)"]
