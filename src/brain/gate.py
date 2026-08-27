@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict
 
-from src.brain.memory import SpeechLog
+from src.brain.memory import InMemorySpeechLog, SpeechLog
 from src.core.models import Insight, Severity
 
 
 @dataclass
 class Gate:
-    log: SpeechLog = field(default_factory=SpeechLog)
+    log: SpeechLog = field(default_factory=InMemorySpeechLog)
     min_severity: Severity = Severity.NOTABLE
     cooldown: timedelta = timedelta(hours=6)
     # 트리거마다 적정 재발화 간격이 다르다. 수집 중단처럼 상태가 계속

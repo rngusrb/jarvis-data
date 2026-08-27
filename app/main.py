@@ -34,6 +34,7 @@ from src.core.metrics import MetricRegistry
 from src.runtime.ingest import router as ingest_router
 from src.runtime.loop import JarvisLoop
 from src.sectors import commute, health
+from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.triggers.stale import StaleDataTrigger
 
@@ -70,7 +71,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         StaleDataTrigger(kind=m.kind, label=m.label, stale_after=m.stale_after)
         for m in metrics.active()
     ]
-    gate = Gate(cooldown_overrides={t.name: timedelta(days=1) for t in stale})
+    # 발화 기억은 DB에 남긴다. 메모리에만 두면 재시작할 때마다 쿨다운이
+    # 풀려서, 주 단위로 말하기로 한 신호가 배포할 때마다 되풀이된다.
+    gate = Gate(
+        log=SQLiteSpeechLog(settings.db_path),
+        cooldown_overrides={
+            **{t.name: timedelta(days=1) for t in stale},
+        },
+    )
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
         gate=gate,
