@@ -54,12 +54,31 @@ message: "app/ 은 조립만 한다 — 판단·집계·발송 로직은 플랫�
 
 ```
 tests:
+  - tests/integration/test_startup.py
   - tests/invariants/test_boundaries.py
 ```
 
 ```bash
 python scripts/harness.py app/
 ```
+
+---
+
+## 금지사항
+
+### ❌ 섹터 속성을 getattr 로 봐주지 않는다
+```python
+# ❌ 금지 — getattr(sector, "TRACES", [])
+# ✅ 대신 — sector.TRACES (없으면 기동이 실패해야 한다)
+```
+**사고 이력**: 2026-08-28. health 섹터에만 `TRACES` 가 없어서 서버가 기동
+즉시 죽고 재시작을 반복했다. 그런데 `harness all` 은 통과했다 —
+**app/main.py 를 import 하는 테스트가 하나도 없었다.** 전부를 무너뜨릴 수
+있는 유일한 파일에 커버리지가 0이었다.
+
+봐주는 쪽으로 고치면 안 된다. getattr 기본값을 두는 순간 "어떤 섹터는 뭘
+안 낸다"는 예외가 생기고, 다음 사람은 뭘 내야 하는지 알 수 없게 된다.
+계약을 지키게 하고, 안 지키면 **테스트에서** 죽인다.
 
 ---
 
