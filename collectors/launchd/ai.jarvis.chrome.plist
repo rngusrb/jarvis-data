@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  크롬 기록 수집기를 맥에서 한 시간마다 돌린다.
+
+  설치:
+    cp collectors/launchd/ai.jarvis.chrome.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/ai.jarvis.chrome.plist
+
+  확인:  tail -f /tmp/jarvis-chrome.log
+  중지:  launchctl unload ~/Library/LaunchAgents/ai.jarvis.chrome.plist
+
+  경로와 토큰은 각자 환경에 맞게 고친다. 토큰을 여기 적는 게 마음에 걸리면
+  ~/.zshrc 에 두고 이 파일에서는 지운다 — launchd 는 로그인 셸을 안 거치므로
+  그때는 ProgramArguments 를 `zsh -lc "..."` 로 감싸야 한다.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.jarvis.chrome</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/guhyeongyu/dev/jarvis-data/collectors/chrome_history.py</string>
+        <!-- 한 시간마다 돌면서 세 시간치를 읽는다. 겹치는 건 서버가 무시하고,
+             맥이 잠들어 한두 번 건너뛰어도 구멍이 안 난다. -->
+        <string>--hours</string>
+        <string>3</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JARVIS_SERVER</key>
+        <string>http://100.98.90.38:8100</string>
+        <key>JARVIS_INGEST_TOKEN</key>
+        <string>여기에-토큰</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <!-- 맥을 켜면 바로 한 번 돈다. 밤새 꺼져 있었으면 그동안 폰에서 본 것이
+         동기화돼 들어와 있다. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/jarvis-chrome.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/jarvis-chrome.log</string>
+</dict>
+</plist>
