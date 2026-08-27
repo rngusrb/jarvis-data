@@ -2,8 +2,12 @@
 
 문이 두 개고 쓰임이 다르다.
 
-  POST /ingest        이미 숫자 하나로 정리된 지표 (걸음수 합계, 심박 평균)
-  POST /ingest/spans  구간 원본을 그대로 받아 서버가 집계 (수면)
+  POST /ingest         이미 숫자 하나로 정리된 지표 (걸음수 합계, 심박 평균)
+  POST /ingest/spans   구간 원본을 그대로 받아 서버가 집계 (수면)
+  POST /ingest/samples 표본 원본 (위치처럼 하루 여러 점)
+  POST /ingest/traces  **숫자가 아닌 흔적** (검색어, 파일명, 앱 실행)
+
+앞의 셋은 관측치(숫자)로, 마지막 하나는 흔적(텍스트)으로 떨어진다.
 
 수면이 후자인 이유는 **조각 수가 측정 품질 신호**이기 때문이다. 아이폰이 합산해서
 "4.71시간"만 보내면 그 정보가 사라지고, 측정 실패한 밤을 걸러낼 수 없게 된다.
@@ -40,8 +44,10 @@ from src.core.folding import (
     nights_from_spans,
 )
 from src.core.metrics import Fold, Metric, MetricRegistry
-from src.core.models import Observation
+from src.core.models import Observation, Trace
+from src.core.traces import TraceKind, TraceRegistry
 from src.storage.sqlite import SQLiteStore
+from src.storage.traces import SQLiteTraceStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -122,6 +128,30 @@ class SpanIngestRequest(BaseModel):
     spans: List[SpanIn]
 
 
+class TraceIn(BaseModel):
+    at: datetime
+    # 사람이 읽는 것. 프롬프트에 들어가는 게 이 값이다.
+    text: str
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TraceIngestRequest(BaseModel):
+    # 흔적은 출처가 제각각이라 기본값이 없다. 크롬 기록과 파일 목록을 같은
+    # source로 묶으면 어느 수집기가 멈췄는지 구별할 수 없다.
+    source: str
+    kind: str
+    traces: List[TraceIn]
+
+
+class TraceIngestResponse(BaseModel):
+    # 받은 수와 저장된 수를 나눠 돌려준다. 수집기가 겹치는 구간을 다시 읽는 건
+    # 정상 동작이라 둘이 다른 게 기본이고, 그 차이가 안 보이면 수집기가
+    # 제대로 도는지 알 수 없다.
+    received: int
+    written: int
+    kind: str
+
+
 class IngestResponse(BaseModel):
     written: int
     observations: List[Dict[str, Any]] = Field(default_factory=list)
@@ -191,6 +221,23 @@ def _lookup(request: Request, kind: str) -> Metric:
             detail=f"'{kind}'는 등록되지 않은 지표다. 아는 것: {known}",
         )
     return metric
+
+
+def _trace_kind(request: Request, kind: str) -> TraceKind:
+    """흔적 카드를 찾는다. 지표와 같은 이유로 등록 안 된 종류는 거절한다.
+
+    오타 하나가 조용히 새 종류를 만들면, 몇 주 뒤 "web_visit 와 web_visits 가
+    둘 다 있는데 어느 게 진짜냐"를 풀어야 한다.
+    """
+    registry: TraceRegistry = request.app.state.trace_kinds
+    card = registry.get(kind)
+    if card is None:
+        known = ", ".join(c.kind for c in registry.all()) or "(등록된 흔적 종류 없음)"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"'{kind}'는 등록되지 않은 흔적 종류다. 아는 것: {known}",
+        )
+    return card
 
 
 def _metric(request: Request, kind: str, expected: Fold) -> Metric:
@@ -335,6 +382,42 @@ def ingest_samples(
     logger.info("표본 수집 — %s %d개 → %d일치", payload.kind, len(points), written)
     _wake_jarvis(request, background, written)
     return IngestResponse(written=written, observations=_summarize(observations), received=received)
+
+
+@router.post(
+    "/ingest/traces", response_model=TraceIngestResponse, dependencies=[Depends(_verify_token)]
+)
+def ingest_traces(payload: TraceIngestRequest, request: Request) -> TraceIngestResponse:
+    """숫자가 아닌 흔적을 받는다 — 검색어, 파일명, 앱 실행.
+
+    다른 문들과 달리 자비스를 깨우지 않는다. 흔적 하나로는 말할 거리가 안
+    되기 때문이다. "전세대출을 검색했다"고 알림을 보내는 건 이상하다.
+    흔적은 쌓였다가 회고가 훑을 때 의미가 된다.
+    """
+    card = _trace_kind(request, payload.kind)
+    store: SQLiteTraceStore = request.app.state.traces
+
+    traces = [
+        Trace(
+            source=payload.source,
+            kind=card.kind,
+            text=item.text.strip(),
+            at=item.at,
+            meta=item.meta,
+        )
+        for item in payload.traces
+        # 빈 텍스트는 흔적이 아니다. 저장하면 프롬프트에 빈 줄만 늘어난다.
+        if item.text.strip()
+    ]
+    written = store.write(traces)
+    logger.info(
+        "흔적 수집 — %s %s 받은 %d개 중 %d개 새로 저장",
+        payload.source,
+        card.label,
+        len(payload.traces),
+        written,
+    )
+    return TraceIngestResponse(received=len(payload.traces), written=written, kind=card.kind)
 
 
 @router.get("/health")

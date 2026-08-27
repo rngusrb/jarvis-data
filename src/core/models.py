@@ -41,6 +41,29 @@ class Observation:
 
 
 @dataclass(frozen=True)
+class Trace:
+    """사용자가 남긴 **비정형 흔적** 하나.
+
+    `Observation` 과 같은 자리에 시간축으로 박히지만 값이 숫자가 아니라
+    텍스트다. 그 차이가 전부를 가른다 — 관측치는 접히고(평균·합계) 흔적은
+    안 접힌다. "전세자금대출 금리"를 일곱 개 모아 평균 낼 수는 없다.
+
+    그래서 흔적에는 지표 카드의 `Fold` 에 해당하는 게 없다. 대신 쌓이고,
+    나중에 회고가 훑어서 `Belief`(믿음)로 요약한다.
+
+    `text` 는 **사람이 읽는 것**이다. 검색어, 파일 이름, 앱 이름. URL 이나
+    파일 경로처럼 기계가 쓰는 건 `meta` 로 간다. 프롬프트에 들어가는 게
+    `text` 라서, 여기에 잡음을 넣으면 판단 품질이 그대로 나빠진다.
+    """
+
+    source: str
+    kind: str
+    text: str
+    at: datetime
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Insight:
     """자비스가 사용자에게 말할 수 있는 "후보".
 

@@ -67,4 +67,5 @@ python scripts/harness.py app/
 
 | 파일 | 책임 |
 |------|------|
+| `reflect.py` | 회고 CLI. 흔적을 훑어 믿음을 갱신한다 (수동 실행) |
 | `main.py` | 섹터 등록 → 지표 레지스트리 → 트리거·에이전트·채널 조립 → FastAPI |
