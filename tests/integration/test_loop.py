@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
-from src.core.models import Observation
+from src.core.models import Insight, Observation, Severity
 from src.runtime.loop import JarvisLoop
 from src.sectors.health.triggers import SleepDropTrigger
 
@@ -114,3 +114,69 @@ def test_발송이_터져도_루프는_살아있다() -> None:
         channel=BrokenChannel(),
     )
     assert asyncio.run(loop.run_once()) == 0
+
+
+@dataclass
+class BrokenReasoner:
+    """두뇌가 죽어 있는 상태. vLLM 로딩 중이 정확히 이렇다."""
+
+    calls: int = 0
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.calls += 1
+        raise ConnectionError("Server disconnected without sending a response.")
+
+
+@dataclass
+class AlwaysFires:
+    """무조건 신호를 내는 트리거. 순서 효과만 보려고 판단 로직을 뺐다."""
+
+    name: str
+    kind: str = "sleep_hours"
+    lookback: timedelta = timedelta(days=21)
+
+    def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
+        return Insight(
+            trigger=self.name,
+            summary=f"{self.name} 신호",
+            severity=Severity.URGENT,
+            at=now,
+        )
+
+
+def test_broken_brain_does_not_silence_later_triggers() -> None:
+    """실제 사고의 재현.
+
+    2026-08-27 아침, vLLM이 로딩되는 10분 동안 판단이 예외로 터졌다.
+    그 예외가 _cycle 밖으로 새면서 **뒤에 선 트리거들은 검사조차 되지
+    않았다**. 두뇌가 죽었다고 수집 중단 감지까지 멎으면 안 된다.
+    """
+    reasoner = BrokenReasoner()
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("first"), AlwaysFires("second"), AlwaysFires("third")],
+        agent=JarvisAgent(reasoner=reasoner),
+        channel=RecordingChannel(),
+    )
+
+    sent = asyncio.run(loop.run_once())
+
+    assert sent == 0
+    # 핵심: 첫 트리거에서 멈추지 않고 셋 다 판단까지 갔다.
+    assert reasoner.calls == 3
+
+
+def test_broken_brain_leaves_no_cooldown_behind() -> None:
+    """말하지 못한 신호는 "말했다"로 기록되면 안 된다.
+
+    기록되면 두뇌가 살아난 뒤에도 쿨다운 내내 침묵한다.
+    """
+    agent = JarvisAgent(reasoner=BrokenReasoner())
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("chronic_short_sleep")],
+        agent=agent,
+        channel=RecordingChannel(),
+    )
+    asyncio.run(loop.run_once())
+    assert agent.gate.log.last("chronic_short_sleep") is None

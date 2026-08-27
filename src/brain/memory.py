@@ -4,15 +4,21 @@
 같은 말을 반복한다. 게이트(쿨다운)와 맥락 제공자가 함께 읽는 공용 기억이라
 따로 떼어냈다.
 
-지금은 메모리에만 있어서 프로세스가 죽으면 날아간다. 저장소 레이어가 생기면
-이 클래스의 구현만 갈아끼우면 된다 — 읽는 쪽 코드는 그대로다.
+구현이 둘이다.
+
+  - `InMemorySpeechLog` : 테스트와 일회성 실행용. 프로세스가 죽으면 날아간다.
+  - `SQLiteSpeechLog`   : 실제 운영용 (src/storage/speech.py).
+
+쿨다운이 몇 시간짜리일 때는 메모리로도 버텼다. 주 단위 쿨다운이 생기면서
+버틸 수 없게 됐다 — 재시작 한 번에 "요즘 잠이 부족하네요"를 다시 하게 된다.
+서버는 배포할 때마다 재시작되므로 그건 곧 알림 스팸이다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Protocol
 
 
 @dataclass(frozen=True)
@@ -22,8 +28,18 @@ class SpeechRecord:
     text: str
 
 
+class SpeechLog(Protocol):
+    """발화 기억이 만족해야 할 전부. 읽는 쪽은 어느 구현인지 몰라도 된다."""
+
+    def record(self, trigger: str, at: datetime, text: str) -> None: ...
+
+    def last(self, trigger: str) -> Optional[SpeechRecord]: ...
+
+    def since(self, moment: datetime) -> List[SpeechRecord]: ...
+
+
 @dataclass
-class SpeechLog:
+class InMemorySpeechLog:
     _by_trigger: Dict[str, List[SpeechRecord]] = field(default_factory=dict)
 
     def record(self, trigger: str, at: datetime, text: str) -> None:
