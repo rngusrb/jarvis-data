@@ -57,6 +57,24 @@ def build_channel(settings: Settings) -> Channel:
     return ConsoleChannel()
 
 
+def build_reflector(settings: Settings) -> Reflector:
+    """회고를 조립한다.
+
+    수신구와 따로 떼어둔 건 CLI(`app/reflect.py`)가 같은 걸 쓰기 때문이다.
+    섹터를 아는 파일은 여전히 이 파일 하나여야 해서(불변식이 집행한다),
+    CLI 는 섹터가 아니라 이 함수를 가져다 쓴다.
+    """
+    trace_kinds = TraceRegistry()
+    for sector in SECTORS:
+        trace_kinds.register(sector.TRACES)
+    return Reflector(
+        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+        traces=SQLiteTraceStore(settings.db_path),
+        beliefs=SQLiteBeliefStore(settings.db_path),
+        kinds=trace_kinds.all(),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
@@ -120,13 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # **회고**한다. 재료도 주기도 달라서 같은 루프에 넣을 수 없다 —
     # "어젯밤 2.7시간"은 30분 안에 말해야 하고, "요즘 이사를 알아보네"는
     # 일주일치가 모여야 보인다.
-    reflector = Reflector(
-        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
-        traces=app.state.traces,
-        beliefs=SQLiteBeliefStore(settings.db_path),
-        kinds=trace_kinds.all(),
-    )
-    app.state.reflector = reflector
+    app.state.reflector = build_reflector(settings)
 
     task = asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))
     logger.info(
