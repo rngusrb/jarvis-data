@@ -99,6 +99,10 @@ class SQLiteBeliefStore:
             if item not in merged:
                 merged.append(item)
 
+        # 승격은 **시간이 지나 근거가 또 나왔다**는 뜻이어야 한다. 같은 회고
+        # 안에서 두 번 관측된 걸로 올려주면 한 번의 실행이 스스로를 확정시킨다.
+        promoted = Status.CONFIRMED if now > existing.last_seen else existing.status
+
         updated = Belief(
             kind=existing.kind,
             # 값은 새 관측을 따른다. 관심사는 "이사 알아보는 중"에서
@@ -108,7 +112,7 @@ class SQLiteBeliefStore:
             first_seen=existing.first_seen,
             last_seen=now,
             evidence=tuple(merged[-MAX_EVIDENCE:]),
-            status=Status.CONFIRMED,
+            status=promoted,
             meta={**existing.meta, **belief.meta},
         )
         self._write(updated)

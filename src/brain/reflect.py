@@ -32,7 +32,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.brain.client import Reasoner
 from src.core.beliefs import Belief
@@ -51,6 +51,7 @@ SYSTEM_PROMPT = """너는 한 사람의 개인 데이터를 관리하는 에이�
 - 근거로 쓴 흔적의 텍스트를 그대로 인용한다. 인용 못 하면 그 믿음은 만들지 않는다.
 - 흔적 하나짜리는 관심사가 아니라 스쳐간 호기심이다. 만들지 않는다.
 - 이미 있는 믿음과 같은 것이면 새로 만들지 말고 그 kind를 그대로 쓴다.
+- 한 응답 안에서 같은 kind를 두 번 쓰지 않는다. 다른 것이면 kind를 다르게 짓는다.
 
 JSON 배열로만 답한다. 다른 말은 쓰지 않는다.
 
@@ -103,7 +104,7 @@ class Reflector:
         prompt = self._build_prompt(harvest, now)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
 
-        for item in _parse(reply):
+        for item in _merge_by_kind(_parse(reply)):
             belief = self._to_belief(item, now, result)
             if belief is not None:
                 result.learned.append(self.beliefs.observe(belief, now))
@@ -151,7 +152,7 @@ class Reflector:
     ) -> Optional[Belief]:
         kind = str(item.get("kind", "")).strip()
         value = str(item.get("value", "")).strip()
-        evidence = tuple(str(e).strip() for e in item.get("evidence", []) if str(e).strip())
+        evidence = _unique(str(e).strip() for e in item.get("evidence", []))
 
         if not kind or not value:
             result.skipped.append(f"kind나 value가 비었다: {item!r:.80}")
@@ -201,3 +202,47 @@ def _parse(reply: str) -> List[Dict[str, Any]]:
         logger.warning("회고 응답 JSON 파싱 실패: %.200s", match.group(0))
         return []
     return [item for item in parsed if isinstance(item, dict)]
+
+
+def _unique(items: Iterable[str]) -> Tuple[str, ...]:
+    """순서를 지키며 중복을 뺀다.
+
+    같은 검색어를 네 번 했다고 근거가 네 개가 되면 확신도가 부풀려진다.
+    반복 자체는 신호지만(못 알아냈다는 뜻이다) 그건 `value` 가 말할 일이지
+    근거를 늘려서 표현할 일이 아니다.
+    """
+    seen: List[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.append(item)
+    return tuple(seen)
+
+
+def _merge_by_kind(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """한 응답 안에서 같은 kind를 하나로 합친다.
+
+    실제 사고: 모델이 "관심사:개발"을 네 번 반환했다. 저장소는 kind가
+    기본키라 서로 덮어썼고, **값은 마지막 것이 남고 근거는 전부 합쳐져
+    짝이 어긋났다** — "AI 코딩 어시스턴트 비교"라는 값에 농수산물 가격
+    조회가 근거로 붙었다. 출처 추적이 이 구조의 존재 이유인데 그게 깨진다.
+
+    합칠 때 값은 **근거가 가장 많은 쪽**을 쓴다. 모델이 같은 kind를 쪼개
+    내놓았다면 그중 가장 두껍게 뒷받침된 것이 그 kind의 대표다.
+    """
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        kind = str(item.get("kind", "")).strip()
+        grouped.setdefault(kind, []).append(item)
+
+    merged: List[Dict[str, Any]] = []
+    for kind, group in grouped.items():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        best = max(group, key=lambda i: len(i.get("evidence", []) or []))
+        evidence: List[str] = []
+        for item in group:
+            evidence.extend(str(e) for e in item.get("evidence", []) or [])
+        logger.info("회고 — '%s'를 %d조각으로 내놔서 합쳤다", kind, len(group))
+        merged.append({**best, "evidence": list(_unique(evidence))})
+    return merged

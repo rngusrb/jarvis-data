@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.brain.reflect import Reflector, _parse
-from src.core.beliefs import FORGET_AFTER, Belief
+from src.core.beliefs import FORGET_AFTER, Belief, Status
 from src.core.models import Trace
 from src.core.traces import TraceKind
 from src.storage.beliefs import SQLiteBeliefStore
@@ -117,3 +117,48 @@ def test_parse_tolerates_fences_and_chatter() -> None:
     assert _parse(messy) == [{"kind": "a", "value": "b"}]
     assert _parse("설명만 하고 배열이 없음") == []
     assert _parse("") == []
+
+
+SPLIT = """[
+  {"kind": "관심사:개발", "value": "RAG 공부",
+   "evidence": ["검색: bm25 vs bge m3", "임베딩 방식 - Claude"]},
+  {"kind": "관심사:개발", "value": "코딩 도구 비교",
+   "evidence": ["Claude Code 문서"]}
+]"""
+
+
+def test_same_kind_in_one_reply_is_merged(tmp_path: Path) -> None:
+    """실제 사고의 재현.
+
+    모델이 "관심사:개발"을 네 조각으로 내놨다. 저장소는 kind가 기본키라
+    서로 덮어썼고, 값은 마지막 것이 남고 근거는 전부 합쳐져 **짝이
+    어긋났다** — "코딩 어시스턴트 비교"에 농수산물 가격이 근거로 붙었다.
+    """
+    result = asyncio.run(_build(tmp_path, SPLIT).run_once(NOW))
+
+    assert len(result.learned) == 1
+    learned = result.learned[0]
+    # 값은 근거가 두꺼운 쪽을 따른다.
+    assert learned.value == "RAG 공부"
+    assert learned.evidence == ("검색: bm25 vs bge m3", "임베딩 방식 - Claude", "Claude Code 문서")
+
+
+def test_one_run_cannot_confirm_itself(tmp_path: Path) -> None:
+    """후보→확정은 "나중에 또 나왔다"는 뜻이어야 한다."""
+    result = asyncio.run(_build(tmp_path, SPLIT).run_once(NOW))
+    assert result.learned[0].status is Status.CANDIDATE
+
+
+def test_repeated_evidence_counts_once(tmp_path: Path) -> None:
+    """같은 검색을 네 번 했다고 근거가 네 개가 되면 확신이 부풀려진다.
+
+    반복 자체는 신호지만(못 알아냈다는 뜻이다) 그건 value 가 말할 일이다.
+    """
+    repeated = """[{"kind": "관심사:일상", "value": "애플워치 워키토키를 못 알아냄",
+      "evidence": ["검색: 애플워치 워키토키 사용법", "검색: 애플워치 워키토키 사용법",
+                   "검색: 애플워치 워키토키 사용법", "검색: 애플워치 워키토키 켜기"]}]"""
+    result = asyncio.run(_build(tmp_path, repeated).run_once(NOW))
+    assert result.learned[0].evidence == (
+        "검색: 애플워치 워키토키 사용법",
+        "검색: 애플워치 워키토키 켜기",
+    )
