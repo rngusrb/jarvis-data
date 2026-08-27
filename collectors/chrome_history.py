@@ -6,7 +6,10 @@
 크롬은 기기 간 동기화를 하므로 아이폰에서 본 것도 맥 DB에 들어온다.
 시크릿 모드는 애초에 기록에 안 남아서 따로 거를 필요가 없다.
 
-    python collectors/chrome_history.py --hours 6
+    python collectors/chrome_history.py --hours 6 --dry-run   # 뭐가 갈지 먼저 본다
+    JARVIS_INGEST_TOKEN=... python collectors/chrome_history.py --hours 6
+
+한 시간마다 자동으로 돌리려면 `collectors/launchd/` 의 plist 를 쓴다.
 
 ## 알아둘 함정 둘
 
