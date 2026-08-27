@@ -56,7 +56,17 @@ class JarvisLoop:
             if insight is None:
                 continue
 
-            message = await self.agent.consider(insight, now)
+            try:
+                message = await self.agent.consider(insight, now)
+            except Exception:
+                # 판단 실패도 발송 실패와 똑같이 다뤄야 한다. 여기서 예외가
+                # 위로 새면 이 주기의 **뒤에 선 트리거들이 통째로 건너뛰어진다** —
+                # 두뇌 하나가 죽었다고 수집 중단 감지까지 멎는 건 말이 안 된다.
+                # 실제 사고: vLLM이 로딩되는 10분 동안 아침 신호 4건이 이렇게
+                # 사라졌고, 로그에 트레이스백만 남아 아무도 모르고 지나갔다.
+                logger.exception("판단 실패 — 건너뛴다: %s", insight.trigger)
+                continue
+
             if message is None:
                 logger.debug("말 안 걸기로 함: %s", insight.trigger)
                 continue
