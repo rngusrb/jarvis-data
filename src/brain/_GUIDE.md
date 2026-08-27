@@ -89,6 +89,7 @@ python scripts/harness.py src/brain/
 | 파일 | 책임 |
 |------|------|
 | `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
+| `reflect.py` | 회고 루프. 흔적을 훑어 믿음을 만들고 시들게 한다 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
 | `gate.py` | 싼 필터. severity 임계값 + 트리거별 쿨다운 |
 | `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지 |

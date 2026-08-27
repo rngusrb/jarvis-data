@@ -26,23 +26,27 @@ from src.brain.providers import (
     ObservationTrendProvider,
     SpeechHistoryProvider,
 )
+from src.brain.reflect import Reflector
 from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
 from src.core.metrics import MetricRegistry
+from src.core.traces import TraceRegistry
 from src.runtime.ingest import router as ingest_router
 from src.runtime.loop import JarvisLoop
-from src.sectors import commute, health
+from src.sectors import commute, health, interest
+from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
+from src.storage.traces import SQLiteTraceStore
 from src.triggers.stale import StaleDataTrigger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
 # 켜져 있는 섹터. 각 섹터는 METRICS 와 TRIGGERS 를 내보낸다.
-SECTORS = [health, commute]
+SECTORS = [health, commute, interest]
 
 
 def build_channel(settings: Settings) -> Channel:
@@ -61,11 +65,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 섹터를 켜는 유일한 자리. 새 섹터를 추가하려면 위 import 와 이 목록에
     # 한 줄씩이면 되고, 플랫폼은 열지 않는다.
     metrics = MetricRegistry()
+    trace_kinds = TraceRegistry()
     sector_triggers = []
     for sector in SECTORS:
         metrics.register(sector.METRICS)
+        trace_kinds.register(sector.TRACES)
         sector_triggers.extend(sector.TRIGGERS)
     app.state.metrics = metrics
+    app.state.trace_kinds = trace_kinds
 
     stale = [
         StaleDataTrigger(kind=m.kind, label=m.label, stale_after=m.stale_after)
@@ -97,6 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.settings = settings
     app.state.store = store
+    # 흔적은 관측치와 같은 DB 파일에 산다 — 백업 경로를 하나로 두려는 것.
+    app.state.traces = SQLiteTraceStore(settings.db_path)
 
     jarvis = JarvisLoop(
         source=store,
@@ -107,8 +116,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis
 
+    # 두 번째 루프. 첫 번째가 신호에 **반응**한다면 이건 쌓인 흔적을
+    # **회고**한다. 재료도 주기도 달라서 같은 루프에 넣을 수 없다 —
+    # "어젯밤 2.7시간"은 30분 안에 말해야 하고, "요즘 이사를 알아보네"는
+    # 일주일치가 모여야 보인다.
+    reflector = Reflector(
+        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+        traces=app.state.traces,
+        beliefs=SQLiteBeliefStore(settings.db_path),
+        kinds=trace_kinds.all(),
+    )
+    app.state.reflector = reflector
+
     task = asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))
-    logger.info("자비스 기동 — 관측치 %d건, 주기 %d초", store.count(), settings.loop_interval_sec)
+    logger.info(
+        "자비스 기동 — 관측치 %d건, 흔적 %d건, 주기 %d초",
+        store.count(),
+        app.state.traces.count(),
+        settings.loop_interval_sec,
+    )
 
     try:
         yield
