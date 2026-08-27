@@ -31,6 +31,23 @@ iterparse 를 써도 트리가 루트 밑에 쌓여 결국 같은 결과가 된�
 
 ## 금지사항
 
+### ❌ 절대 기준을 **하루치**에 걸지 않는다
+```python
+# ❌ 금지 — 어젯밤이 6시간 미만이면 알림
+# ✅ 대신 — 최근 기록 7개의 **평균**이 6시간 미만이면 알림
+```
+**사고 이력**: 2026-08-27. 이 사용자가 2.77시간을 잤는데 자비스가 침묵했다.
+최근 7개 평균이 3.91시간이라 차이가 1.14시간, `SleepDropTrigger` 문턱(1.5)에
+못 미쳤다 — **평소가 망가지면 급락이 안 보인다.** 그래서 `ChronicShortSleepTrigger`
+에서만 절대 기준을 쓴다 (CLAUDE.md 원칙에 대한 의도적 예외).
+
+다만 하루치에 걸면 안 된다. 이 사용자의 4개월치에 "어젯밤 7시간 미만" 기준을
+대면 83일 중 73일(88%)에 울린다. 만성인 사람에게 매일 잔소리하는 건 정확히
+저 원칙이 막으려던 실패다. **추세에 걸면 상태가 실제로 바뀔 때까지 조용하다.**
+
+급변은 여전히 baseline 으로 본다. 두 트리거는 서로 다른 것을 말한다 —
+"어젯밤이 유난했다" 와 "요즘이 계속 이렇다".
+
 ### ❌ 여러 기기 표본을 그냥 더하지 않는다
 ```python
 # ❌ 금지
@@ -84,6 +101,8 @@ message: "섹터는 다른 섹터를 모른다"
 tests:
   - tests/unit/test_health_parser.py
   - tests/integration/test_ingest_spans.py
+  - tests/unit/test_sleep_trigger.py
+  - tests/unit/test_chronic_sleep_trigger.py
 ```
 
 ```bash
@@ -97,5 +116,6 @@ python scripts/harness.py src/sectors/health/
 | 파일 | 책임 |
 |------|------|
 | `metrics.py` | 지표 카드 4장 (수면·걸음수·휴식기 심박 + 접은 원본 심박) |
+| `triggers.py` | 수면 트리거 둘 — 급변(baseline) + 만성(절대 기준·추세) |
 | `parser.py` | 애플 XML 스트리밍 파싱. 레코드 → 관측치 |
 | `backfill.py` | export.xml 일회성 주입 CLI |
