@@ -105,8 +105,15 @@ iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 
 
 | 소스 | 방식 | 상태 |
 |------|------|------|
-| Apple Health (수면·걸음·심박) | push (단축어) | ✅ |
-| iMessage | pull (`~/Library/Messages/chat.db`) | 미착수 |
-| 캘린더 | pull (CalDAV/.ics) | 미착수 |
-| 위치 (이동관리) | push (단축어 위치 자동화) | 미착수 |
+| 수면 | push (기상 자동화 → `/ingest/spans`) | ✅ |
+| 휴식기 심박 | push (기상 자동화 → `/ingest/samples`) | ✅ |
+| 위치 (이동관리) | push (떠날 때·지갑 자동화, `trigger` 라벨) | ✅ |
+| 브라우저 기록 | pull (맥 크롬 DB → `/ingest/traces`) | ✅ |
+| 걸음수 / 원본 심박 | — | 접음 (표본 수 폭발) |
+| 캘린더 | pull (CalDAV/.ics) | 미착수 — 수면의 "왜"를 알려줄 후보 |
+| 충전 시작 시각 | push (단축어) | 미착수 — 워치 미착용 밤을 메움 |
+| 사진 메타데이터 | push (단축어) | 미착수 — 스크린샷 급증이 의도 신호 |
 | 구매 이력 (쇼핑) | pull (이메일 영수증) | 미착수 |
+| 카카오톡 | — | 불가 (읽기 경로 없음). 앱 실행 빈도로 우회 |
+
+설치 절차는 [docs/SETUP.md](docs/SETUP.md) 에 있다.
