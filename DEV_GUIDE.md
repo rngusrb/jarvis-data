@@ -1,20 +1,26 @@
 # DEV_GUIDE — 아키텍처 지도
 
+> 이 문서는 **어디를 고치나**를 다룬다.
+> **왜 그렇게 생겼나**는 [docs/OVERVIEW.md](docs/OVERVIEW.md),
+> **어떻게 세우나**는 [docs/SETUP.md](docs/SETUP.md) 에 있다.
+
 ## 두 층, 한 방향
 
 ```
 ┌─ 플랫폼 (섹터가 뭐든 안 바뀐다) ──────────────────────┐
-│  core      도메인 모델 · 지표 카드 · 접는 계산 · 설정   │
-│  storage   SQLite 저장/조회                            │
-│  brain     게이트 → 맥락 → 추론 → 발화 결정            │
+│  core      도메인 모델 · 지표/흔적 카드 · 믿음 · 접는 계산 │
+│  storage   SQLite — 관측치 · 흔적 · 믿음 · 발화 기억     │
+│  brain     게이트 → 맥락 → 추론 → 발화 결정 · 회고       │
 │  channels  텔레그램 (→ 추후 iOS 푸시)                  │
 │  runtime   자비스 루프 · 수신구                        │
 │  triggers  변화 감지 (순수 함수)                       │
 └───────────────────────────────────────────────────────┘
                       ↑ 섹터만 위를 쓴다
 ┌─ 섹터 (계속 늘어난다) ────────────────────────────────┐
-│  sectors/health/   수면 · 걸음수 · 휴식기 심박          │
-│  (예정) commute · shopping · schedule                  │
+│  sectors/health/     수면 · 휴식기 심박                 │
+│  sectors/commute/    위치 · 이동 패턴                   │
+│  sectors/interest/   브라우저 흔적 → 관심사              │
+│  (예정) shopping · schedule                            │
 └───────────────────────────────────────────────────────┘
                       ↑
               app/main.py — 섹터를 아는 유일한 파일
@@ -29,9 +35,11 @@
 
 | 루프 | 주기 | 하는 일 |
 |------|------|---------|
-| 수집 (push) | 기상 시 | 아이폰 단축어 → `/ingest/*` |
+| 수집 (push) | 기상 시 · 떠날 때 · 지갑 탭 | 아이폰 단축어 → `/ingest/*` |
+| 수집 (pull) | 한 시간마다 | 맥 크롬 기록 → `/ingest/traces` |
 | 수집 (백필) | 수동 | `export.xml` → `src/sectors/health/backfill.py` |
-| 자비스 | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
+| 자비스 (반응) | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
+| 회고 | 주 단위 (지금은 수동) | 흔적 조회 → LLM → 믿음 갱신 · 망각 |
 
 애플 건강은 **push 만 가능하다** — HealthKit 은 기기 밖 조회 API가 없다.
 iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 에 수집기를 둔다.
@@ -67,6 +75,9 @@ iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 
 | 하고 싶은 것 | 볼 곳 |
 |-------------|-------|
 | **지표 추가** (예: 혈중산소) | `src/sectors/health/metrics.py` 에 카드 한 장 |
+| **흔적 종류 추가** (예: 앱 실행) | 섹터의 `traces.py` 에 카드 한 장 |
+| 믿음 수명 바꾸기 | `src/core/beliefs.py` — `FADE_AFTER` · `FORGET_AFTER` |
+| 회고 프롬프트 | `src/brain/reflect.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
 | 감지 기준 바꾸기 | `src/triggers/` — 백테스트 수치를 근거로 |
@@ -87,7 +98,8 @@ iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
 | `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
-| `Trigger` | 수면 급감 · 수집 중단 | 이동 · 쇼핑 |
+| `Trigger` | 수면 급감 · 만성 수면 부족 · 수집 중단 | 이동 · 쇼핑 |
+| `SpeechLog` | SQLite | — (메모리 구현은 테스트용) |
 | `Fold` | 구간 · 합계 · 평균 | 최대/최소 등 |
 
 ---

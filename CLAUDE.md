@@ -11,6 +11,7 @@
 | 파일 | 역할 |
 |------|------|
 | **CLAUDE.md** (이 파일) | 핵심 원칙 + 완료 스프린트 목록 |
+| **docs/OVERVIEW.md** | **왜 이렇게 생겼나.** 되돌리면 안 되는 결정과 사고 이력 |
 | **docs/SETUP.md** | 처음부터 돌리기까지. **폰 단축어 설정의 유일한 기록** |
 | **DEV_GUIDE.md** | 아키텍처 지도, "X를 바꾸려면 어디 봐라" 색인 |
 | **WORKFLOW.md** | 태스크 lifecycle, 역할, 심각도 기준 |
@@ -20,6 +21,7 @@
 | **docs/sprints/** | 완료 스프린트 아카이브 |
 
 **작업 시작 전 반드시**: DEV_GUIDE.md → TASKS.md → 해당 폴더/_GUIDE.md
+**처음 합류했다면**: [docs/OVERVIEW.md](docs/OVERVIEW.md) 부터
 
 ---
 
