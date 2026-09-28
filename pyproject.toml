@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-data"
 version = "0.1.0"
-description = "Personal data pipeline — Apple ecosystem life-log collection and analysis"
+description = "자비스 — 개인 데이터를 모아 먼저 말을 거는 로컬 AI 에이전트"
 requires-python = ">=3.11"
 dependencies = [
     "pandas>=2.0",
