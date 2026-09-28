@@ -24,7 +24,14 @@ class StaleDataTrigger:
     kind: str
     label: str
     name: str = ""
-    lookback: timedelta = timedelta(days=14)
+    # 감시견에게는 창이 없다. 다른 트리거는 baseline을 계산하려고 최근
+    # 구간만 보지만, 이쪽이 알아야 할 건 "마지막 기록이 언제냐" 하나다.
+    #
+    # 사고 이력: 2026-08-29 수집이 멈췄다. 자비스는 9월 12일까지 매일
+    # 경고했고 그 뒤로 침묵했다. 창이 14일이라 8월 29일 기록이 창 밖으로
+    # 밀려났고, 빈 창은 아래에서 "아직 시작 안 함"으로 판정됐다.
+    # **중단이 심해질수록 감시견이 조용해졌다.** 한 달을 그렇게 보냈다.
+    lookback: timedelta = timedelta(days=365 * 10)
     # 수면은 하루 한 번 들어온다. 36시간이면 하루를 통째로 건너뛴 것이라
     # 우연한 지연이 아니라 수집이 끊겼다고 봐야 한다.
     stale_after: timedelta = timedelta(hours=36)
@@ -39,6 +46,9 @@ class StaleDataTrigger:
         if not window:
             # 한 번도 들어온 적이 없는 것은 "멈춤"이 아니라 "아직 시작 안 함"이다.
             # 설정을 마치기도 전에 잔소리를 듣게 할 이유가 없다.
+            #
+            # 이 판정이 맞으려면 창이 전체 기록을 덮어야 한다. 좁은 창에서는
+            # "한 번도 없음"과 "오래전에 끊김"이 똑같이 빈 창으로 보인다.
             return None
 
         latest = max(window, key=lambda o: o.at)
