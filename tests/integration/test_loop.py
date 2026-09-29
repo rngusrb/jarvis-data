@@ -180,3 +180,85 @@ def test_broken_brain_leaves_no_cooldown_behind() -> None:
     )
     asyncio.run(loop.run_once())
     assert agent.gate.log.last("chronic_short_sleep") is None
+
+
+@dataclass
+class SkippingReasoner:
+    """무조건 말 안 걸기로 판정하는 두뇌."""
+
+    calls: int = 0
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.calls += 1
+        return "SKIP"
+
+
+def test_skip_consumes_the_cooldown() -> None:
+    """사고 재현 — 2026-09-29.
+
+    재시작 후 20시간 동안 LLM을 68번 부르고 2번 말했다. 게이트가 쿨다운을
+    넘겨 통과시키면 LLM이 SKIP을 내놓는데, 그 판정을 아무 데도 안 남겨서
+    30분 뒤 똑같이 물어봤다. **"싼 게이트 먼저, 비싼 LLM 나중"이 새고 있었다.**
+    """
+    reasoner = SkippingReasoner()
+    agent = JarvisAgent(reasoner=reasoner)
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("sleep_drop")],
+        agent=agent,
+        channel=RecordingChannel(),
+    )
+
+    # 세 주기를 연달아 돈다. 쿨다운(기본 6시간) 안이므로 LLM은 한 번만
+    # 불려야 한다.
+    for _ in range(3):
+        asyncio.run(loop.run_once())
+
+    assert reasoner.calls == 1
+
+
+def test_skip_does_not_pollute_what_jarvis_said() -> None:
+    """SKIP 판정이 맥락에 섞이면 자비스가 하지도 않은 말을 했다고 착각한다."""
+    agent = JarvisAgent(reasoner=SkippingReasoner())
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("sleep_drop")],
+        agent=agent,
+        channel=RecordingChannel(),
+    )
+    asyncio.run(loop.run_once())
+
+    # 게이트는 판단 시각을 안다.
+    last = agent.gate.log.last("sleep_drop")
+    assert last is not None and last.spoken is False
+    # 맥락 제공자는 못 본다.
+    assert agent.gate.log.since(BASE) == []
+
+
+def test_send_failure_still_retries() -> None:
+    """발송 실패는 판정이 아니라 사고다. 다시 시도돼야 한다.
+
+    이걸 SKIP 과 같이 취급하면, 사용자는 메시지를 못 받았는데 자비스는
+    "아까 말했지" 하고 쿨다운 내내 침묵한다.
+    """
+
+    @dataclass
+    class BrokenChannel:
+        name: str = "broken"
+
+        async def send(self, text: str) -> None:
+            raise ConnectionError("발송 실패")
+
+    reasoner = FakeReasoner()
+    agent = JarvisAgent(reasoner=reasoner)
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("sleep_drop")],
+        agent=agent,
+        channel=BrokenChannel(),
+    )
+    asyncio.run(loop.run_once())
+    asyncio.run(loop.run_once())
+
+    # 아무것도 기록되지 않았으므로 다음 기회에 다시 시도된다.
+    assert agent.gate.log.last("sleep_drop") is None
