@@ -67,3 +67,57 @@ def test_since_returns_in_time_order(tmp_path: Path) -> None:
     log.record("c", NOW - timedelta(days=5), "범위 밖")
     found = log.since(NOW - timedelta(hours=6))
     assert [r.text for r in found] == ["먼저", "나중"]
+
+
+def test_skip_survives_restart_and_holds_the_cooldown(tmp_path: Path) -> None:
+    """SKIP 판정도 재시작을 넘겨야 쿨다운이 유지된다."""
+    db = tmp_path / "jarvis.db"
+    SQLiteSpeechLog(db).record("stale_data:location", NOW, "말 안 걸기로 함", spoken=False)
+
+    reborn = SQLiteSpeechLog(db)
+    last = reborn.last("stale_data:location")
+    assert last is not None
+    assert last.spoken is False
+    # 게이트는 이걸 보고 막아야 한다.
+    insight = Insight(
+        trigger="stale_data:location",
+        summary="위치가 끊김",
+        severity=Severity.URGENT,
+        at=NOW,
+    )
+    gate = Gate(log=reborn, cooldown=timedelta(hours=6))
+    assert not gate.allows(insight, NOW + timedelta(hours=1))
+    assert gate.allows(insight, NOW + timedelta(hours=7))
+
+
+def test_since_hides_skips(tmp_path: Path) -> None:
+    """맥락 제공자는 실제로 한 말만 봐야 한다."""
+    log = SQLiteSpeechLog(tmp_path / "jarvis.db")
+    log.record("a", NOW - timedelta(hours=2), "실제로 한 말")
+    log.record("b", NOW - timedelta(hours=1), "말 안 걸기로 함", spoken=False)
+    assert [r.text for r in log.since(NOW - timedelta(hours=6))] == ["실제로 한 말"]
+
+
+def test_old_db_without_spoken_column_is_migrated(tmp_path: Path) -> None:
+    """이미 만들어진 DB에는 spoken 이 없다. 조용히 빼먹으면 게이트가 다시 샌다."""
+    import sqlite3
+
+    db = tmp_path / "jarvis.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE speech (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "trigger TEXT NOT NULL, at TEXT NOT NULL, text TEXT NOT NULL);"
+    )
+    conn.execute(
+        "INSERT INTO speech (trigger, at, text) VALUES (?, ?, ?)",
+        ("old", NOW.isoformat(), "옛 기록"),
+    )
+    conn.commit()
+    conn.close()
+
+    log = SQLiteSpeechLog(db)
+    last = log.last("old")
+    assert last is not None
+    assert last.text == "옛 기록"
+    # 옛 기록은 실제로 한 말로 본다 — 그때는 SKIP 을 저장하지 않았다.
+    assert last.spoken is True

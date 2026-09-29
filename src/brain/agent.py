@@ -44,4 +44,17 @@ class JarvisAgent:
         실패한 발송까지 기억에 남기면, 사용자는 메시지를 못 받았는데
         자비스는 "아까 말했지" 하고 쿨다운 내내 침묵한다.
         """
-        self.gate.log.record(insight.trigger, now, text)
+        self.gate.log.record(insight.trigger, now, text, spoken=True)
+
+    def confirm_silence(self, insight: Insight, now: datetime, reason: str) -> None:
+        """**말 안 걸기로 판정했을 때** 부른다.
+
+        발송 실패와 갈라놓는 게 핵심이다. 발송 실패는 다시 시도해야 하지만,
+        이건 판단이 끝난 것이다.
+
+        사고 이력: 2026-09-29. 20시간에 LLM 68번 호출 / 발화 2번. 게이트가
+        쿨다운을 넘겨 통과시키면 LLM이 SKIP을 내놓는데 그게 아무 데도 안
+        남아서 30분 뒤 똑같이 물어봤다. "싼 게이트 먼저, 비싼 LLM 나중"이
+        여기서 새고 있었다.
+        """
+        self.gate.log.record(insight.trigger, now, reason, spoken=False)
