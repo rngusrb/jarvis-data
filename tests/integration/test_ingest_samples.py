@@ -154,3 +154,28 @@ def test_등록_안_된_지표와_방식_불일치를_구별한다(tmp_path: Pat
     )
     assert wrong_door.status_code == 400
     assert "sum 방식" in wrong_door.json()["detail"]
+
+
+def test_빈_표본은_조용히_넘기지_않는다(tmp_path: Path, caplog: Any) -> None:
+    """사고 재현 — 2026-09-29.
+
+    기상 단축어가 휴식기 심박을 빈 배열로 보냈다. 서버는 200을 돌려주고
+    로그도 남기지 않았다. 폰은 "실행됨" 알림까지 띄우므로 양쪽 어디에도
+    흔적이 없고, "왜 데이터가 없지"를 30분 헤맸다.
+
+    워치를 안 차고 잔 밤이면 값이 아예 없는 게 정상 동작이다. 그래서 에러로
+    막는 게 아니라 **보이게** 만든다 — 정상과 고장을 구별할 수 있어야 한다.
+    """
+    import logging
+
+    body = {"kind": "resting_heart_rate", "samples": []}
+    with caplog.at_level(logging.INFO):
+        response = _client(tmp_path).post("/ingest/samples", json=body, headers=AUTH)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["written"] == 0
+    # 응답만 보고도 이유를 알 수 있어야 한다.
+    assert "resting_heart_rate" in payload["received"]["note"]
+    # 그리고 로그에 남아야 한다.
+    assert any("0개" in record.message for record in caplog.records)
