@@ -29,14 +29,28 @@ class JarvisAgent:
     providers: Sequence[ContextProvider] = ()
 
     async def consider(self, insight: Insight, now: datetime) -> Optional[str]:
-        """이 신호에 대해 사용자에게 건넬 말. 입 다물기로 하면 None."""
+        """이 신호에 대해 사용자에게 건넬 말. 입 다물기로 하면 None.
+
+        None을 돌려주는 경우가 둘인데 **뒤쪽만 기록한다.**
+
+          게이트가 막음   이미 쿨다운 중이다. 기록할 판단이 없다.
+          LLM이 SKIP      판단이 끝났다. 기록해야 쿨다운이 소모된다.
+
+        둘을 구별할 수 있는 건 이 함수뿐이라 기록도 여기서 한다. 밖에서
+        None만 보고 기록하면 게이트가 막을 때마다 새 기록이 쌓이고,
+        **쿨다운 시계가 계속 앞으로 밀려 영영 말을 못 하게 된다**
+        (사고 이력: 2026-09-30, SKIP 52건이 0~9분 간격으로 쌓였다).
+        """
         if not self.gate.allows(insight, now):
             return None
 
         blocks = assemble(self.providers, insight, now)
         prompt = build_prompt(insight, blocks)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
-        return parse_decision(reply)
+        message = parse_decision(reply)
+        if message is None:
+            self.confirm_silence(insight, now, "말 안 걸기로 함")
+        return message
 
     def confirm_spoken(self, insight: Insight, now: datetime, text: str) -> None:
         """발송에 **성공했을 때만** 부른다.
