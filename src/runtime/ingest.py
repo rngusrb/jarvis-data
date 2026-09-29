@@ -286,7 +286,15 @@ def ingest(payload: IngestRequest, request: Request, background: BackgroundTasks
     ]
     # 저장소가 (source, kind, at) 기준으로 덮어쓰므로 단축어가 두 번 울려도 안전하다.
     written = store.write(observations)
-    logger.info("수집 %d건 (source=%s)", written, payload.source)
+    # 받은 수와 저장된 수를 나눠 찍는다. 둘이 같으면 한 번 보고 넘어가지만,
+    # 0개가 도착한 걸 "수집 0건"으로만 적으면 보낸 쪽 문제인지 저장 쪽
+    # 문제인지 구별되지 않는다.
+    logger.info(
+        "수집 — 받은 %d건 → 저장 %d건 (source=%s)",
+        len(payload.observations),
+        written,
+        payload.source,
+    )
     _wake_jarvis(request, background, written)
     return IngestResponse(written=written, observations=_summarize(observations))
 
@@ -353,7 +361,17 @@ def ingest_samples(
         for item in payload.samples
     ]
     if not points:
-        return IngestResponse(written=0)
+        # 조용히 200을 돌려주면 안 된다. 폰은 "실행됨" 알림까지 띄우고,
+        # 서버 로그에도 흔적이 없어 나중에 "왜 데이터가 없지"를 30분 헤맨다.
+        #
+        # 사고 이력: 2026-09-29. 기상 단축어가 휴식기 심박을 빈 배열로 보냈다.
+        # 워치를 안 차고 잔 밤이면 애플 건강에 값이 아예 없어서 정상 동작인데,
+        # 그 사실이 아무 데도 안 남아 단축어 오류와 구별되지 않았다.
+        logger.info("표본 수집 — %s 0개. 보낼 값이 없었다(측정 없음 또는 필터)", payload.kind)
+        return IngestResponse(
+            written=0,
+            received={"samples": 0, "note": f"'{payload.kind}' 표본이 0개로 도착했다"},
+        )
 
     values = [p.value for p in points]
     received = {
