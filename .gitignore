@@ -15,3 +15,6 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 .harness_cache/
+# 빌드 산출물 — 다른 프로젝트 것이 섞여 들어온 적이 있다
+*.zip
+*.tar.gz
