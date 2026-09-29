@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
+from src.brain.gate import Gate
 from src.core.models import Insight, Observation, Severity
 from src.runtime.loop import JarvisLoop
 from src.sectors.health.triggers import SleepDropTrigger
@@ -262,3 +263,54 @@ def test_send_failure_still_retries() -> None:
 
     # 아무것도 기록되지 않았으므로 다음 기회에 다시 시도된다.
     assert agent.gate.log.last("sleep_drop") is None
+
+
+def test_gate_block_does_not_slide_the_cooldown() -> None:
+    """사고 재현 — 2026-09-30.
+
+    SKIP 을 기록하게 만들면서 **게이트가 막은 경우까지** 같이 기록했다.
+    그러면 막힐 때마다 새 기록이 쌓이고 쿨다운 시계가 계속 앞으로 밀려서
+    영영 말을 못 한다. 실제로 SKIP 52건이 0~9분 간격으로 쌓였고, 마지막
+    발화 이후 이틀간 한마디도 못 했다.
+
+    기록해야 할 건 **LLM의 판단**뿐이다. 게이트가 막은 건 이미 끝난 일이다.
+    """
+    reasoner = SkippingReasoner()
+    agent = JarvisAgent(reasoner=reasoner)
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("sleep_drop")],
+        agent=agent,
+        channel=RecordingChannel(),
+    )
+
+    asyncio.run(loop.run_once())
+    first = agent.gate.log.last("sleep_drop")
+    assert first is not None
+
+    # 쿨다운 안에서 여러 번 더 돈다. 게이트가 막으므로 기록이 늘면 안 된다.
+    for _ in range(5):
+        asyncio.run(loop.run_once())
+
+    still = agent.gate.log.last("sleep_drop")
+    assert still is not None
+    assert still.at == first.at, "게이트가 막았는데 기록이 갱신됐다 — 쿨다운이 밀린다"
+    assert reasoner.calls == 1
+
+
+def test_cooldown_actually_expires() -> None:
+    """쿨다운이 지나면 다시 판단해야 한다. 밀리기 시작하면 이게 깨진다."""
+    reasoner = SkippingReasoner()
+    agent = JarvisAgent(reasoner=reasoner, gate=Gate(cooldown=timedelta(hours=6)))
+    insight = Insight(trigger="sleep_drop", summary="테스트", severity=Severity.URGENT, at=BASE)
+
+    assert asyncio.run(agent.consider(insight, BASE)) is None
+    assert reasoner.calls == 1
+
+    # 쿨다운 안 — 게이트가 막고 LLM은 안 불린다.
+    assert asyncio.run(agent.consider(insight, BASE + timedelta(hours=1))) is None
+    assert reasoner.calls == 1
+
+    # 쿨다운 밖 — 다시 판단한다.
+    assert asyncio.run(agent.consider(insight, BASE + timedelta(hours=7))) is None
+    assert reasoner.calls == 2

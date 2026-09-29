@@ -68,10 +68,10 @@ class JarvisLoop:
                 continue
 
             if message is None:
-                # 판정을 기록해야 쿨다운이 소모된다. 안 그러면 게이트가
-                # 30분마다 같은 신호를 다시 통과시켜 LLM을 또 부른다.
-                self.agent.confirm_silence(insight, now, "말 안 걸기로 함")
-                logger.info("말 안 걸기로 함 — %s", insight.trigger)
+                # 기록은 agent.consider 안에서 한다. 여기서는 게이트가 막은
+                # 것인지 LLM이 판단한 것인지 구별할 수 없고, 구별 없이
+                # 기록하면 쿨다운이 영영 안 끝난다.
+                logger.debug("말 안 걸기로 함: %s", insight.trigger)
                 continue
 
             try:
