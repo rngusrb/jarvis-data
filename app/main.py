@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from src.brain.agent import JarvisAgent
 from src.brain.client import VLLMClient
+from src.brain.converse import Conversationalist
 from src.brain.gate import Gate
 from src.brain.providers import (
     CollectionStatusProvider,
@@ -34,9 +35,11 @@ from src.core.config import Settings, load_settings
 from src.core.metrics import MetricRegistry
 from src.core.traces import TraceRegistry
 from src.runtime.ingest import router as ingest_router
+from src.runtime.listen import ListenLoop
 from src.runtime.loop import JarvisLoop
 from src.sectors import commute, health, interest
 from src.storage.beliefs import SQLiteBeliefStore
+from src.storage.conversation import SQLiteConversation
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
@@ -140,7 +143,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 일주일치가 모여야 보인다.
     app.state.reflector = build_reflector(settings)
 
-    task = asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))
+    tasks = [asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))]
+
+    # 세 번째 루프. 앞의 둘은 시계가 돌리고 이건 사용자가 돌린다.
+    # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
+    channel = jarvis.channel
+    if isinstance(channel, TelegramChannel):
+        conversation = SQLiteConversation(settings.db_path)
+        listener = ListenLoop(
+            source=channel,
+            responder=Conversationalist(
+                reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+                beliefs=SQLiteBeliefStore(settings.db_path),
+                catalog=store,
+                source=store,
+                history=conversation,
+                providers=agent.providers,
+            ),
+            speaker=channel,
+            log=conversation,
+        )
+        tasks.append(asyncio.create_task(listener.run_forever()))
+        logger.info("듣는 루프 기동 — 대화 %d건", conversation.count())
+    else:
+        logger.info("텔레그램이 아니라 듣는 루프는 띄우지 않는다 (채널=%s)", channel.name)
     logger.info(
         "자비스 기동 — 관측치 %d건, 흔적 %d건, 주기 %d초",
         store.count(),
@@ -151,7 +177,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        task.cancel()
+        for running in tasks:
+            running.cancel()
 
 
 app = FastAPI(title="jarvis", lifespan=lifespan)

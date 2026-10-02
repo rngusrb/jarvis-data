@@ -27,6 +27,25 @@ class Channel(Protocol):
 
 ## 금지사항
 
+### ❌ 보낸 사람을 확인하지 않고 받지 않는다
+```python
+# ❌ 금지 — update 에서 text 만 꺼내 쓴다
+# ✅ 대신 — chat.id 가 주인인지 채널이 직접 거른다
+```
+**이유**: 봇 사용자명(`@koo_jarvis_bot`)은 공개라 **아무나 말을 걸 수 있다.**
+거르지 않으면 남이 주인의 수면·위치를 물어볼 수 있다. 위쪽 레이어에 맡기면
+언젠가 빠뜨리므로 채널 안에서 막는다.
+
+### ❌ 웹훅을 쓰지 않는다
+**이유**: 웹훅은 공개 HTTPS 주소가 필요하다. 서버가 Tailscale 안에만 있고,
+개인 건강 데이터 서버를 인터넷에 노출하는 건 이 프로젝트의 전제를 깨는
+일이다. long polling 은 나가서 묻는 거라 뚫을 게 없다.
+
+### ❌ Channel 에 receive() 를 끼워넣지 않는다
+**이유**: 모든 채널이 양방향일 필요가 없다. 콘솔은 받을 게 없고 iOS 푸시도
+받는 경로가 완전히 다르다. 끼워넣으면 그런 채널들이 쓰지도 않을 메서드를
+구현하게 된다. 듣는 능력은 `Listener` 로 따로 뒀다.
+
 ### ❌ 토큰이 든 URL 을 로깅하지 않는다
 ```python
 url = f"{API_ROOT}/bot{self._bot_token}/sendMessage"   # 이 URL 은 절대 로그에 찍지 않는다
@@ -52,6 +71,7 @@ message: "봇 토큰이 URL 에 들어간다 — 로그에 찍으면 안 된다"
 
 ```
 tests:
+  - tests/unit/test_telegram_receive.py
   - tests/integration/test_loop.py
 ```
 
