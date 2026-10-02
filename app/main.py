@@ -25,6 +25,7 @@ from src.brain.gate import Gate
 from src.brain.providers import (
     CollectionStatusProvider,
     ObservationTrendProvider,
+    RecentValuesProvider,
     SpeechHistoryProvider,
 )
 from src.brain.reflect import Reflector
@@ -120,6 +121,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 자기 수집 구조를 모르면 "배터리 최적화를 확인하라" 같은,
             # 이 시스템에 존재하지도 않는 조언을 지어낸다.
             CollectionStatusProvider(catalog=store, metrics=metrics.all()),
+            # 수집 "현황"만 알고 "값"을 모르면 자비스가 자기 데이터를 두고도
+            # 판단을 못 한다. 실제로 그랬다.
+            RecentValuesProvider(source=store, metrics=metrics.all()),
         ),
     )
 
