@@ -28,6 +28,15 @@ message = await agent.consider(insight, now); await channel.send(message)
 
 ## 금지사항
 
+### ❌ 커서를 처리 뒤에 밀지 않는다
+```python
+# ❌ 금지 — 답을 만든 뒤에 advance()
+# ✅ 대신 — 받자마자 advance(), 그다음 처리
+```
+**이유**: 처리하다 터진 메시지를 다시 읽으면 **영원히 같은 자리에서 터진다.**
+두뇌가 죽어 있으면 그 한 건이 루프를 영구히 막는다. 한 건을 잃는 쪽이
+무한 반복보다 낫다.
+
 ### ❌ 빈 입력을 조용히 200으로 돌려보내지 않는다
 ```python
 # ❌ 금지
@@ -82,6 +91,7 @@ message: "runtime 은 플랫폼이다 — 섹터를 알면 안 된다"
 
 ```
 tests:
+  - tests/integration/test_listen_loop.py
   - tests/integration/test_loop.py
   - tests/integration/test_ingest.py
   - tests/integration/test_ingest_spans.py

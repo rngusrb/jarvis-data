@@ -76,6 +76,7 @@ tests:
   - tests/unit/test_speech_log_sqlite.py
   - tests/unit/test_trace_store.py
   - tests/unit/test_belief_store.py
+  - tests/integration/test_listen_loop.py
 ```
 
 ```bash
@@ -91,4 +92,5 @@ python scripts/harness.py src/storage/
 | `sqlite.py` | 관측치 저장소. 멱등 쓰기 + 범위 조회 + 마지막 수신 시각 |
 | `speech.py` | 발화 기억. 재시작을 넘겨 쿨다운을 지킨다 |
 | `traces.py` | 흔적 저장소. 중복은 조용히 무시(수집기가 겹쳐 읽는 게 정상) |
+| `conversation.py` | 대화 기록 + 폴링 커서. 삽입 순서로 정렬한다 |
 | `beliefs.py` | 믿음 저장소. kind가 기본키 — 쌓이지 않고 **갱신**된다 |
