@@ -29,6 +29,25 @@ GPU 를 태우고 결국 "말할 필요 없음" 판정을 받는다.
 
 ## 금지사항
 
+### ❌ 가짜 Insight 를 만들어 넘기지 않는다
+```python
+# ❌ 금지
+probe = Insight(trigger="대화", severity=Severity.INFO, ...)
+# ✅ 대신 — assemble(providers, None, now)
+```
+**사고 이력**: 2026-10-02. 맥락 제공자가 `Insight` 를 필수로 받아서, 대화에서
+쓰려고 가짜를 만들었다. 그 가짜는 `observations` 가 비어 있어 추이 제공자가
+침묵했고, **자비스는 수면·심박·위치가 멀쩡히 쌓여 있는데도 "데이터 값이 없어서
+상태를 판단할 수 없어"라고 세 번 답했다.**
+
+맥락은 "신호에 대한 맥락"이 아니라 **"이 사람에 대한 맥락"**이다. 신호는 선택이다.
+타입을 속이면 거짓말이 아래로 전파된다.
+
+### ❌ 수집 현황만 주고 값을 빼먹지 않는다
+**이유**: `CollectionStatusProvider` 는 "뭐가 수집 중인가"를 알려주고 값은 안 준다.
+그것만 있으면 자비스가 자기 데이터를 두고도 판단을 못 한다. `RecentValuesProvider`
+가 저장소를 직접 읽어 값을 채운다.
+
 ### ❌ 사용자가 물어본 것에 게이트를 걸지 않는다
 **이유**: 게이트는 "말을 걸까"를 정하는 장치다. 사용자가 이미 물어봤는데
 쿨다운으로 막으면 비서가 아니라 고장난 기계다. `converse.py` 에 게이트가
@@ -112,6 +131,7 @@ message: "brain 은 플랫폼이다 — 섹터를 알면 안 된다"
 
 ```
 tests:
+  - tests/unit/test_providers_recent.py
   - tests/unit/test_converse.py
   - tests/unit/test_gate.py
   - tests/unit/test_agent.py

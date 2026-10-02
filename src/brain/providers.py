@@ -13,7 +13,7 @@ from typing import List, Optional, Sequence
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
 from src.core.metrics import Metric
-from src.core.models import Insight, ObservationCatalog
+from src.core.models import Insight, ObservationCatalog, ObservationSource
 
 
 @dataclass
@@ -27,8 +27,10 @@ class ObservationTrendProvider:
     name: str = "observation_trend"
     max_points: int = 7
 
-    def fetch(self, insight: Insight, now: datetime) -> Optional[ContextBlock]:
-        if len(insight.observations) < 2:
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        # 신호에 딸린 것만 본다. 사용자가 먼저 말을 걸었을 때는 줄 게 없고,
+        # 그때 필요한 "최근 값"은 RecentValuesProvider 가 맡는다.
+        if insight is None or len(insight.observations) < 2:
             return None
         recent = sorted(insight.observations, key=lambda o: o.at)[-self.max_points :]
         kind = recent[0].kind
@@ -49,7 +51,7 @@ class SpeechHistoryProvider:
     name: str = "speech_history"
     window: timedelta = timedelta(days=1)
 
-    def fetch(self, insight: Insight, now: datetime) -> Optional[ContextBlock]:
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         records = self.log.since(now - self.window)
         if not records:
             return None
@@ -74,7 +76,7 @@ class CollectionStatusProvider:
     metrics: Sequence[Metric]
     name: str = "collection_status"
 
-    def fetch(self, insight: Insight, now: datetime) -> Optional[ContextBlock]:
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         last_seen = self.catalog.last_seen()
         known = {m.kind: m for m in self.metrics}
         lines: List[str] = []
@@ -106,3 +108,42 @@ class CollectionStatusProvider:
             lines.append(f"- {name}: {state}")
 
         return ContextBlock(label="수집 경로 현황", body="\n".join(lines))
+
+
+@dataclass
+class RecentValuesProvider:
+    """지표별 **최근 값을 직접 조회해서** 보여준다.
+
+    `ObservationTrendProvider` 와 재료가 다르다. 저쪽은 신호에 딸려온 것만
+    보고, 이쪽은 저장소를 직접 읽는다.
+
+    사고 이력: 2026-10-02. 신호에 딸린 것만 보는 제공자뿐이라, 사용자가
+    "데이터 보고 말해봐"라고 세 번 물었는데 자비스가 세 번 다 "값이 없어서
+    판단할 수 없어"라고 답했다. 수면도 심박도 위치도 멀쩡히 쌓여 있었다 —
+    **프롬프트에 안 들어갔을 뿐이다.**
+
+    접힌(retired) 지표는 뺀다. 과거 데이터만 남은 것을 현재 상태인 양
+    보여주면 "걸음수가 646보네"라고 두 달 전 숫자를 읽는다.
+    """
+
+    source: ObservationSource
+    metrics: Sequence[Metric]
+    name: str = "recent_values"
+    window: timedelta = timedelta(days=14)
+    max_points: int = 7
+
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        chunks: List[str] = []
+        for metric in self.metrics:
+            if not metric.active:
+                continue
+            rows = sorted(self.source.recent(metric.kind, now - self.window), key=lambda o: o.at)
+            if not rows:
+                continue
+            recent = rows[-self.max_points :]
+            values = " · ".join(f"{o.at:%m/%d} {o.value:g}" for o in recent)
+            chunks.append(f"- {metric.label}({metric.kind}): {values}")
+
+        if not chunks:
+            return None
+        return ContextBlock(label=f"최근 {self.window.days}일 값", body="\n".join(chunks))

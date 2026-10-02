@@ -26,7 +26,7 @@ from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
 from src.channels.base import Incoming
 from src.core.beliefs import Status
-from src.core.models import Insight, ObservationCatalog, ObservationSource, Severity
+from src.core.models import ObservationCatalog, ObservationSource
 from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.conversation import SQLiteConversation
 
@@ -128,10 +128,11 @@ class Conversationalist:
         if known:
             parts.append("[내가 아는 것]\n" + "\n".join(f"  {b.kind} = {b.value}" for b in known))
 
-        # 신호가 없어도 맥락 제공자는 쓸 수 있다. 질문에 답하려면 수집 현황과
-        # 관측 추이가 똑같이 필요하기 때문이다.
-        probe = Insight(trigger="대화", summary=text, severity=Severity.INFO, at=now)
-        blocks = assemble(self.providers, probe, now)
+        # 신호 없이 맥락을 조립한다. 가짜 Insight 를 만들어 넘기던 때가
+        # 있었는데, 그 가짜는 observations 가 비어서 추이 제공자가 침묵했고
+        # 자비스가 "데이터 값이 없어"라고 답했다. 타입을 속이면 거짓말이
+        # 아래로 전파된다.
+        blocks = assemble(self.providers, None, now)
         if blocks:
             parts.append(f"[참고]\n{render(blocks)}")
 
