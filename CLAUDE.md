@@ -75,5 +75,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 날짜 | 스프린트 |
 |------|---------|
 | 2026-08-25 | [플랫폼/섹터 구조 확립 + 바이브 키트 이식](docs/sprints/2026-08-25-structure.md) |
+| 2026-10-29 | [텔레그램 연결, 텍스트 층, 운영 사고 정리](docs/sprints/2026-10-29-telegram-and-text-layer.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
