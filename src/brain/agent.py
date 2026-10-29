@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Sequence
@@ -20,6 +21,8 @@ from src.brain.context import ContextProvider, assemble
 from src.brain.gate import Gate
 from src.brain.prompts import SYSTEM_PROMPT, build_prompt, parse_decision
 from src.core.models import Insight
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,10 +50,19 @@ class JarvisAgent:
         blocks = assemble(self.providers, insight, now)
         prompt = build_prompt(insight, blocks)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
-        message = parse_decision(reply)
-        if message is None:
+        decision = parse_decision(reply)
+        if decision is None:
+            # 형식이 깨진 답은 판단이 아니라 실패다. 사용자에게 보내지 않고,
+            # 기록도 하지 않아서 다음 주기에 다시 묻게 둔다. 조용히 넘기면
+            # 왜 말을 안 했는지 아무도 모르므로 원문을 남긴다.
+            logger.warning(
+                "판단 답 형식이 깨졌다 — 보내지 않음 (%s): %.200s", insight.trigger, reply
+            )
+            return None
+        if not decision.speak:
             self.confirm_silence(insight, now, "말 안 걸기로 함")
-        return message
+            return None
+        return decision.message
 
     def confirm_spoken(self, insight: Insight, now: datetime, text: str) -> None:
         """발송에 **성공했을 때만** 부른다.
