@@ -11,10 +11,12 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -85,7 +87,9 @@ class Rejected(SendError):
     """
 
 
-def post(server_url: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def post(
+    server_url: str, auth: str, path: str, body: Dict[str, Any], timeout: float = 30
+) -> Dict[str, Any]:
     payload = json.dumps(body, ensure_ascii=False).encode()
     request = urllib.request.Request(
         f"{server_url.rstrip('/')}{path}",
@@ -93,9 +97,8 @@ def post(server_url: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[st
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {auth}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            result: Dict[str, Any] = json.loads(response.read())
-            return result
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:300]
         if exc.code in (400, 422):
@@ -103,5 +106,30 @@ def post(server_url: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[st
         if exc.code == 401:
             raise Retry(f"토큰이 틀렸다 (401): {detail}") from exc
         raise Retry(f"서버 오류 ({exc.code}): {detail}") from exc
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise Retry(f"서버에 닿지 않는다 ({server_url}): {exc}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # 이름으로 고르지 않고 OSError 통째로 잡는다. 3.9 에서는 연결을 받아놓고 답이
+        # 없을 때 나는 socket.timeout 이 TimeoutError 가 아니다(3.10 부터 같다).
+        # 2026-10-30 리뷰에서 그게 빠져나가 배달부가 "파일을 못 읽었다"로 적는 걸 찾았다.
+        raise Retry(f"서버에 닿지 않는다 ({server_url}): {exc!r}") from exc
+    try:
+        result: Dict[str, Any] = json.loads(raw)
+    except ValueError as exc:
+        raise Retry(f"서버 답이 JSON 이 아니다: {raw[:200]!r}") from exc
+    return result
+
+
+def set_aside(origin: str, reason: str, raw: str) -> None:
+    """서버가 거절한 것을 버리지 않고 따로 둔다.
+
+    서버가 그 종류를 아직 몰랐던 거라면(수집기를 서버보다 먼저 올렸다면) 고친 뒤
+    되살려야 한다. `forward --replay` 가 raw 를 보낼 상자로 되돌리므로, raw 는
+    배달부가 읽는 줄 모양(`to` 포함)이어야 한다.
+    """
+    entry = {
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "origin": origin,
+        "reason": reason,
+        "raw": raw,
+    }
+    with (state_dir() / "rejected.jsonl").open("a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")

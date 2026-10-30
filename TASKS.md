@@ -19,9 +19,23 @@
 
 **제약**: 서버는 같은 데이터를 여러 번 받아도 안전하다(멱등). 수집기는 이걸 믿고 넉넉히 겹쳐 보낸다.
 
-**진행**: 코드 완료 — 크롬은 visits.id 커서와 시계 칸, 맥 앱 수집기, iCloud 파일 배달부(`collectors/`).
-남은 것은 설치와 전환: 서버 재시작 → 맥에 `collectors/install.sh` → 단축어를 파일 방식(SETUP 2-8)으로.
-단축어를 바꾸면 `app/main.py` 의 아이폰 힌트("Tailscale")도 바꾼다 — 그때부턴 폰이 서버에 직접 닿지 않는다.
+### 구현 세부사항
+
+- `collectors/`: 크롬(id 커서 + 먼저 보낸 번호, 시계 칸, 기록 재생성 감지), 맥 앱, 배달부(iCloud·맥 상자, 바이트 커서)
+- 서버: `mac_app` 등록(회고 제외 `reflect=False`), 흔적 시각을 UTC 로 저장·비교
+- 남은 것은 설치와 전환: 맥에 `collectors/install.sh` → 단축어를 파일 방식(SETUP 2-8)으로.
+  단축어를 바꾸면 `app/main.py` 의 아이폰 힌트("Tailscale")도 바꾼다
+
+### Final Gate
+
+- [x] `harness all`
+- [ ] Reviewer PASS — 1차 REVISE(High 1, Medium 4) 반영 후 재검토 중
+- [ ] 맥 설치 후 7일 연속 폰·웹 데이터 (0단계 끝 기준)
+
+### 알려진 문제
+
+- 🟡 **폰 데이터가 iCloud 를 거친다** (파일 방식). 애플 서버에 남고 고급 데이터 보호 없이는
+  종단간 암호화가 아니다. 사용자 결정 대기 — OVERVIEW ⑦, SETUP 2-8 에 선택지를 적었다
 
 ---
 

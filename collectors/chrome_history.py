@@ -11,7 +11,7 @@
 
 한 시간마다 자동으로 돌리려면 `collectors/install.sh` 를 쓴다.
 
-## 알아둘 함정 넷
+## 알아둘 함정 다섯
 
 **DB가 잠긴다.** 크롬이 켜져 있으면 SQLite 잠금이 걸린다. 그래서 파일을
 복사한 뒤 복사본을 읽는다. 크롬을 끄라고 하는 건 수집기로서 실격이다.
@@ -25,10 +25,15 @@ DB에 들어오는데, 방문 시각은 원래 시각 그대로다. 2026-10 실�
 시각까지 보냈나"가 아니라 **"몇 번째 줄까지 읽었나"(visits.id)** 를 기억한다.
 id 는 AUTOINCREMENT 라 다시 쓰이지 않고, 늦게 들어온 줄도 새 번호를 받는다.
 
-**겹쳐 읽어도 같은 흔적이 나와야 한다.** 접는 칸이 시계에 고정돼 있어야(:00,
-:30) 어디서부터 읽든 같은 방문이 같은 칸에 떨어진다. 첫 방문 기준으로 30분을
-재면 읽기 시작점에 따라 접히는 모양이 달라져, 이미 접어 보낸 방문이 새 줄로
-다시 들어간다.
+**한 방문은 한 번만 보낸다.** 이미 보낸 방문을 다시 접어 보내면, 그사이 같은
+칸에 더 이른 방문이 늦게 들어왔거나 페이지 제목이 바뀌었을 때 (시각, 텍스트)가
+달라져 같은 방문이 새 줄로 또 들어간다. 서버의 중복 무시로는 못 막는다. 그래서
+커서 아래는 전부 보낸 것이고, 커서 위에서 먼저 보낸 것은 번호로 따로 기억한다.
+
+**크롬이 기록을 새로 만들 수 있다.** 모든 기간 기록 삭제나 손상 복구 뒤에는 번호가
+1부터 다시 붙는다. 커서를 그대로 두면 새 방문이 전부 커서 아래로 숨어, 매시간
+"흔적 0개"로 조용히 멈춘다. 번호의 최고 기록(sqlite_sequence)이 커서보다 작으면
+처음부터 다시 읽는다.
 """
 
 from __future__ import annotations
@@ -46,7 +51,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from collectors.common import SendError, load_state, post, save_state, server, token
+from collectors.common import (
+    Rejected,
+    Retry,
+    load_state,
+    post,
+    save_state,
+    server,
+    set_aside,
+    token,
+)
 
 # 1601-01-01 부터 1970-01-01 까지의 초.
 WEBKIT_EPOCH_OFFSET = 11_644_473_600
@@ -237,38 +251,61 @@ def fold(visits: Iterable[Visit]) -> List[Dict[str, Any]]:
     return sorted(traces, key=lambda t: str(t["at"]))
 
 
+@dataclass
+class Plan:
+    traces: List[Dict[str, Any]]
+    # 보내고 나면 저장할 커서. 이 번호까지는 전부 보냈다.
+    after_id: Optional[int]
+    # 커서 위인데 이미 보낸 방문 번호. 미룬 방문 때문에 커서가 멈춘 사이에 보낸 것들.
+    sent_above: List[int]
+    waiting: int
+    # 크롬이 기록을 새로 만들어서 처음부터 읽었다.
+    restarted: bool = False
+
+
+def high_water(conn: sqlite3.Connection) -> int:
+    """visits 에 지금까지 붙은 가장 큰 번호. 줄을 지워도 줄지 않는다(AUTOINCREMENT)."""
+    try:
+        row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'visits'").fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    if row is None:
+        row = conn.execute("SELECT MAX(id) FROM visits").fetchone()
+    return int(row[0] or 0)
+
+
 def plan(
-    conn: sqlite3.Connection, after_id: Optional[int], since: datetime, now: datetime
-) -> Tuple[List[Dict[str, Any]], Optional[int], int]:
-    """보낼 흔적, 보내고 나면 옮길 커서, 다음으로 미룬 방문 수.
+    conn: sqlite3.Connection,
+    after_id: Optional[int],
+    sent_above: Iterable[int],
+    since: datetime,
+    now: datetime,
+) -> Plan:
+    """무엇을 보내고, 보낸 뒤 어디까지 보냈다고 적을지.
 
-    지금 칸은 아직 안 닫혔다. 지금 보내면 방문 수가 덜 세진 채로 들어가고,
-    나중에 다 센 줄은 (시각, 텍스트)가 같아 서버가 무시한다. 그래서 닫힌 칸만
-    보내고, 커서는 미룬 방문 앞에서 멈춘다.
-
-    새 방문이 닿은 칸은 그 칸의 **모든** 방문으로 다시 접는다. 새로 읽은 줄만
-    접으면 같은 칸이 읽을 때마다 다르게 접힌다.
+    지금 칸은 아직 안 닫혔다. 닫힐 때까지 미뤄야 한 칸의 방문이 한 번에 접힌다.
+    커서는 미룬 방문 앞에서 멈추고, 그 위에서 이번에 보낸 것은 번호로 넘긴다.
+    다음 실행은 커서 위를 다시 읽되 이미 보낸 번호는 건너뛴다.
     """
+    restarted = False
+    if after_id is not None and high_water(conn) < after_id:
+        restarted, after_id, sent_above = True, 0, []
     if after_id is None:
         # 처음 돌 때만 시각으로 자른다. 그 뒤로는 id 가 기준이다.
-        new = _select(conn, "v.visit_time >= ?", (to_webkit(since),))
+        rows = _select(conn, "v.visit_time >= ?", (to_webkit(since),))
     else:
-        new = _select(conn, "v.id > ?", (after_id,))
+        rows = _select(conn, "v.id > ?", (after_id,))
+    done = set(sent_above)
+    new = [v for v in rows if v.id not in done]
     if not new:
-        return [], after_id, 0
+        return Plan([], after_id, sorted(done), 0, restarted)
 
     open_from = floor_grid(now)
     waiting = [v for v in new if v.at >= open_from]
+    closed = [v for v in new if v.at < open_from]
     cursor = min(v.id for v in waiting) - 1 if waiting else max(v.id for v in new)
-
-    visits: List[Visit] = []
-    for start in sorted({floor_grid(v.at) for v in new if v.at < open_from}):
-        visits += _select(
-            conn,
-            "v.visit_time >= ? AND v.visit_time < ?",
-            (to_webkit(start), to_webkit(start + GRID)),
-        )
-    return fold(visits), cursor, len(waiting)
+    above = sorted(i for i in done | {v.id for v in closed} if i > cursor)
+    return Plan(fold(closed), cursor, above, len(waiting), restarted)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -288,14 +325,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 프로필마다 id 가 따로 매겨진다. 프로필을 바꾸면 커서도 따로 간다.
     key = str(history)
     state = load_state(STATE_NAME)
-    after_id = None if args.reset else state.get(key, {}).get("after_id")
+    saved = {} if args.reset else state.get(key, {})
+    after_id = saved.get("after_id")
     now = datetime.now(timezone.utc)
 
     with snapshot(history) as conn:
-        traces, cursor, waiting = plan(conn, after_id, now - timedelta(hours=args.hours), now)
+        found = plan(
+            conn, after_id, saved.get("sent_above", []), now - timedelta(hours=args.hours), now
+        )
+    if found.restarted:
+        print(
+            f"크롬 기록이 새로 만들어졌다 — 저장된 커서 {after_id} 가 지금 번호보다 크다. "
+            "처음부터 다시 읽는다",
+            file=sys.stderr,
+        )
+    traces = found.traces
     print(
-        f"{now:%m-%d %H:%M} 프로필 {profile_label(history)} · 커서 {after_id} → {cursor} · "
-        f"흔적 {len(traces)}개 · 안 닫힌 칸이라 미룬 방문 {waiting}건"
+        f"{now:%m-%d %H:%M} 프로필 {profile_label(history)} · 커서 {after_id} → {found.after_id} · "
+        f"흔적 {len(traces)}개 · 안 닫힌 칸이라 미룬 방문 {found.waiting}건"
     )
 
     if args.dry_run:
@@ -308,23 +355,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("토큰이 없다 — JARVIS_INGEST_TOKEN 또는 상태 폴더의 token 파일", file=sys.stderr)
         return 1
 
-    written = 0
-    try:
-        for i in range(0, len(traces), CHUNK):
-            body = {"source": SOURCE, "kind": KIND, "traces": traces[i : i + CHUNK]}
+    written, rejected = 0, 0
+    for i in range(0, len(traces), CHUNK):
+        body = {"source": SOURCE, "kind": KIND, "traces": traces[i : i + CHUNK]}
+        try:
             written += int(post(args.server, auth, "/ingest/traces", body).get("written", 0))
-    except SendError as exc:
-        # 커서를 옮기지 않는다. 다음 실행이 같은 자리부터 다시 보낸다 — 서버가
-        # 중복을 무시하므로 앞 덩어리가 이미 들어갔어도 안전하다.
-        print(f"보내지 못했다, 커서는 그대로 둔다: {exc}", file=sys.stderr)
-        return 1
+        except Rejected as exc:
+            # 내용이 거절된 덩어리가 뒤를 막지 않게 따로 두고 넘어간다.
+            # `forward --replay` 가 되살린다.
+            set_aside(
+                STATE_NAME, str(exc), json.dumps({"to": "traces", **body}, ensure_ascii=False)
+            )
+            rejected += len(body["traces"])
+        except Retry as exc:
+            # 커서를 옮기지 않는다. 다음 실행이 같은 자리부터 다시 보낸다 — 서버가
+            # 중복을 무시하므로 앞 덩어리가 이미 들어갔어도 안전하다.
+            print(f"보내지 못했다, 커서는 그대로 둔다: {exc}", file=sys.stderr)
+            return 1
 
-    if cursor is not None:
-        state[key] = {"after_id": cursor, "sent_at": now.isoformat()}
+    if found.after_id is not None:
+        state[key] = {
+            "after_id": found.after_id,
+            "sent_above": found.sent_above,
+            "sent_at": now.isoformat(),
+        }
         save_state(STATE_NAME, state)
-    # 받은 수와 새로 저장된 수가 다른 게 정상이다. 칸을 다시 접어 보내면
-    # 이미 있는 줄은 서버가 무시한다.
     print(f"보냄 {len(traces)}개 → 새로 저장 {written}개")
+    if rejected:
+        print(f"거절 {rejected}개 — rejected.jsonl 에 따로 뒀다", file=sys.stderr)
+        return 1
     return 0
 
 

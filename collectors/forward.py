@@ -50,6 +50,7 @@ from collectors.common import (
     post,
     save_state,
     server,
+    set_aside,
     state_dir,
     token,
 )
@@ -69,8 +70,9 @@ INBOX = Path.home() / "Library/Mobile Documents/iCloud~is~workflow~my~workflows/
 # 바이트 위치가 엉뚱한 데를 가리킨다. 덧붙이기만 했다면 앞부분은 안 바뀐다.
 HEAD = 256
 
-# 깨진 줄을 건너뛸 때 다음 객체가 시작하는 곳.
-NEXT_OBJECT = re.compile(r"\n\s*\{")
+# 깨진 줄을 건너뛸 때 다음 객체가 시작하는 곳. 줄바꿈 뒤의 `{`, 또는 줄바꿈이
+# 빠졌어도 줄의 첫 열쇠인 `{"to":`.
+NEXT_OBJECT = re.compile(r'\n\s*\{|\{\s*"to"\s*:')
 
 Send = Callable[[str, Dict[str, Any]], Dict[str, Any]]
 
@@ -88,11 +90,39 @@ def inbox_dir() -> Path:
     return Path(os.getenv("JARVIS_INBOX") or INBOX)
 
 
-def files() -> List[Path]:
-    found: List[Path] = []
-    for folder in (inbox_dir(), state_dir() / "outbox"):
-        if folder.is_dir():
-            found += sorted(p for p in folder.iterdir() if p.suffix in (".jsonl", ".txt"))
+@dataclass
+class Found:
+    paths: List[Path]
+    notes: List[str]
+    # 폴더를 못 열었다. 나머지는 보내되 실패로 끝낸다.
+    failed: bool = False
+
+
+def files(create: bool = True) -> Found:
+    """보낼 파일들. 폴더 하나를 못 열어도 다른 폴더는 본다.
+
+    iCloud 폴더는 launchd 로 띄운 파이썬에게 권한(TCC)이 막힐 수 있다. 그렇다고
+    맥 상자까지 못 보내면 안 된다.
+    """
+    found = Found([], [])
+    inbox = inbox_dir()
+    for folder in (inbox, state_dir() / "outbox"):
+        try:
+            if folder == inbox and not folder.is_dir():
+                if not folder.parent.is_dir():
+                    found.notes.append(f"iCloud 단축어 폴더가 없다: {folder.parent}")
+                elif create:
+                    # 만들어 두면 폰의 파일 앱에서도 보여 단축어가 그 경로를 쓴다.
+                    folder.mkdir()
+                    found.notes.append(f"받은 편지함을 만들었다: {folder}")
+                else:
+                    found.notes.append(f"받은 편지함이 아직 없다 (보내기 실행 때 만든다): {folder}")
+                continue
+            if folder.is_dir():
+                found.paths += sorted(p for p in folder.iterdir() if p.suffix in (".jsonl", ".txt"))
+        except OSError as exc:
+            found.notes.append(f"{folder} 를 못 열었다: {exc}")
+            found.failed = True
     return found
 
 
@@ -130,31 +160,11 @@ def _head(data: bytes, upto: int) -> str:
     return hashlib.sha1(data[: min(upto, HEAD)]).hexdigest()
 
 
-def forward_file(
-    path: Path, saved: Dict[str, Any], send: Send, report: Report, rejects: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """한 파일을 보낸 데까지 보내고, 새 커서를 돌려준다.
-
-    서버에 못 닿으면 보낸 데까지의 커서를 돌려주고 report.stopped 를 채운다.
-    """
-    data = path.read_bytes()
-    offset = int(saved.get("offset", 0))
-    if offset > len(data) or saved.get("head") not in (None, _head(data, offset)):
-        report.notes.append(f"{path.name} 이 바뀌었다 — 처음부터 다시 읽는다 (서버가 중복을 무시)")
-        offset = 0
-
-    chunk = data[offset:]
-    try:
-        text = chunk.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        if exc.start < len(chunk) - 3:
-            where = offset + exc.start
-            report.notes.append(f"{path.name} {where}바이트에 UTF-8 이 아닌 내용 — 건너뜀")
-            return saved
-        # 끝에 반쯤 쓰인 글자다. 그 앞까지만 읽는다.
-        text = chunk[: exc.start].decode("utf-8")
-
-    done_chars, done_bytes = 0, offset
+def _deliver(
+    path: Path, text: str, send: Send, report: Report, rejects: List[Dict[str, Any]]
+) -> int:
+    """text 안의 온전한 객체를 보내고, 처리한 데까지의 바이트 수를 돌려준다."""
+    done_chars, done_bytes = 0, 0
     for value, raw, end in parse(text):
         try:
             if not isinstance(value, dict):
@@ -172,13 +182,52 @@ def forward_file(
             break
         done_bytes += len(text[done_chars:end].encode("utf-8"))
         done_chars = end
+    return done_bytes
 
-    leftover = text[done_chars:].strip()
+
+def forward_file(
+    path: Path, saved: Dict[str, Any], send: Send, report: Report, rejects: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """한 파일을 보낸 데까지 보내고, 새 커서를 돌려준다.
+
+    서버에 못 닿으면 보낸 데까지의 커서를 돌려주고 report.stopped 를 채운다.
+    """
+    data = path.read_bytes()
+    pos = int(saved.get("offset", 0))
+    if pos > len(data) or saved.get("head") not in (None, _head(data, pos)):
+        report.notes.append(f"{path.name} 이 바뀌었다 — 처음부터 다시 읽는다 (서버가 중복을 무시)")
+        pos = 0
+
+    while pos < len(data) and report.stopped is None:
+        chunk = data[pos:]
+        try:
+            text, bad = chunk.decode("utf-8"), -1
+        except UnicodeDecodeError as exc:
+            text, bad = chunk[: exc.start].decode("utf-8"), pos + exc.start
+        pos += _deliver(path, text, send, report, rejects)
+        if bad < 0 or report.stopped is not None:
+            break
+        line_end = data.find(b"\n", bad)
+        if line_end < 0:
+            # 마지막 줄이다. 반쯤 쓰인 글자일 수 있어 다음 줄이 붙을 때까지 기다린다.
+            break
+        # UTF-8 이 아닌 바이트가 든 줄은 통째로 따로 두고 이어간다. 그 앞의 줄은 이미 보냈다.
+        report.rejected += 1
+        rejects.append(
+            {
+                "file": str(path),
+                "reason": "UTF-8 이 아닌 바이트",
+                "raw": data[pos : line_end + 1].decode("utf-8", errors="replace"),
+            }
+        )
+        pos = line_end + 1
+
+    leftover = data[pos:].strip()
     if leftover and report.stopped is None:
         report.notes.append(
-            f"{path.name} 끝에 아직 못 읽은 {len(leftover)}자 — 덜 쓴 줄이면 다음에 들어간다"
+            f"{path.name} 끝에 아직 못 읽은 {len(leftover)}바이트 — 덜 쓴 줄이면 다음에 들어간다"
         )
-    return {"offset": done_bytes, "head": _head(data, done_bytes)}
+    return {"offset": pos, "head": _head(data, pos)}
 
 
 def forward(
@@ -200,12 +249,8 @@ def forward(
 
 def keep_rejected(rejects: List[Dict[str, Any]]) -> None:
     """거절된 줄은 버리지 않는다. 서버가 그 종류를 아직 몰랐던 거라면 되살려야 한다."""
-    if not rejects:
-        return
-    with (state_dir() / "rejected.jsonl").open("a") as f:
-        for item in rejects:
-            item["at"] = datetime.now().isoformat(timespec="seconds")
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    for item in rejects:
+        set_aside(item["file"], item["reason"], item["raw"])
 
 
 def replay() -> int:
@@ -237,9 +282,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.replay:
         return replay()
 
-    paths = files()
-    if not paths and not inbox_dir().is_dir():
-        print(f"iCloud 받은 편지함이 아직 없다: {inbox_dir()}")
+    found = files(create=not args.dry_run)
 
     if args.dry_run:
 
@@ -247,9 +290,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  → {route}  {json.dumps(body, ensure_ascii=False)[:100]}")
             return {}
 
-        report, _, _ = forward(paths, load_state(STATE_NAME), show)
+        report, _, _ = forward(found.paths, load_state(STATE_NAME), show)
         print(f"보낼 줄 {report.sent} · 거절될 줄 {report.rejected}")
-        for note in report.notes:
+        for note in found.notes + report.notes:
             print(f"  {note}")
         return 0
 
@@ -261,9 +304,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     def send(route: str, body: Dict[str, Any]) -> Dict[str, Any]:
         return post(args.server, auth, route, body)
 
-    report, state, rejects = forward(paths, load_state(STATE_NAME), send)
+    report, state, rejects = forward(found.paths, load_state(STATE_NAME), send)
     keep_rejected(rejects)
     save_state(STATE_NAME, state)
+    report.notes = found.notes + report.notes
 
     # 할 일이 없었으면 아무것도 안 찍는다. 5분마다 "0건" 이 쌓이면 진짜 문제가 묻힌다.
     if report.sent or report.rejected or report.stopped or report.notes:
@@ -276,7 +320,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if report.stopped:
             print(f"  멈춤, 남은 줄은 다음에: {report.stopped}", file=sys.stderr, flush=True)
             return 1
-    return 0
+    return 1 if found.failed else 0
 
 
 if __name__ == "__main__":

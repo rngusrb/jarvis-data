@@ -7,6 +7,7 @@ iCloud 파일은 폰이 덧붙이고 맥은 읽기만 한다. 어디까지 보�
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 from collectors.common import Rejected, Retry
-from collectors.forward import files, forward, keep_rejected, replay
+from collectors.forward import files, forward, keep_rejected, main, replay
 from collectors.mac_apps import Span, to_line
 
 
@@ -54,7 +55,7 @@ def line(kind: str, value: float = 1.0) -> str:
 
 
 def run(server: FakeServer, state: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
-    report, new_state, rejects = forward(files(), state or {}, server)
+    report, new_state, rejects = forward(files().paths, state or {}, server)
     keep_rejected(rejects)
     return report, new_state
 
@@ -189,3 +190,64 @@ def test_맥_앱_수집기가_적은_줄이_그대로_배달된다(inbox: Path, 
     route, body = server.got[0]
     assert route == "/ingest/traces"
     assert (body["source"], body["kind"]) == ("mac_apps", "mac_app")
+
+
+def test_UTF8_이_아닌_바이트가_든_줄만_따로_두고_앞뒤_줄은_보낸다(inbox: Path) -> None:
+    # 예전엔 한 바이트에 파일 전체가 멈췄다. 그 앞의 멀쩡한 줄까지.
+    broken = b'{"to": "samples", "kind": "x\xff"}\n'
+    data = (line("location") + "\n").encode() + broken + (line("sleep") + "\n").encode()
+    inbox.write_bytes(data)
+    server = FakeServer()
+    report, state = run(server)
+
+    assert [body["kind"] for _, body in server.got] == ["location", "sleep"]
+    assert report.rejected == 1
+    assert state[str(inbox)]["offset"] == len(data)
+
+
+def test_줄바꿈_없이_붙은_깨진_객체가_뒤를_막지_않는다(inbox: Path) -> None:
+    # 단축어에서 "새 줄 만들기"를 끄면 줄이 이어 붙는다. 다음 줄의 `{"to":` 에서 다시 잡는다.
+    inbox.write_text(line("location") + '{"to": "samples", 깨짐' + line("sleep") + "\n")
+    server = FakeServer()
+    report, _ = run(server)
+
+    assert [body["kind"] for _, body in server.got] == ["location", "sleep"]
+    assert report.rejected == 1
+
+
+def test_받은_편지함을_못_열어도_맥_상자는_보낸다(
+    inbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # iCloud 폴더가 권한에 막혀도 앱 사용 기록은 나가야 한다. 예전엔 목록에서 죽었다.
+    outbox = tmp_path / "state" / "outbox"
+    outbox.mkdir(parents=True)
+    (outbox / "mac_apps-2026-10.jsonl").write_text(line("mac_app") + "\n")
+    monkeypatch.setenv("JARVIS_INGEST_TOKEN", "t")
+    got: List[str] = []
+    monkeypatch.setattr(
+        "collectors.forward.post", lambda server, auth, route, body: got.append(body["kind"]) or {}
+    )
+    os.chmod(inbox.parent, 0)
+    try:
+        code = main([])
+    finally:
+        os.chmod(inbox.parent, 0o755)
+
+    assert got == ["mac_app"]
+    assert code == 1
+    assert "못 열었다" in capsys.readouterr().out
+
+
+def test_받은_편지함이_없으면_만들고_시험_실행은_만들지_않는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "icloud" / "jarvis"
+    folder.parent.mkdir()
+    monkeypatch.setenv("JARVIS_INBOX", str(folder))
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(tmp_path / "state"))
+
+    assert not files(create=False).paths and not folder.exists()
+    found = files()
+
+    assert folder.is_dir()
+    assert any("만들었다" in note for note in found.notes)
