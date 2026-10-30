@@ -20,12 +20,12 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
 from src.channels.base import Channel
-from src.core.models import ObservationSource
-from src.triggers.base import Trigger
+from src.core.models import Insight, ObservationSource
+from src.triggers.base import Trigger, Watch
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,10 @@ class JarvisLoop:
     triggers: Sequence[Trigger]
     agent: JarvisAgent
     channel: Channel
+    # 창 없이 "종류별 마지막 수신 시각"을 보는 감시들. 수집 중단처럼 오래될수록
+    # 중요해지는 신호는 트리거의 창에 담으면 오래될수록 안 보인다.
+    watches: Sequence[Watch] = ()
+    snapshot: Optional[Callable[[], Mapping[str, datetime]]] = None
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
     # 말하게 된다 — 게이트는 **발송에 성공한 뒤에야** 쿨다운을 기록하므로,
     # 나란히 달리는 두 실행은 둘 다 게이트를 통과해버린다.
@@ -53,38 +57,53 @@ class JarvisLoop:
         for trigger in self.triggers:
             window = self.source.recent(trigger.kind, since=now - trigger.lookback)
             insight = trigger.check(window, now)
-            if insight is None:
-                continue
+            if insight is not None:
+                sent += await self._speak(insight, now)
 
+        if self.watches and self.snapshot is not None:
             try:
-                message = await self.agent.consider(insight, now)
+                seen = self.snapshot()
             except Exception:
-                # 판단 실패도 발송 실패와 똑같이 다뤄야 한다. 여기서 예외가
-                # 위로 새면 이 주기의 **뒤에 선 트리거들이 통째로 건너뛰어진다** —
-                # 두뇌 하나가 죽었다고 수집 중단 감지까지 멎는 건 말이 안 된다.
-                # 실제 사고: vLLM이 로딩되는 10분 동안 아침 신호 4건이 이렇게
-                # 사라졌고, 로그에 트레이스백만 남아 아무도 모르고 지나갔다.
-                logger.exception("판단 실패 — 건너뛴다: %s", insight.trigger)
-                continue
-
-            if message is None:
-                # 기록은 agent.consider 안에서 한다. 여기서는 게이트가 막은
-                # 것인지 LLM이 판단한 것인지 구별할 수 없고, 구별 없이
-                # 기록하면 쿨다운이 영영 안 끝난다.
-                logger.debug("말 안 걸기로 함: %s", insight.trigger)
-                continue
-
-            try:
-                await self.channel.send(message)
-            except Exception:
-                # 발송 실패는 루프를 죽이지 않는다. 다음 기회에 다시 시도된다.
-                logger.exception("발송 실패 (%s): %s", self.channel.name, insight.trigger)
-                continue
-
-            self.agent.confirm_spoken(insight, now, message)
-            sent += 1
+                # 저장소를 못 읽었다고 이번 주기의 다른 말까지 막을 이유는 없다.
+                logger.exception("마지막 수신 시각을 읽지 못했다 — 감시를 건너뛴다")
+                seen = None
+            if seen is not None:
+                for watch in self.watches:
+                    insight = watch.check(seen, now)
+                    if insight is not None:
+                        sent += await self._speak(insight, now)
 
         return sent
+
+    async def _speak(self, insight: Insight, now: datetime) -> int:
+        """신호 하나를 판단하고, 말하기로 하면 보낸다. 보냈으면 1."""
+        try:
+            message = await self.agent.consider(insight, now)
+        except Exception:
+            # 판단 실패도 발송 실패와 똑같이 다뤄야 한다. 여기서 예외가
+            # 위로 새면 이 주기의 **뒤에 선 신호들이 통째로 건너뛰어진다** —
+            # 두뇌 하나가 죽었다고 수집 중단 감지까지 멎는 건 말이 안 된다.
+            # 실제 사고: vLLM이 로딩되는 10분 동안 아침 신호 4건이 이렇게
+            # 사라졌고, 로그에 트레이스백만 남아 아무도 모르고 지나갔다.
+            logger.exception("판단 실패 — 건너뛴다: %s", insight.trigger)
+            return 0
+
+        if message is None:
+            # 기록은 agent.consider 안에서 한다. 여기서는 게이트가 막은
+            # 것인지 LLM이 판단한 것인지 구별할 수 없고, 구별 없이
+            # 기록하면 쿨다운이 영영 안 끝난다.
+            logger.debug("말 안 걸기로 함: %s", insight.trigger)
+            return 0
+
+        try:
+            await self.channel.send(message)
+        except Exception:
+            # 발송 실패는 루프를 죽이지 않는다. 다음 기회에 다시 시도된다.
+            logger.exception("발송 실패 (%s): %s", self.channel.name, insight.trigger)
+            return 0
+
+        self.agent.confirm_spoken(insight, now, message)
+        return 1
 
     async def run_forever(self, interval_sec: int) -> None:
         while True:

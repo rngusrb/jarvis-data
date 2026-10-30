@@ -19,6 +19,7 @@ WEB_VISIT = TraceKind(
     kind="web_visit",
     label="웹 방문",
     collector="mac_chrome",
+    via="맥",
     # 크롬 기록은 하루에도 수십 건이다. 이틀 조용하면 수집기가 멈춘 것이다
     # (맥이 꺼져 있었을 수도 있지만, 그것도 알아야 할 사실이다).
     stale_after=timedelta(days=2),
