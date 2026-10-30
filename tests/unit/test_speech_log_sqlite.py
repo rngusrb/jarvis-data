@@ -139,3 +139,13 @@ def test_시간대가_다른_기록도_순간으로_고른다(tmp_path: Path) ->
     assert [r.text for r in log.since(datetime(2026, 10, 30, 1, 30, tzinfo=timezone.utc))] == [
         "나중"
     ]
+
+
+def test_한국_시각으로_물어도_같은_순간부터_돌려준다(tmp_path: Path) -> None:
+    log = SQLiteSpeechLog(tmp_path / "t.db")
+    log.record("collection", datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc), "나중")
+
+    # 한국 10:30 = UTC 01:30. 글자로 묻으면 "…T10:30+09:00" 이 "…T02:00+00:00" 보다 뒤라 빠졌다.
+    since = log.since(datetime(2026, 10, 30, 10, 30, tzinfo=timezone(timedelta(hours=9))))
+
+    assert [r.text for r in since] == ["나중"]

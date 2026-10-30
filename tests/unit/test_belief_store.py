@@ -124,3 +124,13 @@ def test_value_grows_with_new_evidence(tmp_path: Path) -> None:
     stored = store.observe(grown, NOW + timedelta(days=3))
     assert stored.value == "전세 계약 직전"
     assert stored.confidence == 0.9
+
+
+def test_한국_시각으로_남겨도_최근_것부터_돌려준다(tmp_path: Path) -> None:
+    store = SQLiteBeliefStore(tmp_path / "t.db")
+    kst = timezone(timedelta(hours=9))
+    # 한국 10:00(= UTC 01:00)에 본 것이 UTC 02:00 에 본 것보다 먼저다.
+    store.observe(_belief(kind="관심사:먼저"), datetime(2026, 8, 27, 10, 0, tzinfo=kst))
+    store.observe(_belief(kind="관심사:나중"), datetime(2026, 8, 27, 2, 0, tzinfo=timezone.utc))
+
+    assert [b.kind for b in store.all()] == ["관심사:나중", "관심사:먼저"]

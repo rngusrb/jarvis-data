@@ -179,3 +179,8 @@ def test_빈_표본은_조용히_넘기지_않는다(tmp_path: Path, caplog: Any
     assert "resting_heart_rate" in payload["received"]["note"]
     # 그리고 로그에 남아야 한다.
     assert any("0개" in record.message for record in caplog.records)
+
+
+def test_시간대_없는_시각은_받지_않는다(tmp_path: Path) -> None:
+    naive = {"kind": "resting_heart_rate", "samples": [{"at": "2026-08-19T07:00:00", "value": 61}]}
+    assert _client(tmp_path).post("/ingest/samples", json=naive, headers=AUTH).status_code == 422
