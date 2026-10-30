@@ -75,4 +75,8 @@ def _clock(hour: float) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-TRIGGERS = [LateDepartureTrigger()]
+# 꺼 둔다. work_departure 를 보내는 수집기가 없어서 30분마다 빈 창만 읽고 있었다.
+# 평일 baseline 대비 편차라는 판단은 2단계("평소보다 늦게 나갔다")에서 위치로 만든
+# 시각에 그대로 쓸 수 있어 지우지 않았다. 켜려면 그 지표에 수집기부터 단다 —
+# tests/invariants/test_live_triggers.py 가 수집기 없는 지표를 보는 트리거를 막는다.
+TRIGGERS: list = []

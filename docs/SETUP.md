@@ -381,7 +381,10 @@ docker update --restart unless-stopped vllm
 |--------|---------|------|
 | `chrome_history` | 크롬 방문 기록 → `web_visit`. 아이폰 크롬에서 본 것도 동기화로 들어온다 | 1시간 |
 | `mac_apps` | 앞에 뜬 앱 → `mac_app`. 앱 이름과 쓴 시간만, 창 제목은 안 읽는다 | 계속 (30초 표본) |
-| `forward` | 폰 단축어가 iCloud 에 적은 줄(2-8)과 `mac_apps` 가 적은 줄을 서버로 | 5분 |
+| `forward` | 위 둘이 보낼 상자에 적은 줄과 폰 단축어가 iCloud 에 적은 줄(2-8)을 서버로 | 5분 |
+
+서버로 보내는 건 `forward` 하나다. 나머지는 상자(`~/Library/Application Support/jarvis/outbox/`)에
+적기만 한다.
 
 먼저 손으로 확인한다 (저장소 루트에서):
 
@@ -391,7 +394,9 @@ docker update --restart unless-stopped vllm
 /usr/bin/python3 -m collectors.forward --dry-run
 ```
 
-토큰은 plist 가 아니라 파일 하나에 둔다. 그다음 launchd 에 올린다:
+토큰은 plist 가 아니라 파일 하나에 둔다. 그다음 launchd 에 올린다. `install.sh` 는 수집기를
+이 저장소가 아니라 `~/Library/Application Support/jarvis/app/` 에 받은 사본(origin 기본
+브랜치)에서 돌린다 — 개발하며 브랜치를 바꿔도 수집이 흔들리지 않게:
 
 ```bash
 mkdir -p ~/Library/Application\ Support/jarvis
@@ -402,6 +407,7 @@ sh collectors/install.sh
 
 ```bash
 tail -f ~/Library/Logs/jarvis/*.log     # 확인
+sh collectors/install.sh                # 머지된 최신으로 바꾸기 (다시 돌려도 안전)
 sh collectors/install.sh --remove       # 내리기
 ```
 

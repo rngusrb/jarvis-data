@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS messages (
     text  TEXT NOT NULL,
     meta  TEXT NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS idx_messages_at ON messages (at);
+-- 시각 인덱스는 걷었다. 대화는 id 순으로 읽는다(같은 초에 온 두 말의 순서가
+-- 시각으로는 안 갈린다). 쓰는 조회 없이 쓰기마다 갱신 비용만 냈다.
+DROP INDEX IF EXISTS idx_messages_at;
 
 CREATE TABLE IF NOT EXISTS cursors (
     name  TEXT PRIMARY KEY,

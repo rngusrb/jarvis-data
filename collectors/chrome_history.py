@@ -7,8 +7,9 @@
 시크릿 모드는 애초에 기록에 안 남아서 따로 거를 필요가 없다.
 
     /usr/bin/python3 -m collectors.chrome_history --dry-run   # 뭐가 갈지 먼저 본다
-    /usr/bin/python3 -m collectors.chrome_history             # 보낸다
+    /usr/bin/python3 -m collectors.chrome_history             # 보낼 상자에 적는다
 
+서버로 보내는 건 배달부(`collectors.forward`)가 한다 — 맥 앱 수집기와 같은 길이다.
 한 시간마다 자동으로 돌리려면 `collectors/install.sh` 를 쓴다.
 
 ## 알아둘 함정 다섯
@@ -51,16 +52,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from collectors.common import (
-    Rejected,
-    Retry,
-    load_state,
-    post,
-    save_state,
-    server,
-    set_aside,
-    token,
-)
+from collectors.common import load_state, outbox_file, save_state
 
 # 1601-01-01 부터 1970-01-01 까지의 초.
 WEBKIT_EPOCH_OFFSET = 11_644_473_600
@@ -317,7 +309,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--profile", type=Path, default=None, help="History 파일 경로. 생략하면 자동 감지"
     )
-    parser.add_argument("--server", default=server())
     parser.add_argument("--dry-run", action="store_true", help="보내지 않고 무엇이 갈지만 본다")
     args = parser.parse_args(argv)
 
@@ -351,29 +342,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  {item['at'][:16]}  {item['meta']['device']:<5} {item['text'][:80]}")
         return 0
 
-    auth = token()
-    if not auth:
-        print("토큰이 없다 — JARVIS_INGEST_TOKEN 또는 상태 폴더의 token 파일", file=sys.stderr)
-        return 1
-
-    written, rejected = 0, 0
-    for i in range(0, len(traces), CHUNK):
-        body = {"source": SOURCE, "kind": KIND, "traces": traces[i : i + CHUNK]}
-        try:
-            written += int(post(args.server, auth, "/ingest/traces", body).get("written", 0))
-        except Rejected as exc:
-            # 내용이 거절된 덩어리가 뒤를 막지 않게 따로 두고 넘어간다.
-            # `forward --replay` 가 되살린다.
-            set_aside(
-                STATE_NAME, str(exc), json.dumps({"to": "traces", **body}, ensure_ascii=False)
-            )
-            rejected += len(body["traces"])
-        except Retry as exc:
-            # 커서를 옮기지 않는다. 다음 실행이 같은 자리부터 다시 보낸다 — 서버가
-            # 중복을 무시하므로 앞 덩어리가 이미 들어갔어도 안전하다.
-            print(f"보내지 못했다, 커서는 그대로 둔다: {exc}", file=sys.stderr)
-            return 1
-
+    # 직접 보내지 않고 보낼 상자에 적는다. 직접 보내면 덩어리가 여럿인 실행이 중간에
+    # 끊겼을 때 커서를 어디까지 옮길지 애매해, 다음 실행이 이미 들어간 방문을 다시 접어
+    # 드물게 두 번 셌다(2026-10-30 리뷰 재현). 상자의 줄은 배달부가 줄 단위로 보내고
+    # 줄 단위로 기억하므로, 끊긴 줄만 그대로 다시 간다 — 같은 줄이라 서버가 하나로 본다.
+    lines = [
+        json.dumps(
+            {"to": "traces", "source": SOURCE, "kind": KIND, "traces": traces[i : i + CHUNK]},
+            ensure_ascii=False,
+        )
+        for i in range(0, len(traces), CHUNK)
+    ]
+    if lines:
+        with outbox_file(SOURCE, now).open("a") as f:
+            f.write("".join(line + "\n" for line in lines))
+    # 상자에 먼저 쓰고 커서를 저장한다. 그 사이에 죽으면 다음 실행이 같은 방문을 한 번 더
+    # 적을 수 있지만, 순서가 반대면 방문이 상자에도 커서에도 없이 사라진다.
     if found.after_id is not None:
         state[key] = {
             "after_id": found.after_id,
@@ -381,10 +365,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "sent_at": now.isoformat(),
         }
         save_state(STATE_NAME, state)
-    print(f"보냄 {len(traces)}개 → 새로 저장 {written}개")
-    if rejected:
-        print(f"거절 {rejected}개 — rejected.jsonl 에 따로 뒀다", file=sys.stderr)
-        return 1
+    print(f"보낼 상자에 {len(traces)}개 ({len(lines)}줄) — 배달부가 보낸다")
     return 0
 
 

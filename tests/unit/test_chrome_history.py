@@ -16,7 +16,6 @@ import pytest
 
 from collectors import chrome_history
 from collectors.chrome_history import Plan, plan, snapshot, to_webkit
-from collectors.common import Rejected, Retry
 
 # 10:00 KST
 T0 = datetime(2026, 10, 30, 1, 0, tzinfo=timezone.utc)
@@ -237,65 +236,56 @@ def test_새_방문이_없으면_커서를_그대로_둔다(chrome: FakeChrome) 
     assert (found.traces, found.after_id, found.waiting) == ([], last, 0)
 
 
-def _run(
-    chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post: Any
-) -> Dict[str, Any]:
+def _run(chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
     monkeypatch.setenv("JARVIS_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("JARVIS_INGEST_TOKEN", "t")
-    monkeypatch.setattr(chrome_history, "post", post)
     code = chrome_history.main(["--profile", str(chrome.path), "--hours", "48"])
     state_file = tmp_path / "state" / "chrome_history.json"
-    rejected = tmp_path / "state" / "rejected.jsonl"
+    outbox = sorted((tmp_path / "state" / "outbox").glob("mac_chrome-*.jsonl"))
     return {
         "code": code,
         "state": json.loads(state_file.read_text()) if state_file.exists() else {},
-        "rejected": rejected.read_text().splitlines() if rejected.exists() else [],
+        "lines": [json.loads(line) for f in outbox for line in f.read_text().splitlines()],
     }
 
 
-def test_보내고_나면_커서를_옮긴다(
+def test_보낼_상자에_적고_커서를_옮긴다(
     chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # 서버로 직접 보내지 않는다. 토큰도 필요 없다 — 보내는 건 배달부 몫이다.
     last = chrome.visit(datetime.now(timezone.utc) - timedelta(hours=2), "a")
-    sent: List[Dict[str, Any]] = []
 
-    def post(server: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        sent.append(body)
-        return {"written": len(body["traces"])}
-
-    result = _run(chrome, tmp_path, monkeypatch, post)
+    result = _run(chrome, tmp_path, monkeypatch)
 
     assert result["code"] == 0
-    assert sent[0]["kind"] == "web_visit"
+    assert [(line["to"], line["kind"]) for line in result["lines"]] == [("traces", "web_visit")]
     assert result["state"][str(chrome.path)]["after_id"] == last
 
 
-def test_서버에_닿지_않으면_커서를_옮기지_않는다(
+def test_다시_돌려도_같은_방문을_다시_적지_않는다(
     chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     chrome.visit(datetime.now(timezone.utc) - timedelta(hours=2), "a")
+    _run(chrome, tmp_path, monkeypatch)
 
-    def post(server: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        raise Retry("서버에 닿지 않는다")
+    result = _run(chrome, tmp_path, monkeypatch)
 
-    result = _run(chrome, tmp_path, monkeypatch, post)
-
-    assert result["code"] == 1
-    assert result["state"] == {}
+    assert len(result["lines"]) == 1
 
 
-def test_거절된_덩어리는_따로_두고_커서는_옮긴다(
+def test_상자에_적은_줄을_배달부가_그대로_보낸다(
     chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 거절을 다시 시도처럼 다루면 그 덩어리가 매시간 뒤를 막는다.
-    last = chrome.visit(datetime.now(timezone.utc) - timedelta(hours=2), "a")
+    from collectors.forward import files, forward
 
-    def post(server: str, auth: str, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        raise Rejected("'web_visit'는 등록되지 않은 흔적 종류다")
+    monkeypatch.setenv("JARVIS_INBOX", str(tmp_path / "no-icloud" / "jarvis"))
+    chrome.visit(datetime.now(timezone.utc) - timedelta(hours=2), "a")
+    _run(chrome, tmp_path, monkeypatch)
+    got: List[Any] = []
 
-    result = _run(chrome, tmp_path, monkeypatch, post)
+    report, _, _ = forward(
+        files(create=False).paths, {}, lambda route, body: got.append((route, body)) or {}
+    )
 
-    assert result["code"] == 1
-    assert result["state"][str(chrome.path)]["after_id"] == last
-    kept = json.loads(result["rejected"][0])
-    assert json.loads(kept["raw"])["to"] == "traces"
+    assert report.sent == 1
+    assert got[0][0] == "/ingest/traces"
+    assert [t["text"] for t in got[0][1]["traces"]] == ["a (example.com)"]

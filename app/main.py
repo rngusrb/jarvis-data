@@ -73,7 +73,13 @@ def build_reflector(settings: Settings) -> Reflector:
     for sector in SECTORS:
         trace_kinds.register(sector.TRACES)
     return Reflector(
-        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+        # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
+        reasoner=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            max_tokens=8192,
+            timeout=300.0,
+        ),
         traces=SQLiteTraceStore(settings.db_path),
         beliefs=SQLiteBeliefStore(settings.db_path),
         kinds=trace_kinds.all(),
@@ -132,7 +138,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
     agent = JarvisAgent(
-        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+        # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
+        reasoner=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            max_tokens=8192,
+            timeout=300.0,
+        ),
         gate=gate,
         providers=(
             ObservationTrendProvider(),
@@ -180,7 +192,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         listener = ListenLoop(
             source=channel,
             responder=Conversationalist(
-                reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+                # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
+                reasoner=VLLMClient(
+                    settings.brain_base_url,
+                    model=settings.brain_model or None,
+                    max_tokens=8192,
+                    timeout=300.0,
+                ),
                 beliefs=SQLiteBeliefStore(settings.db_path),
                 catalog=store,
                 source=store,

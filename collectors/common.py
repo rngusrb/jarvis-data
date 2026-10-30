@@ -50,6 +50,16 @@ def save_state(name: str, data: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def outbox_file(name: str, at: datetime) -> Path:
+    """보낼 상자의 파일. 수집기마다 한 달에 하나 — 끝없이 자라는 파일 하나보다 지우기 쉽다.
+
+    수집기는 여기 적기만 하고, 서버로 보내는 건 배달부(`forward`)가 줄 단위로 한다.
+    """
+    path = state_dir() / "outbox" / f"{name}-{at:%Y-%m}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def server() -> str:
     return os.getenv("JARVIS_SERVER") or DEFAULT_SERVER
 
