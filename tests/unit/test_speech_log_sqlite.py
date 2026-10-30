@@ -121,3 +121,21 @@ def test_old_db_without_spoken_column_is_migrated(tmp_path: Path) -> None:
     assert last.text == "옛 기록"
     # 옛 기록은 실제로 한 말로 본다 — 그때는 SKIP 을 저장하지 않았다.
     assert last.spoken is True
+
+
+def test_시간대가_다른_기록도_순간으로_고른다(tmp_path: Path) -> None:
+    """리뷰 재현: 한국 시각으로 남긴 한 줄이 섞이면 글자 비교로는 더 늦은 줄로 보인다.
+
+    10:00+09:00(= 01:00Z) 뒤에 02:00Z 를 남겼는데 last() 가 앞 줄을 골라, 6시간 쿨다운이
+    실제 마지막 말 5.5시간 만에 풀렸다.
+    """
+    log = SQLiteSpeechLog(tmp_path / "t.db")
+    kst = timezone(timedelta(hours=9))
+    log.record("collection", datetime(2026, 10, 30, 10, 0, tzinfo=kst), "먼저")
+    log.record("collection", datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc), "나중")
+
+    last = log.last("collection")
+    assert last is not None and last.text == "나중"
+    assert [r.text for r in log.since(datetime(2026, 10, 30, 1, 30, tzinfo=timezone.utc))] == [
+        "나중"
+    ]

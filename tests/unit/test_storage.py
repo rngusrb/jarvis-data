@@ -135,3 +135,15 @@ def test_마지막_수신은_표기가_달라도_가장_늦은_순간이다(tmp_
     store.write([_observation(1.0, earlier), _observation(2.0, later)])
 
     assert store.last_seen()["sleep_hours"] == later
+
+
+def test_표기가_섞여도_시간_순서로_돌려준다(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "t.db")
+    # 글자로는 "…T10:00+09:00"(= 01:00Z)이 "…T02:00+00:00" 보다 뒤지만 순간으로는 앞이다.
+    early = datetime(2026, 10, 30, 10, 0, tzinfo=KST)
+    late = datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc)
+    store.write([_observation(2.0, late), _observation(1.0, early)])
+
+    found = store.recent("sleep_hours", datetime(2026, 10, 29, tzinfo=timezone.utc))
+
+    assert [o.value for o in found] == [1.0, 2.0]

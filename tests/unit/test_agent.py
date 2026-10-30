@@ -102,3 +102,5 @@ def test_맥락이_프롬프트에_실린다() -> None:
     prompt = brain.prompts[0]
     assert "sleep_hours 최근 추이" in prompt
     assert "심박이 좀 높네" in prompt
+    # 발화 기록은 UTC 로 남는다. 07:00 UTC 는 한국 16:00 이다.
+    assert "08/19 16:00 (heart_rate_spike)" in prompt

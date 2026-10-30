@@ -118,3 +118,11 @@ def test_맥_앱_수집기가_적은_줄을_그대로_받는다(tmp_path: Path) 
     response = _client(tmp_path).post("/ingest/traces", json=body, headers=AUTH)
 
     assert response.json() == {"received": 1, "written": 1, "kind": "mac_app"}
+
+
+def test_시간대_없는_시각은_받지_않는다(tmp_path: Path) -> None:
+    """받으면 UTC 로 읽혀 한국 시각이 아무 표시 없이 9시간 밀린다."""
+    response = _client(tmp_path).post(
+        "/ingest/traces", json=_payload(["검색"], at="2026-08-27T11:00:00"), headers=AUTH
+    )
+    assert response.status_code == 422

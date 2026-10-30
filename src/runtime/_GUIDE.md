@@ -28,6 +28,15 @@ message = await agent.consider(insight, now); await channel.send(message)
 
 ## 금지사항
 
+### ❌ 시간대 없는 시각을 받지 않는다
+```python
+# ❌ 금지 — at: datetime          # "2026-10-30T07:00:00" 도 통과한다
+# ✅ 대신 — at: AwareDatetime     # 시간대가 없으면 422
+```
+**이유**: 시간대 없는 값은 저장소와 화면이 UTC 로 읽는다. 한국 시각으로 보낸 것이 아무
+표시 없이 9시간 밀린다. 단축어의 ISO 8601 과 맥 수집기들은 모두 시간대를 붙인다.
+**사고 이력**: 2026-10-30 JAR-012 리뷰에서 지적. 아직 그렇게 보낸 쪽은 없었다.
+
 ### ❌ 커서를 처리 뒤에 밀지 않는다
 ```python
 # ❌ 금지 — 답을 만든 뒤에 advance()

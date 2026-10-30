@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
+from src.core.clock import stamp
 from src.core.models import Trace
 
 SCHEMA = """
@@ -61,7 +62,7 @@ class SQLiteTraceStore:
         그 차이가 보여야 수집기가 제대로 도는지 알 수 있다.
         """
         rows = [
-            (t.source, t.kind, _stamp(t.at), t.text, json.dumps(t.meta, ensure_ascii=False))
+            (t.source, t.kind, stamp(t.at), t.text, json.dumps(t.meta, ensure_ascii=False))
             for t in traces
         ]
         if not rows:
@@ -78,7 +79,7 @@ class SQLiteTraceStore:
     def recent(self, kind: str, since: datetime, limit: Optional[int] = None) -> Sequence[Trace]:
         """`limit` 은 최신 것부터 자른다 — 오래된 걸 남기고 새 걸 버리면 안 된다."""
         sql = "SELECT source, kind, at, text, meta FROM traces WHERE kind = ? AND at >= ?"
-        params: List[Any] = [kind, _stamp(since)]
+        params: List[Any] = [kind, stamp(since)]
         if limit is not None:
             sql += " ORDER BY at DESC LIMIT ?"
             params.append(limit)
@@ -102,16 +103,6 @@ class SQLiteTraceStore:
     def count(self) -> int:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
-
-
-def _stamp(at: datetime) -> str:
-    """저장하고 비교하는 시각 문자열. 시간대를 UTC 하나로 맞춘다.
-
-    시각을 문자열로 저장하고 문자열로 비교한다. 크롬 수집기는 +00:00, 폰 단축어는
-    +09:00 으로 보내는데 그대로 두면 같은 순간이 두 줄이 되고, 기간 조회가 최대
-    9시간 어긋난다. 폰이 흔적을 보내기 시작하는 시점(iCloud 파일 배달)에 맞춘다.
-    """
-    return at.astimezone(timezone.utc).isoformat() if at.tzinfo else at.isoformat()
 
 
 def _to_trace(row: Sequence[Any]) -> Trace:

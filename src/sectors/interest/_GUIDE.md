@@ -55,7 +55,7 @@ TRIGGERS: list = []
 ## GC 패턴
 
 ```gc
-pattern: "TraceKind\\((?![^)]*collector)"
+pattern: "TraceKind\((?![^)]*collector)"
 message: "흔적 카드에 collector 를 적는다 — 누가 보내는지 모르면 수집이 멈춘 걸 알 수 없다"
 ```
 
