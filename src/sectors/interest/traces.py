@@ -28,4 +28,17 @@ WEB_VISIT = TraceKind(
     sensitive=True,
 )
 
-TRACES = [WEB_VISIT]
+# 무엇을 알아보는지(웹)와 함께 무엇을 하며 시간을 보내는지(앱)도 관심의 한 면이다.
+# 시간대별 리듬을 읽는 일이 생기면(계획 2단계) 그쪽 섹터로 옮길 수 있다.
+MAC_APP = TraceKind(
+    kind="mac_app",
+    label="맥 앱 사용",
+    collector="mac_apps",
+    via="맥",
+    # 앱 이름과 쓴 시간만 남는다. 창 제목은 읽지 않는다.
+    stale_after=timedelta(days=2),
+    # 하루 수백 줄이라 회고에 낱줄로 넣지 않는다. 쌓아두고 패턴 층이 접어 읽는다.
+    reflect=False,
+)
+
+TRACES = [WEB_VISIT, MAC_APP]

@@ -75,4 +75,4 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 def test_reflector_assembles(tmp_path: Path) -> None:
     """회고 CLI 가 쓰는 조립 경로. 여기도 섹터 모양에 기댄다."""
     reflector = build_reflector(_settings(tmp_path))
-    assert [c.kind for c in reflector.kinds] == ["web_visit"]
+    assert [c.kind for c in reflector.kinds if c.reflect] == ["web_visit"]

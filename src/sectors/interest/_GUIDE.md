@@ -79,4 +79,4 @@ python scripts/harness.py src/sectors/interest/
 
 | 파일 | 책임 |
 |------|------|
-| `traces.py` | 흔적 카드. 지금은 `web_visit` 하나 |
+| `traces.py` | 흔적 카드. `web_visit`(크롬), `mac_app`(맥 앞에 뜬 앱) |

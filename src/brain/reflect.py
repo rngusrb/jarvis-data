@@ -122,7 +122,7 @@ class Reflector:
         since = now - self.lookback
         found: Dict[TraceKind, List[Trace]] = {}
         for card in self.kinds:
-            if not card.active:
+            if not card.active or not card.reflect:
                 continue
             traces = list(self.traces.recent(card.kind, since, limit=self.per_kind_limit))
             if traces:

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  앞에 뜬 앱을 30초마다 보고 사용 구간을 보낼 상자에 적는다.
+  직접 복사하지 않는다 — collectors/install.sh 가 __REPO__ 같은 자리를 채워 올린다.
+  토큰은 여기 적지 않는다. ~/Library/Application Support/jarvis/token 에서 읽는다.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.jarvis.apps</string>
+
+    <!-- 맥 시스템 파이썬. launchd 는 로그인 셸을 안 거쳐 anaconda 가 안 보인다. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>collectors.mac_apps</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JARVIS_SERVER</key>
+        <string>__SERVER__</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- 계속 떠 있는다. 죽으면 launchd 가 다시 띄우고, 하던 구간은 상태 파일에서 잇는다. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__LOGS__/apps.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOGS__/apps.log</string>
+</dict>
+</plist>

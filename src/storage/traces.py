@@ -8,8 +8,8 @@
 같은 URL을 1초 안에 두 번 열 수도 있고, 그건 사고가 아니라 사실이다.
 
 그래서 `text` 까지 포함해 중복을 판단하고, 겹치면 **조용히 무시**한다.
-수집기가 겹치는 구간을 다시 읽는 게 정상 동작이기 때문이다 — 크롬 기록을
-한 시간마다 최근 세 시간치씩 읽으면 매번 3분의 2가 중복이다.
+수집기는 서버에 닿지 못했거나 답을 못 받았으면 같은 것을 다시 보낸다. 그게
+정상 동작이라 받은 수와 새로 저장된 수가 다른 게 기본이다.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
@@ -61,7 +61,7 @@ class SQLiteTraceStore:
         그 차이가 보여야 수집기가 제대로 도는지 알 수 있다.
         """
         rows = [
-            (t.source, t.kind, t.at.isoformat(), t.text, json.dumps(t.meta, ensure_ascii=False))
+            (t.source, t.kind, _stamp(t.at), t.text, json.dumps(t.meta, ensure_ascii=False))
             for t in traces
         ]
         if not rows:
@@ -78,7 +78,7 @@ class SQLiteTraceStore:
     def recent(self, kind: str, since: datetime, limit: Optional[int] = None) -> Sequence[Trace]:
         """`limit` 은 최신 것부터 자른다 — 오래된 걸 남기고 새 걸 버리면 안 된다."""
         sql = "SELECT source, kind, at, text, meta FROM traces WHERE kind = ? AND at >= ?"
-        params: List[Any] = [kind, since.isoformat()]
+        params: List[Any] = [kind, _stamp(since)]
         if limit is not None:
             sql += " ORDER BY at DESC LIMIT ?"
             params.append(limit)
@@ -102,6 +102,16 @@ class SQLiteTraceStore:
     def count(self) -> int:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
+
+
+def _stamp(at: datetime) -> str:
+    """저장하고 비교하는 시각 문자열. 시간대를 UTC 하나로 맞춘다.
+
+    시각을 문자열로 저장하고 문자열로 비교한다. 크롬 수집기는 +00:00, 폰 단축어는
+    +09:00 으로 보내는데 그대로 두면 같은 순간이 두 줄이 되고, 기간 조회가 최대
+    9시간 어긋난다. 폰이 흔적을 보내기 시작하는 시점(iCloud 파일 배달)에 맞춘다.
+    """
+    return at.astimezone(timezone.utc).isoformat() if at.tzinfo else at.isoformat()
 
 
 def _to_trace(row: Sequence[Any]) -> Trace:

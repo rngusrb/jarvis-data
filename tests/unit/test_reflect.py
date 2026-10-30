@@ -83,6 +83,23 @@ def test_shows_existing_kinds_to_prevent_name_sprawl(tmp_path: Path) -> None:
     assert "위 kind를 그대로 써라" in reasoner.prompts[-1]
 
 
+def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
+    """앱 사용 구간은 하루 수백 줄이다. 낱줄로 넣으면 120줄이 반나절치 잡음이 된다."""
+    reflector = _build(tmp_path, GOOD)
+    reflector.traces.write(
+        [Trace(source="mac_apps", kind="mac_app", text="Cursor 42분", at=NOW - timedelta(hours=1))]
+    )
+    app = TraceKind(kind="mac_app", label="맥 앱 사용", collector="mac_apps", reflect=False)
+    reflector.kinds = [WEB, app]
+
+    asyncio.run(reflector.run_once(NOW))
+
+    reasoner = reflector.reasoner
+    assert isinstance(reasoner, ScriptedReasoner)
+    assert "전세자금대출" in reasoner.prompts[-1]
+    assert "Cursor" not in reasoner.prompts[-1]
+
+
 def test_forgets_before_it_prompts(tmp_path: Path) -> None:
     """시든 믿음이 프롬프트에 남으면 모델이 그걸 근거로 스스로 되살린다."""
     reflector = _build(tmp_path, "[]")

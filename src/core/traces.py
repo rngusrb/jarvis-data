@@ -7,7 +7,7 @@
 카드가 지표보다 얇다. 접기(Fold)도, 충돌 정책도 없다. 흔적은 평균 내지
 않고, 같은 흔적이 두 번 오면 그냥 무시하면 되기 때문이다.
 
-대신 지표에 없는 게 하나 있다 — `sensitive`.
+대신 지표에 없는 게 둘 있다 — `sensitive` 와 `reflect`.
 """
 
 from __future__ import annotations
@@ -35,6 +35,10 @@ class TraceKind:
     sensitive: bool = False
     # 어느 기기를 거쳐 오나. 지표 카드의 via 와 같은 뜻이다.
     via: Optional[str] = None
+    # 회고가 낱줄로 훑는가. 회고는 종류별 최근 120줄을 프롬프트에 넣는데,
+    # 앱 사용 구간처럼 하루 수백 줄인 흔적은 120줄이 반나절이라 관심사가 아니라
+    # 잡음이 된다. 그런 건 하루 요약으로 접어서 따로 넣는다(계획 2단계).
+    reflect: bool = True
 
     @property
     def active(self) -> bool:
