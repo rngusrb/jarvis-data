@@ -76,5 +76,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 |------|---------|
 | 2026-08-25 | [플랫폼/섹터 구조 확립 + 바이브 키트 이식](docs/sprints/2026-08-25-structure.md) |
 | 2026-10-29 | [텔레그램 연결, 텍스트 층, 운영 사고 정리](docs/sprints/2026-10-29-telegram-and-text-layer.md) |
+| 2026-10-30 | [0단계: 데이터가 끊기지 않게 (코드)](docs/sprints/2026-10-30-collection-resilience.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
