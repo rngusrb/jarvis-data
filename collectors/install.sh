@@ -54,7 +54,7 @@ fi
 if [ -n "$(git -C "$LIVE" status --porcelain --untracked-files=no)" ]; then
   echo "사본에 고친 파일이 있다: $LIVE" >&2
   git -C "$LIVE" status --short --untracked-files=no >&2
-  echo "고칠 건 저장소에서 PR 로. 사본은 git -C \"$LIVE\" checkout . 으로 되돌린다" >&2
+  echo "고칠 건 저장소에서 PR 로. 사본은 git -C \"$LIVE\" reset --hard 로 되돌린다" >&2
   exit 1
 fi
 git -C "$LIVE" pull --quiet --ff-only
