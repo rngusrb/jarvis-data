@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.core.folding import Sample, daily_mean, daily_sum, is_wrist, merge_spans
+from src.core.folding import (
+    Sample,
+    daily_mean,
+    daily_sum,
+    is_wrist,
+    merge_spans,
+    nights_from_spans,
+)
 
 KST = timezone(timedelta(hours=9))
 BASE = datetime(2026, 8, 18, 23, 0, tzinfo=KST)
@@ -81,3 +88,42 @@ def test_처음_값을_고른다() -> None:
         Sample(MORNING, MORNING, 9.2, ""),
     ]
     assert daily_first(samples, "work_arrival", "s")[0].value == 9.2
+
+
+def _night(*pieces: tuple[float, float]) -> list[tuple[datetime, datetime]]:
+    """(시작, 끝)을 23시 기준 시간 수로 받는다."""
+    return [(BASE + timedelta(hours=a), BASE + timedelta(hours=b)) for a, b in pieces]
+
+
+def test_잠든_시각과_깬_시각을_남긴다() -> None:
+    # 워치는 밤을 조각으로 적고, 중간에 깬 몇 분은 수면이 아니라 빠져 있다.
+    spans = _night((0.5, 2.0), (2.1, 4.0), (4.2, 7.5))
+
+    night = nights_from_spans(spans, kind="sleep_hours", source="apple_health")[0]
+
+    assert night.meta["onset"] == (BASE + timedelta(hours=0.5)).isoformat()
+    assert night.meta["wake"] == (BASE + timedelta(hours=7.5)).isoformat()
+    assert night.meta["segments"] == 3
+
+
+def test_낮잠은_잠든_시각이_되지_않는다() -> None:
+    # 정오 경계 때문에 오후 낮잠(다음날 15~16시)이 그다음 밤과 같이 묶인다.
+    nap = (BASE + timedelta(hours=16), BASE + timedelta(hours=17))
+    sleep = (BASE + timedelta(hours=24.5), BASE + timedelta(hours=31))
+
+    night = nights_from_spans([nap, sleep], kind="sleep_hours", source="apple_health")[0]
+
+    assert night.meta["onset"] == sleep[0].isoformat()
+    assert night.meta["wake"] == sleep[1].isoformat()
+    assert night.value == 7.5  # 합계는 그대로 낮잠까지 더한다
+
+
+def test_두_기기가_겹쳐도_시각과_합계가_부풀지_않는다() -> None:
+    watch = _night((0.0, 7.0))
+    phone = _night((0.5, 7.5))
+
+    night = nights_from_spans(watch + phone, kind="sleep_hours", source="apple_health")[0]
+
+    assert night.value == 7.5
+    assert night.meta["onset"] == (BASE).isoformat()
+    assert night.meta["wake"] == (BASE + timedelta(hours=7.5)).isoformat()

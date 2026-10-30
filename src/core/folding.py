@@ -143,6 +143,26 @@ def daily_mean(samples: Iterable[Sample], kind: str, source: str) -> List[Observ
     return observations
 
 
+# 이보다 짧게 깼다가 다시 잠들면 같은 잠으로 본다. 워치는 밤사이 깬 구간을 따로 적고
+# 그건 수면이 아니라 걸러지므로, 받은 수면 조각 사이에는 몇 분씩 틈이 있다.
+SAME_SLEEP = timedelta(hours=1)
+
+
+def main_sleep(spans: Iterable[Tuple[datetime, datetime]]) -> Tuple[datetime, datetime]:
+    """그 밤에서 가장 긴 잠 덩어리의 시작과 끝 — 잠든 시각과 깬 시각.
+
+    첫 조각의 시작과 마지막 조각의 끝을 쓰면 안 된다. 정오 경계 때문에 오후 낮잠이
+    다음 밤으로 딸려가서(이 방식의 알려진 트레이드오프), 잠든 시각이 오후로 찍힌다.
+    """
+    blocks: List[Tuple[datetime, datetime]] = []
+    for start, end in merge_spans(spans):
+        if blocks and start - blocks[-1][1] <= SAME_SLEEP:
+            blocks[-1] = (blocks[-1][0], max(blocks[-1][1], end))
+        else:
+            blocks.append((start, end))
+    return max(blocks, key=lambda block: block[1] - block[0])
+
+
 def nights_from_spans(
     spans: Iterable[Tuple[datetime, datetime]],
     kind: str,
@@ -165,15 +185,21 @@ def nights_from_spans(
     observations: List[Observation] = []
     for night, night_spans in sorted(by_night.items()):
         total = sum((end - start).total_seconds() for start, end in merge_spans(night_spans))
+        onset, wake = main_sleep(night_spans)
         observations.append(
             Observation(
                 source=source,
                 kind=kind,
                 value=round(total / 3600.0, 2),
                 at=night,
-                # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
-                # 쪼개므로, 한두 개뿐이면 측정이 실패한 것이다.
-                meta={"segments": len(night_spans)},
+                meta={
+                    # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
+                    # 쪼개므로, 한두 개뿐이면 측정이 실패한 것이다.
+                    "segments": len(night_spans),
+                    # 리듬(언제 자고 언제 깨나)의 재료. 합계만 남기면 다시 못 만든다.
+                    "onset": onset.isoformat(),
+                    "wake": wake.isoformat(),
+                },
             )
         )
     return observations

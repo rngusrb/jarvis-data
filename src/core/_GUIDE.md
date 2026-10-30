@@ -120,6 +120,6 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `beliefs.py` | 믿음 모델 + 수명주기(후보→확정→시듦→망각) |
 | `models.py` | `Observation`·`Insight`·`Severity` + 저장소 프로토콜 |
 | `metrics.py` | 지표 카드(`Metric`)와 레지스트리 |
-| `folding.py` | 원본 → 하루치 관측치. 겹침 병합·기기 중복 제거 |
+| `folding.py` | 원본 → 하루치 관측치. 겹침 병합·기기 중복 제거, 수면의 잠든·깬 시각(가장 긴 잠 덩어리) |
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |

@@ -4,7 +4,7 @@
 판단하려면 과거가 있어야 하고, 그건 건강 앱의 전체 내보내기로만 얻을 수 있다.
 그래서 이 스크립트는 딱 한 번(또는 가끔) 돌린다.
 
-    python -m app.backfill ~/Downloads/apple_health_export/내보내기.xml
+    python -m src.sectors.health.backfill ~/Downloads/apple_health_export/내보내기.xml
 """
 
 from __future__ import annotations
