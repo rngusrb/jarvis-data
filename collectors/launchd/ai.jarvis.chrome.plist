@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  크롬 방문 기록을 한 시간마다 보낸다.
+  크롬 방문 기록을 한 시간마다 보낼 상자에 적는다. 서버로는 배달부(forward)가 보낸다.
   직접 복사하지 않는다 — collectors/install.sh 가 __REPO__ 같은 자리를 채워 올린다.
-  토큰은 여기 적지 않는다. ~/Library/Application Support/jarvis/token 에서 읽는다.
+  이 작업은 토큰이 필요 없다. 배달부가 ~/Library/Application Support/jarvis/token 을 읽는다.
 -->
 <plist version="1.0">
 <dict>

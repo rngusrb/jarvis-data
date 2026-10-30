@@ -30,10 +30,9 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from collectors.common import load_state, save_state, state_dir
+from collectors.common import append_lines, load_state, outbox_file, save_state
 
 SOURCE = "mac_apps"
 KIND = "mac_app"
@@ -161,13 +160,6 @@ def to_line(spans: List[Span]) -> str:
     return json.dumps(body, ensure_ascii=False)
 
 
-def outbox(at: datetime) -> Path:
-    """한 달에 한 파일. 끝없이 자라는 파일 하나보다 지우기 쉽다."""
-    path = state_dir() / "outbox" / f"{SOURCE}-{at:%Y-%m}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def front_app() -> Optional[str]:
     """앞에 떠 있는 앱 이름. 못 읽으면 None — 잠금 화면이나 로그인 창일 때 그렇다."""
     asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=5)
@@ -195,7 +187,9 @@ def idle_time() -> timedelta:
 
 def run() -> None:
     tracker = Tracker.restore(load_state(STATE_NAME))
-    print(f"{datetime.now():%m-%d %H:%M} 시작 — 이어받은 구간: {tracker.current}", flush=True)
+    current = tracker.current
+    resumed = f"{current.app} ({current.start:%H:%M} UTC 부터)" if current else "없음"
+    print(f"{datetime.now():%m-%d %H:%M} 시작 — 이어받은 구간: {resumed}", flush=True)
     while True:
         at = datetime.now(timezone.utc)
         try:
@@ -210,8 +204,7 @@ def run() -> None:
         if done:
             # 상자에 먼저 쓰고 상태를 저장한다. 순서가 반대면 그 사이에 죽었을 때
             # 구간이 상태에서도 상자에서도 사라진다.
-            with outbox(at).open("a") as f:
-                f.write(to_line(done) + "\n")
+            append_lines(outbox_file(SOURCE, at), [to_line(done)])
         save_state(STATE_NAME, tracker.dump())
         time.sleep(INTERVAL.total_seconds())
 
@@ -222,7 +215,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.once:
         print(f"앞 앱: {front_app()} · 입력 없이 {idle_time().total_seconds():.0f}초")
-        print(f"보낼 상자: {outbox(datetime.now(timezone.utc))}")
+        print(f"보낼 상자: {outbox_file(SOURCE, datetime.now(timezone.utc))}")
         return 0
     run()
     return 0

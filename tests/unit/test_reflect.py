@@ -84,7 +84,7 @@ def test_shows_existing_kinds_to_prevent_name_sprawl(tmp_path: Path) -> None:
 
 
 def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
-    """앱 사용 구간은 하루 수백 줄이다. 낱줄로 넣으면 120줄이 반나절치 잡음이 된다."""
+    """앱 사용 구간은 하루 수백 줄이다. 낱줄로 넣으면 관심사가 아니라 잡음이 된다."""
     reflector = _build(tmp_path, GOOD)
     reflector.traces.write(
         [Trace(source="mac_apps", kind="mac_app", text="Cursor 42분", at=NOW - timedelta(hours=1))]

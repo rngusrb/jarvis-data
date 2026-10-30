@@ -85,6 +85,7 @@ message: "silent failure 금지 — 저장 실패가 조용히 넘어가면 데�
 ```
 tests:
   - tests/unit/test_storage.py
+  - tests/unit/test_conversation_store.py
   - tests/unit/test_speech_log_sqlite.py
   - tests/unit/test_trace_store.py
   - tests/unit/test_belief_store.py

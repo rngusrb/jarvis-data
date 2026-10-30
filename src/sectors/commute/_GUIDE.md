@@ -102,5 +102,5 @@ python scripts/harness.py src/sectors/commute/
 | 파일 | 책임 |
 |------|------|
 | `metrics.py` | 위치(접지 않음) · 퇴근/출근 시각 카드 |
-| `triggers.py` | 평소보다 늦은 퇴근 감지 |
+| `triggers.py` | 평소보다 늦은 퇴근 감지. **꺼져 있다** — `work_departure` 수집기가 없다 |
 | `inspect.py` | 쌓인 위치를 훑어보는 도구. 패턴이 있는지부터 확인 |
