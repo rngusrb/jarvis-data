@@ -36,6 +36,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.brain.client import Reasoner
 from src.core.beliefs import Belief
+from src.core.clock import local
 from src.core.models import Trace
 from src.core.traces import TraceKind
 from src.storage.beliefs import SQLiteBeliefStore
@@ -132,7 +133,7 @@ class Reflector:
     def _build_prompt(self, harvest: Dict[TraceKind, List[Trace]], now: datetime) -> str:
         parts: List[str] = []
         for card, traces in harvest.items():
-            lines = "\n".join(f"  {t.at:%m-%d %H:%M}  {t.text}" for t in traces)
+            lines = "\n".join(f"  {local(t.at):%m-%d %H:%M}  {t.text}" for t in traces)
             parts.append(f"[{card.label}] {len(traces)}건\n{lines}")
 
         # 이름 난장판을 막는 자리. 기존 목록을 보여주지 않으면 같은 걸
@@ -144,7 +145,7 @@ class Reflector:
         else:
             parts.append("[이미 알고 있는 것]\n  (없음)")
 
-        parts.append(f"오늘은 {now:%Y-%m-%d} 이다. 이 사람은 지금 무엇에 관심이 있나?")
+        parts.append(f"오늘은 {local(now):%Y-%m-%d} 이다. 이 사람은 지금 무엇에 관심이 있나?")
         return "\n\n".join(parts)
 
     def _to_belief(

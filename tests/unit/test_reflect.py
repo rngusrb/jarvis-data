@@ -100,6 +100,29 @@ def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
     assert "Cursor" not in reasoner.prompts[-1]
 
 
+def test_shows_times_in_korean_time(tmp_path: Path) -> None:
+    """UTC 그대로 보여주면 낮 방문이 새벽 방문으로 읽힌다."""
+    reflector = _build(tmp_path, GOOD)
+    reflector.traces.write(
+        [
+            Trace(
+                source="mac_chrome",
+                kind="web_visit",
+                text="점심에 본 페이지",
+                at=datetime(2026, 8, 27, 3, 56, tzinfo=timezone.utc),
+            )
+        ]
+    )
+
+    asyncio.run(reflector.run_once(datetime(2026, 8, 27, 15, 30, tzinfo=timezone.utc)))
+
+    reasoner = reflector.reasoner
+    assert isinstance(reasoner, ScriptedReasoner)
+    assert "08-27 12:56  점심에 본 페이지" in reasoner.prompts[-1]
+    # UTC 로는 아직 27일이지만 한국은 28일 새벽이다.
+    assert "오늘은 2026-08-28 이다" in reasoner.prompts[-1]
+
+
 def test_forgets_before_it_prompts(tmp_path: Path) -> None:
     """시든 믿음이 프롬프트에 남으면 모델이 그걸 근거로 스스로 되살린다."""
     reflector = _build(tmp_path, "[]")

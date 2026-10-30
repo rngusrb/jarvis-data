@@ -29,6 +29,16 @@ GPU 를 태우고 결국 "말할 필요 없음" 판정을 받는다.
 
 ## 금지사항
 
+### ❌ LLM 에게 UTC 시각을 그대로 보여주지 않는다
+```python
+# ❌ 금지 — f"{t.at:%m-%d %H:%M}"            # 흔적·발화 기록은 UTC 로 저장된다
+# ✅ 대신 — f"{local(t.at):%m-%d %H:%M}"     # src/core/clock.py
+```
+**이유**: 생활 리듬을 읽는 게 이 프로덕트의 일이다. 시각이 9시간 밀리면 낮에 일하는 사람이
+새벽에 깨어 있는 사람으로 읽힌다.
+**사고 이력**: 2026-10-30. 회고 프롬프트가 낮 12시 56분의 웹 방문을 "03:56"으로, 아침 9시 전에는
+"오늘"을 어제 날짜로 보여주고 있었다. 발화 기록(최근 24시간 동안 내가 한 말)도 같았다.
+
 ### ❌ 판단을 자유 글로 받지 않는다
 ```python
 # ❌ 금지 — "SKIP 한 단어 아니면 할 말" 을 글자 그대로 받기
@@ -152,6 +162,7 @@ tests:
   - tests/unit/test_collection_status.py
   - tests/unit/test_vllm_client.py
   - tests/unit/test_reasoning_strip.py
+  - tests/unit/test_reflect.py
 ```
 
 ```bash

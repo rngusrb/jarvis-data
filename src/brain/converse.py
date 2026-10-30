@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from statistics import mean
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -26,13 +26,13 @@ from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
 from src.channels.base import Incoming
 from src.core.beliefs import Status
+from src.core.clock import local
 from src.core.models import ObservationCatalog, ObservationSource
 from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.conversation import SQLiteConversation
 
 logger = logging.getLogger(__name__)
 
-KST = timezone(timedelta(hours=9))
 
 SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 사용자가 너에게 말을 걸었다.
 
@@ -105,7 +105,7 @@ class Conversationalist:
             return "최근 2주 수면 기록이 없어."
         recent = rows[-7:]
         avg = mean(o.value for o in recent)
-        body = "\n".join(f"{o.at.astimezone(KST):%m-%d}  {o.value:.1f}시간" for o in recent)
+        body = "\n".join(f"{local(o.at):%m-%d}  {o.value:.1f}시간" for o in recent)
         return f"최근 {len(recent)}번 평균 {avg:.1f}시간.\n{body}"
 
     def _beliefs(self, now: datetime) -> str:

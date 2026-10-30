@@ -112,3 +112,38 @@ def test_백필은_짧은_값으로도_바로잡는다(tmp_path: Path) -> None:
     store.write([_observation(8.0, NIGHT)], on_conflict=Conflict.REPLACE)
 
     assert store.recent("sleep_hours", NIGHT - timedelta(days=1))[0].value == 8.0
+
+
+def test_기간은_표기가_아니라_순간으로_자른다(tmp_path: Path) -> None:
+    """관측치는 +09:00 로 남고 루프는 UTC 로 묻는다. 글자로 비교하면 9시간이 어긋난다.
+
+    한국 시각 30일 07:00 은 UTC 로 29일 22:00 이다. 29일 23:00(UTC) 이후를 물으면
+    빠져야 하는데, 글자로는 "2026-10-30T07" 이 "2026-10-29T23" 보다 뒤라 끼어 들어왔다.
+    """
+    store = SQLiteStore(tmp_path / "t.db")
+    store.write([_observation(1.0, datetime(2026, 10, 30, 7, 0, tzinfo=KST))])
+
+    found = store.recent("sleep_hours", datetime(2026, 10, 29, 23, 0, tzinfo=timezone.utc))
+
+    assert found == []
+
+
+def test_마지막_수신은_표기가_달라도_가장_늦은_순간이다(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "t.db")
+    later = datetime(2026, 10, 30, 1, 0, tzinfo=timezone.utc)  # 한국 시각 10:00
+    earlier = datetime(2026, 10, 30, 9, 0, tzinfo=KST)  # UTC 00:00
+    store.write([_observation(1.0, earlier), _observation(2.0, later)])
+
+    assert store.last_seen()["sleep_hours"] == later
+
+
+def test_표기가_섞여도_시간_순서로_돌려준다(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "t.db")
+    # 글자로는 "…T10:00+09:00"(= 01:00Z)이 "…T02:00+00:00" 보다 뒤지만 순간으로는 앞이다.
+    early = datetime(2026, 10, 30, 10, 0, tzinfo=KST)
+    late = datetime(2026, 10, 30, 2, 0, tzinfo=timezone.utc)
+    store.write([_observation(2.0, late), _observation(1.0, early)])
+
+    found = store.recent("sleep_hours", datetime(2026, 10, 29, tzinfo=timezone.utc))
+
+    assert [o.value for o in found] == [1.0, 2.0]

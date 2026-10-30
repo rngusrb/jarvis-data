@@ -243,3 +243,9 @@ def test_저장할_게_없으면_깨우지_않는다(tmp_path: Path) -> None:
     }
     client.post("/ingest/spans", json=payload, headers=AUTH)
     assert spy.runs == 0
+
+
+def test_시간대_없는_시각은_받지_않는다(tmp_path: Path) -> None:
+    """폰은 이 문으로 보낸다. 시간대 없이 받으면 한국 시각이 UTC 로 읽혀 9시간 밀린다."""
+    naive = {"spans": [{"start": "2026-08-19T00:30:00", "end": "2026-08-19T07:00:00"}]}
+    assert _client(tmp_path).post("/ingest/spans", json=naive, headers=AUTH).status_code == 422

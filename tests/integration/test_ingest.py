@@ -81,3 +81,11 @@ def test_이상한_값은_거절한다(tmp_path: Path) -> None:
     bad = {"observations": [{"kind": "sleep_hours", "value": "일곱시간", "at": "2026-08-19"}]}
     response = client.post("/ingest", json=bad, headers={"Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 422
+
+
+def test_시간대_없는_시각은_받지_않는다(tmp_path: Path) -> None:
+    naive = {"observations": [{"kind": "step_count", "value": 1, "at": "2026-08-19T07:00:00"}]}
+    response = _client(tmp_path).post(
+        "/ingest", json=naive, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    assert response.status_code == 422

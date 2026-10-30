@@ -330,6 +330,23 @@ def run_doc_lint() -> list[dict]:
                       "file": str(guide.relative_to(ROOT)),
                       "message": "'## 최근 변경' 섹션 존재 — 변경 이력은 git 이 소유"})
 
+    # 3-b) 시험 목록 커버리지 — 어느 _GUIDE.md 목록에도 없는 시험은 harness 도 CI 도 안 돌린다.
+    # 사고: 2026-10-30. 08-27 에 생긴 tests/unit/test_reflect.py 가 두 달 동안 어느 목록에도
+    # 없어 CI 에서 한 번도 안 돌았다. 10-30 회고 코드를 고칠 때(#32) 그 시험은 손으로만 돌렸다.
+    # harness all 이 실제로 돌리는 가이드만 센다. 저장소 안의 다른 사본(.claude/worktrees 의
+    # 에이전트 작업 공간)의 가이드까지 세면 여기선 통과하고 깨끗한 CI 에선 실패한다(리뷰 재현).
+    listed = {
+        t
+        for folder in all_folders()
+        for t in parse_guide_tests(ROOT / folder / CFG["guide_filename"])
+    }
+    for test in sorted(ROOT.glob("tests/**/test_*.py")):
+        rel = str(test.relative_to(ROOT))
+        if rel in listed or rel.startswith(tuple(CFG["always_run"])):
+            continue
+        f.append({"level": "FAIL", "type": "test_unlisted", "file": rel,
+                  "message": "어느 _GUIDE.md '## 하네스' 목록에도 없다 — harness·CI 가 안 돌린다"})
+
     # 4) meta 검증 — 여기 적힌 파일은 반드시 존재해야 한다
     for name, path in (META.get("entry_points") or {}).items():
         if not (ROOT / path).exists():

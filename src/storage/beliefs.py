@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional, Sequence
 
 from src.core.beliefs import Belief, Status
+from src.core.clock import stamp
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS beliefs (
@@ -141,8 +142,8 @@ class SQLiteBeliefStore:
                     belief.kind,
                     belief.value,
                     belief.confidence,
-                    belief.first_seen.isoformat(),
-                    belief.last_seen.isoformat(),
+                    stamp(belief.first_seen),
+                    stamp(belief.last_seen),
                     json.dumps(list(belief.evidence), ensure_ascii=False),
                     belief.status.value,
                     json.dumps(belief.meta, ensure_ascii=False),

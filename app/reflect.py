@@ -24,8 +24,6 @@ from src.storage.beliefs import SQLiteBeliefStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s — %(message)s")
 
-KST = timezone(timedelta(hours=9))
-
 
 def show(now: datetime) -> None:
     beliefs = SQLiteBeliefStore(load_settings().db_path).all()

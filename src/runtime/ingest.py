@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -32,7 +31,7 @@ from fastapi import (
     Request,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from src.core.folding import (
     Sample,
@@ -84,10 +83,13 @@ def is_asleep(stage: Optional[str]) -> bool:
     return not any(marker in normalized for marker in NOT_ASLEEP_MARKERS)
 
 
+# 시각은 전부 시간대가 붙어 와야 한다(AwareDatetime). 시간대 없는 값을 받으면 저장소와
+# 화면이 UTC 로 읽어, 한국 시각으로 보낸 것이 아무 표시 없이 9시간 밀린다. 받지 않고
+# 422 로 돌려보내는 편이 낫다 — 단축어의 ISO 8601 과 수집기들은 모두 시간대를 붙인다.
 class ObservationIn(BaseModel):
     kind: str
     value: float
-    at: datetime
+    at: AwareDatetime
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -97,18 +99,18 @@ class IngestRequest(BaseModel):
 
 
 class SpanIn(BaseModel):
-    start: datetime
-    end: datetime
+    start: AwareDatetime
+    end: AwareDatetime
     # 단축어가 수면 단계를 못 실어 보낼 수도 있다. 없으면 전부 수면으로 본다.
     stage: Optional[str] = None
 
 
 class SampleIn(BaseModel):
-    at: datetime
+    at: AwareDatetime
     value: float
     # 아이폰과 워치가 같은 걸음을 각자 센다. 어느 기기 것인지 알아야
     # 겹치는 구간을 걷어낼 수 있다. 없으면 중복 제거 없이 그냥 더한다.
-    end: Optional[datetime] = None
+    end: Optional[AwareDatetime] = None
     source: str = ""
     # 숫자 하나로 안 담기는 관측치가 있다 — 위치는 좌표 두 개다.
     meta: Dict[str, Any] = Field(default_factory=dict)
@@ -129,7 +131,7 @@ class SpanIngestRequest(BaseModel):
 
 
 class TraceIn(BaseModel):
-    at: datetime
+    at: AwareDatetime
     # 사람이 읽는 것. 프롬프트에 들어가는 게 이 값이다.
     text: str
     meta: Dict[str, Any] = Field(default_factory=dict)

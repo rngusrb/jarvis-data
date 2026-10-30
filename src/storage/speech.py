@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Sequence
 
 from src.brain.memory import SpeechRecord
+from src.core.clock import stamp
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS speech (
@@ -57,7 +58,7 @@ class SQLiteSpeechLog:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO speech (trigger, at, text, spoken) VALUES (?, ?, ?, ?)",
-                (trigger, at.isoformat(), text, 1 if spoken else 0),
+                (trigger, stamp(at), text, 1 if spoken else 0),
             )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:
@@ -76,7 +77,7 @@ class SQLiteSpeechLog:
             rows = conn.execute(
                 "SELECT trigger, at, text, spoken FROM speech "
                 "WHERE at >= ? AND spoken = 1 ORDER BY at",
-                (moment.isoformat(),),
+                (stamp(moment),),
             ).fetchall()
         return [_to_record(row) for row in rows]
 
