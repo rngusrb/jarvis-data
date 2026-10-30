@@ -20,7 +20,7 @@ class FakeReasoner:
     Reasoner를 프로토콜로 뽑아둔 덕에 이게 그대로 꽂힌다.
     """
 
-    reply: str = "어젯밤 좀 못 잤네. 오늘은 무리하지 말자."
+    reply: str = '{"speak": true, "message": "어젯밤 좀 못 잤네. 오늘은 무리하지 말자."}'
     prompts: List[str] = field(default_factory=list)
 
     async def ask(self, prompt: str, system: Optional[str] = None) -> str:

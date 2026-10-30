@@ -17,7 +17,7 @@ BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 @dataclass
 class FakeReasoner:
     async def ask(self, prompt: str, system: Optional[str] = None) -> str:
-        return "어젯밤 잘 못 잤네."
+        return '{"speak": true, "message": "어젯밤 잘 못 잤네."}'
 
 
 @dataclass
