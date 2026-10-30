@@ -75,6 +75,7 @@ message: "silent failure 금지 — 조용한 성공보다 시끄러운 실패"
 tests:
   - tests/unit/test_metric_registry.py
   - tests/unit/test_folding.py
+  - tests/unit/test_logs.py
   - tests/invariants/test_boundaries.py
 ```
 
@@ -96,6 +97,15 @@ python scripts/harness.py src/core/
 방식의 주된 실패 모양이다.** 그래서 저장소가 아니라 `Belief.__post_init__`
 에서 막는다 — 저장 직전에 막으면 이미 프롬프트에 들어간 뒤다.
 
+### ❌ 비밀값이 로그에 남게 두지 않는다
+```python
+# ❌ 금지 — 토큰이 든 URL 을 그대로 찍는 라이브러리 로그를 방치
+# ✅ 대신 — 시작할 때 hide_in_logs(설정의 비밀값들). 기록은 남기고 값만 지운다
+```
+**사고 이력**: 2026-10-30. 텔레그램 API 는 봇 토큰을 URL 에 넣고, httpx 가 INFO 로 그
+URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 토큰이 하루 2,880번 남았고,
+그 로그가 디버깅 중 채팅에 그대로 붙여넣어졌다.
+
 ### ❌ 흔적을 접으려 하지 않는다
 관측치에는 `Fold`(SUM/MEAN)가 있지만 흔적에는 없다. "전세자금대출 금리"를
 일곱 개 모아 평균 낼 수 없다. 흔적은 쌓이고, 회고가 요약한다.
@@ -112,3 +122,4 @@ python scripts/harness.py src/core/
 | `metrics.py` | 지표 카드(`Metric`)와 레지스트리 |
 | `folding.py` | 원본 → 하루치 관측치. 겹침 병합·기기 중복 제거 |
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
+| `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
