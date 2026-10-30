@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional, Protocol, Sequence
+from typing import Mapping, Optional, Protocol, Sequence
 
 from src.core.models import Insight, Observation
 
@@ -27,3 +27,16 @@ class Trigger(Protocol):
         말할 거리가 없으면 None. 이게 정상이고 대부분의 호출은 None이다.
         """
         ...
+
+
+class Watch(Protocol):
+    """창 없이 "종류별 마지막 수신 시각"만 보고 판단하는 감시.
+
+    트리거와 나눈 이유는 받는 재료가 달라서다. 트리거는 지표 하나의 최근 구간을
+    받고, 감시는 모든 종류의 마지막 수신 시각을 한 장으로 받는다. 수집 중단처럼
+    "오래될수록 더 중요해지는" 신호는 창에 담으면 오래될수록 안 보인다.
+    """
+
+    name: str
+
+    def check(self, last_seen: Mapping[str, datetime], now: datetime) -> Optional[Insight]: ...

@@ -21,7 +21,8 @@ metrics = MetricRegistry().register(HEALTH_METRICS)
 
 ### 감시·맥락을 레지스트리에서 파생시킨다
 ```python
-stale = [StaleDataTrigger(kind=m.kind, label=m.label, ...) for m in metrics.active()]
+CollectionWatch(sources=[Watched(m.kind, m.label, m.collector, m.via, m.stale_after)
+                         for m in metrics.active()] + [... for t in trace_kinds.active()])
 ```
 **이유**: 지표를 손으로 나열하면 카드와 어긋난다. 실제로 그렇게 어긋났었다.
 

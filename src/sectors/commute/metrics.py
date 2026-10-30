@@ -31,6 +31,7 @@ METRICS = [
         # 500m 오차로 잡힌 점은 패턴 분석에서 빼야 하므로 품질 신호가 필요하다.
         fold=Fold.RAW,
         collector=LEAVE,
+        via="아이폰",
         stale_after=STALE_AFTER,
     ),
     Metric(

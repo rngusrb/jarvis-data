@@ -72,15 +72,15 @@ def test_since_returns_in_time_order(tmp_path: Path) -> None:
 def test_skip_survives_restart_and_holds_the_cooldown(tmp_path: Path) -> None:
     """SKIP 판정도 재시작을 넘겨야 쿨다운이 유지된다."""
     db = tmp_path / "jarvis.db"
-    SQLiteSpeechLog(db).record("stale_data:location", NOW, "말 안 걸기로 함", spoken=False)
+    SQLiteSpeechLog(db).record("collection", NOW, "말 안 걸기로 함", spoken=False)
 
     reborn = SQLiteSpeechLog(db)
-    last = reborn.last("stale_data:location")
+    last = reborn.last("collection")
     assert last is not None
     assert last.spoken is False
     # 게이트는 이걸 보고 막아야 한다.
     insight = Insight(
-        trigger="stale_data:location",
+        trigger="collection",
         summary="위치가 끊김",
         severity=Severity.URGENT,
         at=NOW,

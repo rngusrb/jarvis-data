@@ -33,6 +33,8 @@ class TraceKind:
     # 따로 정한다. 이건 프라이버시 장치이면서 품질 장치이기도 하다 —
     # 흔적 300건을 매 주기 프롬프트에 밀어넣으면 맥락이 잡음으로 찬다.
     sensitive: bool = False
+    # 어느 기기를 거쳐 오나. 지표 카드의 via 와 같은 뜻이다.
+    via: Optional[str] = None
 
     @property
     def active(self) -> bool:

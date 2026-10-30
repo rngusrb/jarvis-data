@@ -115,7 +115,7 @@ class SQLiteStore:
         """종류별 최신 관측 시각.
 
         자동 수집은 요란하게 죽지 않고 조용히 멈춘다. 이 값이 그걸 알아채는
-        유일한 단서다 — StaleDataTrigger와 /health가 함께 본다.
+        유일한 단서다 — 수집 감시(CollectionWatch)와 /health가 함께 본다.
         """
         with self._connect() as conn:
             cursor = conn.execute("SELECT kind, MAX(at) FROM observations GROUP BY kind")

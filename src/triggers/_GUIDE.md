@@ -27,10 +27,10 @@ def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insigh
 
 ## 금지사항
 
-### ❌ 감시견에게 좁은 창을 주지 않는다
+### ❌ 수집 감시를 창으로 판단하지 않는다
 ```python
-# ❌ 금지 — StaleDataTrigger(lookback=timedelta(days=14))
-# ✅ 대신 — 전체 기록을 덮는 창
+# ❌ 금지 — 최근 14일 창을 받아 "비었으면 아직 시작 안 함"
+# ✅ 대신 — Watch 계약: 종류별 "마지막 수신 시각" 한 장을 받는다 (collection.py)
 ```
 **사고 이력**: 2026-08-29 수집이 멈췄다. 자비스는 9월 12일까지 매일 경고하다
 9월 13일부터 침묵했다. 창이 14일이라 8월 29일 기록이 밀려났고, 빈 창은
@@ -38,7 +38,17 @@ def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insigh
 그대로 한 달을 보냈다.
 
 좁은 창에서는 "한 번도 없음"과 "오래전에 끊김"이 똑같이 빈 창으로 보인다.
-baseline을 계산하는 트리거에는 창이 필요하지만 감시견에게는 없다.
+baseline을 계산하는 트리거에는 창이 필요하지만 감시에게는 없다. 그래서 수집 감시는
+트리거가 아니라 별도 계약(`Watch`)이다.
+
+### ❌ 수집 경고를 지표마다 따로, 원인 없이 내지 않는다
+**사고 이력**: 2026-10-03 ~ 10-15 폰 데이터가 끊긴 동안 자비스가 텔레그램으로 열 번
+경고했는데 데이터는 계속 끊겨 있었다. 수면, 심박, 위치가 따로 경고했고, 매번 "자동화
+설정을 확인해"라고 했다. 실제 원인은 폰의 Tailscale이었다. **조언이 틀려서 경고가
+닿아도 아무 일도 일어나지 않았다.**
+
+감시는 하나로 두고 기기별로 모은다. 같은 기기(`via`)에서 오는 것이 비슷한 때 전부
+끊겼으면 연결을 의심하고, 하나만 끊겼으면 그 수집 경로를 짚는다.
 
 
 ### ❌ 절대 기준으로 이상을 판정하지 않는다
@@ -81,8 +91,7 @@ message: "트리거는 순수 함수다 — 네트워크·DB 금지"
 
 ```
 tests:
-  - tests/unit/test_sleep_trigger.py
-  - tests/unit/test_stale_trigger.py
+  - tests/unit/test_collection_watch.py
 ```
 
 ```bash
@@ -95,6 +104,5 @@ python scripts/harness.py src/triggers/
 
 | 파일 | 책임 |
 |------|------|
-| `base.py` | `Trigger` 프로토콜 |
-| `sleep.py` | 평소 대비 수면 급감. 측정 품질(조각 수) 필터 포함 |
-| `stale.py` | 수집이 멈춘 것 자체를 신호로 다룬다 |
+| `base.py` | `Trigger`(지표 하나의 최근 구간을 봄)와 `Watch`(종류별 마지막 수신 시각을 봄) 계약 |
+| `collection.py` | 수집 감시. 끊긴 것을 기기별로 모아 원인과 함께 하나의 신호로 |

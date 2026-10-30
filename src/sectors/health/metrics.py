@@ -18,6 +18,7 @@ METRICS = [
         # 조각 수 자체가 측정 품질 신호라 원본 구간이 서버까지 와야 한다.
         fold=Fold.SPANS,
         collector=SHORTCUT,
+        via="아이폰",
         # 단축어의 "최근 1일" 창이 어제보다 일찍 깬 날 어젯밤을 반토막 낸다.
         # 잘린 조각이 온전한 밤을 덮어쓰면 과거가 조용히 줄어든다.
         on_conflict=Conflict.KEEP_LARGER,
@@ -41,6 +42,7 @@ METRICS = [
         label="휴식기 심박",
         fold=Fold.MEAN,
         collector=SHORTCUT,
+        via="아이폰",
     ),
     Metric(
         kind="heart_rate_avg",

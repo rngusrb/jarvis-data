@@ -1,4 +1,4 @@
-from src.triggers.base import Trigger
-from src.triggers.stale import StaleDataTrigger
+from src.triggers.base import Trigger, Watch
+from src.triggers.collection import CollectionWatch, Watched
 
-__all__ = ["Trigger", "StaleDataTrigger"]
+__all__ = ["Trigger", "Watch", "CollectionWatch", "Watched"]

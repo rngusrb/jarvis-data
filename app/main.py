@@ -44,7 +44,7 @@ from src.storage.conversation import SQLiteConversation
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
-from src.triggers.stale import StaleDataTrigger
+from src.triggers.collection import CollectionWatch, Watched
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,16 +96,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.metrics = metrics
     app.state.trace_kinds = trace_kinds
 
-    stale = [
-        StaleDataTrigger(kind=m.kind, label=m.label, stale_after=m.stale_after)
-        for m in metrics.active()
-    ]
+    # 지표와 흔적은 마지막 수신 시각을 한 장으로 합쳐서 본다. 이름이 겹치면
+    # 어느 쪽 시각인지 알 수 없으므로 여기서 멈춘다.
+    clash = {m.kind for m in metrics.all()} & {t.kind for t in trace_kinds.all()}
+    if clash:
+        raise ValueError(f"지표와 흔적의 이름이 겹친다: {sorted(clash)}")
+
+    collection = CollectionWatch(
+        sources=[
+            Watched(m.kind, m.label, m.collector or "", m.via or "기기 미상", m.stale_after)
+            for m in metrics.active()
+        ]
+        + [
+            Watched(t.kind, t.label, t.collector or "", t.via or "기기 미상", t.stale_after)
+            for t in trace_kinds.active()
+        ],
+        # 기기 전체가 끊겼을 때 무엇부터 볼지. 배포 환경의 사실이라 여기서 정한다.
+        hints={
+            "아이폰": "아이폰에서 Tailscale이 켜져 있는지",
+            "맥": "맥이 켜져 있는지, 맥 수집기(launchd)가 도는지",
+        },
+    )
     # 발화 기억은 DB에 남긴다. 메모리에만 두면 재시작할 때마다 쿨다운이
     # 풀려서, 주 단위로 말하기로 한 신호가 배포할 때마다 되풀이된다.
     gate = Gate(
         log=SQLiteSpeechLog(settings.db_path),
         cooldown_overrides={
-            **{t.name: timedelta(days=1) for t in stale},
+            # 수집 중단은 상태가 계속 유지된다. 하루 한 번이면 충분하다.
+            collection.name: timedelta(days=1),
             # 만성 신호는 상태가 계속 유지된다. 기본 6시간으로 두면
             # "요즘 잠이 부족하네요"를 하루 네 번 듣는다.
             "chronic_short_sleep": timedelta(days=7),
@@ -130,13 +148,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.store = store
     # 흔적은 관측치와 같은 DB 파일에 산다 — 백업 경로를 하나로 두려는 것.
-    app.state.traces = SQLiteTraceStore(settings.db_path)
+    traces = SQLiteTraceStore(settings.db_path)
+    app.state.traces = traces
 
     jarvis = JarvisLoop(
         source=store,
-        triggers=[*sector_triggers, *stale],
+        triggers=sector_triggers,
         agent=agent,
         channel=build_channel(settings),
+        watches=[collection],
+        snapshot=lambda: {**store.last_seen(), **traces.last_seen()},
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis

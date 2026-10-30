@@ -314,3 +314,48 @@ def test_cooldown_actually_expires() -> None:
     # 쿨다운 밖 — 다시 판단한다.
     assert asyncio.run(agent.consider(insight, BASE + timedelta(hours=7))) is None
     assert reasoner.calls == 2
+
+
+@dataclass
+class OnceWatch:
+    """마지막 수신 시각을 받아 늘 같은 신호를 내는 감시."""
+
+    name: str = "collection"
+    seen: List[dict] = field(default_factory=list)
+
+    def check(self, last_seen: dict, now: datetime) -> Optional[Insight]:
+        self.seen.append(dict(last_seen))
+        return Insight(trigger=self.name, summary="수집이 끊겼다", severity=Severity.URGENT, at=now)
+
+
+def test_감시가_마지막_수신_시각을_받아_말한다() -> None:
+    watch = OnceWatch()
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[],
+        agent=JarvisAgent(reasoner=FakeReasoner()),
+        channel=channel,
+        watches=[watch],
+        snapshot=lambda: {"location": BASE},
+    )
+    assert asyncio.run(loop.run_once()) == 1
+    assert watch.seen == [{"location": BASE}]
+    assert channel.sent == ["어젯밤 잘 못 잤네."]
+
+
+def test_마지막_수신_시각을_못_읽어도_다른_신호는_말한다() -> None:
+    def broken() -> dict:
+        raise RuntimeError("DB 잠김")
+
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[AlwaysFires("sleep_drop")],
+        agent=JarvisAgent(reasoner=FakeReasoner()),
+        channel=channel,
+        watches=[OnceWatch()],
+        snapshot=broken,
+    )
+    assert asyncio.run(loop.run_once()) == 1
+    assert len(channel.sent) == 1

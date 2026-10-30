@@ -60,6 +60,9 @@ class Metric:
     collector: Optional[str] = None
     stale_after: timedelta = timedelta(hours=36)
     on_conflict: Conflict = Conflict.REPLACE
+    # 어느 기기를 거쳐 오나 (예: 아이폰, 맥). 같은 기기에서 오는 것들이 비슷한 때
+    # 한꺼번에 끊기면, 수집 경로 하나가 아니라 그 기기와 서버 사이 연결을 의심한다.
+    via: Optional[str] = None
 
     @property
     def active(self) -> bool:
