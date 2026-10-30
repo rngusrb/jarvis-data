@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from collectors.common import load_state, outbox_file, save_state
+from collectors.common import append_lines, load_state, outbox_file, save_state
 
 # 1601-01-01 부터 1970-01-01 까지의 초.
 WEBKIT_EPOCH_OFFSET = 11_644_473_600
@@ -354,10 +354,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         for i in range(0, len(traces), CHUNK)
     ]
     if lines:
-        with outbox_file(SOURCE, now).open("a") as f:
-            f.write("".join(line + "\n" for line in lines))
-    # 상자에 먼저 쓰고 커서를 저장한다. 그 사이에 죽으면 다음 실행이 같은 방문을 한 번 더
-    # 적을 수 있지만, 순서가 반대면 방문이 상자에도 커서에도 없이 사라진다.
+        append_lines(outbox_file(SOURCE, now), lines)
+    # 상자에 먼저 쓰고 커서를 저장한다. 순서가 반대면 그 사이에 죽었을 때 방문이 상자에도
+    # 커서에도 없이 사라진다. 이 순서에서 그 사이에 죽으면 다음 실행이 같은 방문을 다시
+    # 적는데, 그사이 같은 칸에 더 이른 방문이 늦게 들어왔거나 제목이 바뀌면 (시각, 텍스트)가
+    # 달라 두 번 셀 수 있다 — 로컬 파일 두 번 쓰기 사이의 창이라 드물다.
     if found.after_id is not None:
         state[key] = {
             "after_id": found.after_id,

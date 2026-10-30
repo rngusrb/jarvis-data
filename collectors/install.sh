@@ -49,6 +49,14 @@ fi
 if [ ! -d "$LIVE/.git" ]; then
   git clone --quiet "$(git -C "$HERE" remote get-url origin)" "$LIVE"
 fi
+# 사본은 받기만 하는 곳이다. 거기서 고친 파일이 있으면 pull 이 조용히 성공하고 고친 게
+# 그대로 돈다 — 찍히는 해시와 실제 코드가 달라진다.
+if [ -n "$(git -C "$LIVE" status --porcelain --untracked-files=no)" ]; then
+  echo "사본에 고친 파일이 있다: $LIVE" >&2
+  git -C "$LIVE" status --short --untracked-files=no >&2
+  echo "고칠 건 저장소에서 PR 로. 사본은 git -C \"$LIVE\" checkout . 으로 되돌린다" >&2
+  exit 1
+fi
 git -C "$LIVE" pull --quiet --ff-only
 echo "수집기 코드: $(git -C "$LIVE" log --oneline -1)"
 

@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 DEFAULT_SERVER = "http://100.98.90.38:8100"
 
@@ -58,6 +58,22 @@ def outbox_file(name: str, at: datetime) -> Path:
     path = state_dir() / "outbox" / f"{name}-{at:%Y-%m}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def append_lines(path: Path, lines: Sequence[str]) -> None:
+    """보낼 상자에 줄을 덧붙인다. 앞 줄이 줄바꿈 없이 끝났으면(쓰다가 죽음) 줄부터 바꾼다.
+
+    안 바꾸면 찢긴 조각과 새 줄이 한 줄로 붙는다. 조각이 한글 글자 중간에서 끊겼으면
+    배달부가 그 줄을 통째로 깨진 줄로 따로 둬, 새로 쓴 덩어리(최대 500건)까지 함께
+    거절된다(2026-10-30 리뷰 재현).
+    """
+    torn = False
+    if path.exists() and path.stat().st_size:
+        with path.open("rb") as f:
+            f.seek(-1, os.SEEK_END)
+            torn = f.read(1) != b"\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(("\n" if torn else "") + "".join(line + "\n" for line in lines))
 
 
 def server() -> str:

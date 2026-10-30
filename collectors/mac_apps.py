@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from collectors.common import load_state, outbox_file, save_state
+from collectors.common import append_lines, load_state, outbox_file, save_state
 
 SOURCE = "mac_apps"
 KIND = "mac_app"
@@ -204,8 +204,7 @@ def run() -> None:
         if done:
             # 상자에 먼저 쓰고 상태를 저장한다. 순서가 반대면 그 사이에 죽었을 때
             # 구간이 상태에서도 상자에서도 사라진다.
-            with outbox_file(SOURCE, at).open("a") as f:
-                f.write(to_line(done) + "\n")
+            append_lines(outbox_file(SOURCE, at), [to_line(done)])
         save_state(STATE_NAME, tracker.dump())
         time.sleep(INTERVAL.total_seconds())
 

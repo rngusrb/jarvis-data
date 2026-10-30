@@ -289,3 +289,19 @@ def test_상자에_적은_줄을_배달부가_그대로_보낸다(
     assert report.sent == 1
     assert got[0][0] == "/ingest/traces"
     assert [t["text"] for t in got[0][1]["traces"]] == ["a (example.com)"]
+
+
+def test_상자에_못_쓰면_커서를_옮기지_않는다(
+    chrome: FakeChrome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 순서가 반대(커서 먼저)면 그 사이에 죽었을 때 방문이 상자에도 커서에도 없이 사라진다.
+    chrome.visit(datetime.now(timezone.utc) - timedelta(hours=2), "a")
+
+    def disk_full(path: Path, lines: Any) -> None:
+        raise OSError("디스크가 찼다")
+
+    monkeypatch.setattr(chrome_history, "append_lines", disk_full)
+    with pytest.raises(OSError):
+        _run(chrome, tmp_path, monkeypatch)
+
+    assert not (tmp_path / "state" / "chrome_history.json").exists()

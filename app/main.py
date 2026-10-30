@@ -138,13 +138,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
     agent = JarvisAgent(
-        # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
-        reasoner=VLLMClient(
-            settings.brain_base_url,
-            model=settings.brain_model or None,
-            max_tokens=8192,
-            timeout=300.0,
-        ),
+        reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
         gate=gate,
         providers=(
             ObservationTrendProvider(),
@@ -192,13 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         listener = ListenLoop(
             source=channel,
             responder=Conversationalist(
-                # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
-                reasoner=VLLMClient(
-                    settings.brain_base_url,
-                    model=settings.brain_model or None,
-                    max_tokens=8192,
-                    timeout=300.0,
-                ),
+                reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
                 beliefs=SQLiteBeliefStore(settings.db_path),
                 catalog=store,
                 source=store,

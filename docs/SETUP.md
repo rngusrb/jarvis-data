@@ -419,7 +419,7 @@ sh collectors/install.sh --remove       # 내리기
 
 > **iCloud 폴더 권한**: launchd 가 띄운 `/usr/bin/python3` 는 터미널과 권한이 따로다.
 > 손으로 돌린 `forward --dry-run` 이 되는데 `forward.log` 에 "못 열었다 … Operation not
-> permitted" 가 찍히면 macOS 가 막은 것이다. 그래도 맥 상자(앱 사용)는 계속 보낸다.
+> permitted" 가 찍히면 macOS 가 막은 것이다. 그래도 맥 상자(크롬 기록, 앱 사용)는 계속 보낸다.
 > 시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근 권한에 `/usr/bin/python3` 를
 > 더하면 풀리지만, 그 파이썬으로 도는 모든 것에 권한이 가니 고르고 결정한다.
 

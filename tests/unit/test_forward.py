@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -251,3 +252,37 @@ def test_받은_편지함이_없으면_만들고_시험_실행은_만들지_않�
 
     assert folder.is_dir()
     assert any("만들었다" in note for note in found.notes)
+
+
+def test_찢긴_줄_뒤에_덧붙이면_줄부터_바꾼다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 리뷰 재현: 한글 글자 중간에서 찢긴 조각에 새 줄이 바로 붙으면 둘이 한 줄이 되어
+    # 새로 쓴 덩어리까지 통째로 깨진 줄로 거절됐다.
+    from collectors.common import append_lines
+
+    monkeypatch.setenv("JARVIS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("JARVIS_INBOX", str(tmp_path / "no-icloud" / "jarvis"))
+    outbox = tmp_path / "state" / "outbox"
+    outbox.mkdir(parents=True)
+    box = outbox / "mac_chrome-2026-10.jsonl"
+    box.write_bytes('{"to": "traces", "text": "카'.encode()[:-1])  # 글자 중간에서 끊김
+
+    append_lines(box, [line("sleep")])
+    server = FakeServer()
+    report, _, _ = forward(files(create=False).paths, {}, server)
+
+    assert [body["kind"] for _, body in server.got] == ["sleep"]
+    assert report.rejected == 1
+
+
+def test_하루_넘게_이어지지_않은_끝줄은_깨진_것으로_따로_둔다(inbox: Path) -> None:
+    # 달이 바뀌면 다음 줄이 새 파일로 가서 옛 파일의 찢긴 끝은 영영 이어지지 않는다.
+    inbox.write_text(line("location") + "\n" + '{"to": "samples", "kind": "x"')
+    old = time.time() - 2 * 24 * 3600
+    os.utime(inbox, (old, old))
+
+    report, state = run(FakeServer())
+
+    assert (report.sent, report.rejected) == (1, 1)
+    assert state[str(inbox)]["offset"] == len(inbox.read_bytes())

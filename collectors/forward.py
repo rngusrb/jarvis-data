@@ -3,7 +3,7 @@
 두 곳을 읽는다.
 
 - 아이폰 단축어가 iCloud Drive 에 덧붙이는 파일: `단축어/jarvis/*.jsonl`
-- 맥 수집기(`mac_apps`)가 적는 보낼 상자: `상태 폴더/outbox/*.jsonl`
+- 맥 수집기들(`chrome_history`, `mac_apps`)이 적는 보낼 상자: `상태 폴더/outbox/*.jsonl`
 
     /usr/bin/python3 -m collectors.forward --dry-run   # 무엇이 갈지 본다
     /usr/bin/python3 -m collectors.forward             # 보낸다 (launchd 가 5분마다)
@@ -38,8 +38,9 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
@@ -69,6 +70,9 @@ INBOX = Path.home() / "Library/Mobile Documents/iCloud~is~workflow~my~workflows/
 # 파일 앞부분의 지문. 같은 이름으로 **다른** 파일이 생기면(지우고 새로 만들면)
 # 바이트 위치가 엉뚱한 데를 가리킨다. 덧붙이기만 했다면 앞부분은 안 바뀐다.
 HEAD = 256
+
+# 끝의 못 읽는 줄을 "덜 쓴 것"으로 보고 기다리는 기한.
+STALE_TAIL = timedelta(days=1)
 
 # 깨진 줄을 건너뛸 때 다음 객체가 시작하는 곳. 줄바꿈 뒤의 `{`, 또는 줄바꿈이
 # 빠졌어도 줄의 첫 열쇠인 `{"to":`.
@@ -227,9 +231,21 @@ def forward_file(
 
     leftover = data[pos:].strip()
     if leftover and report.stopped is None:
-        report.notes.append(
-            f"{path.name} 끝에 아직 못 읽은 {len(leftover)}바이트 — 덜 쓴 줄이면 다음에 들어간다"
-        )
+        if time.time() - path.stat().st_mtime > STALE_TAIL.total_seconds():
+            # 덜 쓴 줄이었다면 그사이 이어졌을 것이다. 영원히 기다리면 5분마다 같은 안내만
+            # 쌓인다 — 달이 바뀌어 다음 줄이 새 파일로 간 상자가 그렇다(리뷰 재현).
+            report.rejected += 1
+            rejects.append(
+                {
+                    "file": str(path),
+                    "reason": "끝에 남은 깨진 줄 — 하루 넘게 이어지지 않았다",
+                    "raw": data[pos:].decode("utf-8", errors="replace"),
+                }
+            )
+            pos = len(data)
+        else:
+            waiting = f"{path.name} 끝에 아직 못 읽은 {len(leftover)}바이트"
+            report.notes.append(f"{waiting} — 덜 쓴 줄이면 다음에 들어간다")
     return {"offset": pos, "head": _head(data, pos)}
 
 
