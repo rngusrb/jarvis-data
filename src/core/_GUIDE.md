@@ -76,6 +76,7 @@ tests:
   - tests/unit/test_metric_registry.py
   - tests/unit/test_folding.py
   - tests/unit/test_logs.py
+  - tests/unit/test_clock.py
   - tests/invariants/test_boundaries.py
 ```
 
@@ -122,4 +123,5 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `metrics.py` | 지표 카드(`Metric`)와 레지스트리 |
 | `folding.py` | 원본 → 하루치 관측치. 겹침 병합·기기 중복 제거 |
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
+| `clock.py` | 보여줄 시각 — 한국 시간(`KST`, `local`). 저장소는 표기 그대로, 보여줄 때만 바꾼다 |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |

@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
+from src.core.clock import local
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource
 
@@ -34,7 +35,7 @@ class ObservationTrendProvider:
             return None
         recent = sorted(insight.observations, key=lambda o: o.at)[-self.max_points :]
         kind = recent[0].kind
-        lines = [f"- {o.at:%m/%d} {o.value:g}" for o in recent]
+        lines = [f"- {local(o.at):%m/%d} {o.value:g}" for o in recent]
         return ContextBlock(label=f"{kind} 최근 추이", body="\n".join(lines))
 
 
@@ -55,7 +56,7 @@ class SpeechHistoryProvider:
         records = self.log.since(now - self.window)
         if not records:
             return None
-        lines = [f"- {r.at:%m/%d %H:%M} ({r.trigger}) {r.text}" for r in records]
+        lines = [f"- {local(r.at):%m/%d %H:%M} ({r.trigger}) {r.text}" for r in records]
         return ContextBlock(label="최근 24시간 동안 내가 한 말", body="\n".join(lines))
 
 
@@ -141,7 +142,7 @@ class RecentValuesProvider:
             if not rows:
                 continue
             recent = rows[-self.max_points :]
-            values = " · ".join(f"{o.at:%m/%d} {o.value:g}" for o in recent)
+            values = " · ".join(f"{local(o.at):%m/%d} {o.value:g}" for o in recent)
             chunks.append(f"- {metric.label}({metric.kind}): {values}")
 
         if not chunks:

@@ -97,10 +97,16 @@ class SQLiteStore:
         return len(rows)
 
     def recent(self, kind: str, since: datetime) -> Sequence[Observation]:
+        """`since` 이후의 관측치. 시각은 글자가 아니라 순간으로 비교한다.
+
+        관측치는 폰이 보낸 `+09:00` 표기로 남고 루프는 UTC 로 묻는다. 글자로 비교하면
+        "2026-10-30T07:00+09:00"(= 29일 22시 UTC)이 "2026-10-29T23:00+00:00" 보다 뒤로
+        쳐져 경계가 최대 9시간 어긋난다. julianday 는 표기의 시간대를 풀어 비교한다.
+        """
         with self._connect() as conn:
             cursor = conn.execute(
                 "SELECT source, kind, at, value, meta FROM observations "
-                "WHERE kind = ? AND at >= ? ORDER BY at",
+                "WHERE kind = ? AND julianday(at) >= julianday(?) ORDER BY julianday(at)",
                 (kind, since.isoformat()),
             )
             rows = cursor.fetchall()
@@ -117,9 +123,12 @@ class SQLiteStore:
         자동 수집은 요란하게 죽지 않고 조용히 멈춘다. 이 값이 그걸 알아채는
         유일한 단서다 — 수집 감시(CollectionWatch)와 /health가 함께 본다.
         """
+        # max() 하나만 있는 집계에서 SQLite 는 나머지 열을 그 최댓값 행에서 가져온다.
         with self._connect() as conn:
-            cursor = conn.execute("SELECT kind, MAX(at) FROM observations GROUP BY kind")
-            return {kind: datetime.fromisoformat(at) for kind, at in cursor.fetchall()}
+            cursor = conn.execute(
+                "SELECT kind, at, MAX(julianday(at)) FROM observations GROUP BY kind"
+            )
+            return {kind: datetime.fromisoformat(at) for kind, at, _ in cursor.fetchall()}
 
     def count(self) -> int:
         with self._connect() as conn:
