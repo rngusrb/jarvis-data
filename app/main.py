@@ -33,6 +33,7 @@ from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
+from src.core.logs import hide_in_logs
 from src.core.metrics import MetricRegistry
 from src.core.traces import TraceRegistry
 from src.runtime.ingest import router as ingest_router
@@ -82,6 +83,7 @@ def build_reflector(settings: Settings) -> Reflector:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
+    hide_in_logs(settings.telegram_bot_token, settings.ingest_token)
     store = SQLiteStore(settings.db_path)
 
     # 섹터를 켜는 유일한 자리. 새 섹터를 추가하려면 위 import 와 이 목록에

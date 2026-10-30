@@ -341,7 +341,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
     traces = found.traces
     print(
-        f"{now:%m-%d %H:%M} 프로필 {profile_label(history)} · 커서 {after_id} → {found.after_id} · "
+        f"{datetime.now():%m-%d %H:%M} 프로필 {profile_label(history)} · "
+        f"커서 {after_id} → {found.after_id} · "
         f"흔적 {len(traces)}개 · 안 닫힌 칸이라 미룬 방문 {found.waiting}건"
     )
 
