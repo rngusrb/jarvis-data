@@ -97,6 +97,8 @@ def test_백필과_단축어가_같은_값을_낸다(tmp_path: Path) -> None:
 
     assert from_shortcut["value"] == from_backfill.value
     assert from_shortcut["segments"] == from_backfill.meta["segments"]
+    assert from_shortcut["onset"] == from_backfill.meta["onset"]
+    assert from_shortcut["wake"] == from_backfill.meta["wake"]
 
 
 def test_단계_정보가_없으면_전부_수면으로_본다(tmp_path: Path) -> None:

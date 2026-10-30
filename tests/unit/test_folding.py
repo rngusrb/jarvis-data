@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.core.folding import Sample, daily_mean, daily_sum, is_wrist, merge_spans
+from src.core.folding import (
+    Sample,
+    daily_mean,
+    daily_sum,
+    is_wrist,
+    merge_spans,
+    nights_from_spans,
+)
 
 KST = timezone(timedelta(hours=9))
 BASE = datetime(2026, 8, 18, 23, 0, tzinfo=KST)
@@ -81,3 +88,73 @@ def test_처음_값을_고른다() -> None:
         Sample(MORNING, MORNING, 9.2, ""),
     ]
     assert daily_first(samples, "work_arrival", "s")[0].value == 9.2
+
+
+def _night(*pieces: tuple[float, float]) -> list[tuple[datetime, datetime]]:
+    """(시작, 끝)을 23시 기준 시간 수로 받는다."""
+    return [(BASE + timedelta(hours=a), BASE + timedelta(hours=b)) for a, b in pieces]
+
+
+def test_잠든_시각과_깬_시각을_남긴다() -> None:
+    # 워치는 밤을 조각으로 적고, 중간에 깬 몇 분은 수면이 아니라 빠져 있다.
+    spans = _night((0.5, 2.0), (2.1, 4.0), (4.2, 7.5))
+
+    night = nights_from_spans(spans, kind="sleep_hours", source="apple_health")[0]
+
+    assert night.meta["onset"] == (BASE + timedelta(hours=0.5)).isoformat()
+    assert night.meta["wake"] == (BASE + timedelta(hours=7.5)).isoformat()
+    assert night.meta["segments"] == 3
+
+
+def test_낮잠은_잠든_시각이_되지_않는다() -> None:
+    # 정오 경계 때문에 오후 낮잠(다음날 15~16시)이 그다음 밤과 같이 묶인다.
+    nap = (BASE + timedelta(hours=16), BASE + timedelta(hours=17))
+    sleep = (BASE + timedelta(hours=24.5), BASE + timedelta(hours=31))
+
+    night = nights_from_spans([nap, sleep], kind="sleep_hours", source="apple_health")[0]
+
+    assert night.meta["onset"] == sleep[0].isoformat()
+    assert night.meta["wake"] == sleep[1].isoformat()
+    assert night.value == 7.5  # 합계는 그대로 낮잠까지 더한다
+
+
+def test_두_기기가_겹쳐도_시각과_합계가_부풀지_않는다() -> None:
+    watch = _night((0.0, 7.0))
+    phone = _night((0.5, 7.5))
+
+    night = nights_from_spans(watch + phone, kind="sleep_hours", source="apple_health")[0]
+
+    assert night.value == 7.5
+    assert night.meta["onset"] == (BASE).isoformat()
+    assert night.meta["wake"] == (BASE + timedelta(hours=7.5)).isoformat()
+
+
+def test_정오를_넘긴_잠은_한_밤이다() -> None:
+    # 리뷰 재현: 04:30~13:30 을 조각마다 배정하면 정오 뒤 꼬리가 다음 밤이 되어, 깬 시각이
+    # 정오 직후로 잘리고 다음 날 "어젯밤 1.5시간" 짜리 행이 생겼다.
+    spans = _night((5.5, 9.0), (9.1, 12.9), (13.0, 13.4), (13.5, 14.5))
+
+    nights = nights_from_spans(spans, kind="sleep_hours", source="apple_health")
+
+    assert len(nights) == 1
+    assert nights[0].meta["wake"] == (BASE + timedelta(hours=14.5)).isoformat()
+    assert nights[0].value == 8.7
+
+
+def test_한_시간_넘게_깨어_있었으면_다른_잠이다() -> None:
+    joined = nights_from_spans(_night((0, 3), (3.8, 7)), kind="s", source="a")[0]
+    split = nights_from_spans(_night((0, 3), (4.2, 5)), kind="s", source="a")[0]
+
+    # 48분 깼다 다시 잔 것은 같은 잠이다. 기준을 더 짧게 잡으면 잠든 시각이 03:48 이 된다.
+    assert joined.meta["onset"] == BASE.isoformat()
+    assert joined.meta["wake"] == (BASE + timedelta(hours=7)).isoformat()
+    # 틈이 1시간을 넘으면 덩어리가 갈리고, 긴 쪽(0~3시)이 잠든·깬 시각이 된다.
+    assert split.meta["wake"] == (BASE + timedelta(hours=3)).isoformat()
+
+
+def test_마지막이_아니라_가장_긴_덩어리다() -> None:
+    # 밤잠 뒤 아침에 짧게 다시 잔 것. 마지막 덩어리를 쓰면 잠든 시각이 아침이 된다.
+    night = nights_from_spans(_night((0, 6), (8, 9)), kind="s", source="a")[0]
+
+    assert night.meta["onset"] == BASE.isoformat()
+    assert night.meta["wake"] == (BASE + timedelta(hours=6)).isoformat()

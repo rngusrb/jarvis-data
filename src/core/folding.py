@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.core.models import Observation
 
@@ -143,37 +143,75 @@ def daily_mean(samples: Iterable[Sample], kind: str, source: str) -> List[Observ
     return observations
 
 
+# 이보다 짧게 깼다가 다시 잠들면 같은 잠으로 본다. 워치는 밤사이 깬 구간을 따로 적고
+# 그건 수면이 아니라 걸러지므로, 받은 수면 조각 사이에는 몇 분씩 틈이 있다.
+# 2026-10 export 83밤 실측: 밤 안의 틈이 1시간 이하 256개, 넘는 것 9개로 깨끗이 갈린다.
+SAME_SLEEP = timedelta(hours=1)
+
+Span = Tuple[datetime, datetime]
+
+
+def sleep_blocks(spans: Iterable[Span], same_sleep: timedelta = SAME_SLEEP) -> List[List[Span]]:
+    """조각을 잠 덩어리로 묶는다. 덩어리마다 원래 조각을 그대로 담는다(조각 수가 품질 신호)."""
+    blocks: List[List[Span]] = []
+    block_end: Optional[datetime] = None
+    for start, end in sorted(spans):
+        if blocks and block_end is not None and start - block_end <= same_sleep:
+            blocks[-1].append((start, end))
+            block_end = max(block_end, end)
+        else:
+            blocks.append([(start, end)])
+            block_end = end
+    return blocks
+
+
 def nights_from_spans(
-    spans: Iterable[Tuple[datetime, datetime]],
+    spans: Iterable[Span],
     kind: str,
     source: str,
     boundary_hour: int = 12,
+    same_sleep: timedelta = SAME_SLEEP,
 ) -> List[Observation]:
-    """구간들을 "하룻밤" 단위로 묶어 총 시간을 낸다.
+    """구간들을 "하룻밤" 단위로 묶어 총 시간과 잠든·깬 시각을 낸다.
 
     밤 11시에 자서 아침 7시에 깨면 날짜가 두 개다. 정오를 경계로 삼아
     '정오~다음날 정오'를 한 밤으로 본다 — 깨어난 날짜에 그 밤이 귀속된다.
-    (낮잠은 다음 밤으로 딸려가는데, 이건 이 방식의 알려진 트레이드오프다.)
+    (오후 낮잠은 다음 밤으로 딸려가는데, 이건 이 방식의 알려진 트레이드오프다.)
+
+    **조각이 아니라 잠 덩어리를 밤에 배정한다.** 조각마다 따로 배정하면 새벽 4시 반에
+    잠들어 오후 1시 반에 깬 잠이 정오에서 잘린다 — 정오 뒤 꼬리가 "다음 밤"이 되고,
+    그 꼬리가 조각 셋을 넘으면 수면 급감 트리거가 "어젯밤 1.5시간"으로 울린다
+    (2026-10-30 리뷰 재현, export 83밤 중 5밤의 깬 시각이 0.15~1.44시간 일렀다).
+
+    잠든·깬 시각은 그 밤에서 가장 긴 덩어리의 시작과 끝이다. 첫 덩어리를 쓰면 낮잠이
+    잠든 시각이 된다.
 
     **구간을 받는 이유**: 백필과 단축어가 같은 계산을 거치게 하려는 것이다.
     """
-    by_night: Dict[datetime, List[Tuple[datetime, datetime]]] = {}
-    for start, end in spans:
-        night = _day_of(start + timedelta(hours=24 - boundary_hour))
-        by_night.setdefault(night, []).append((start, end))
+    by_night: Dict[datetime, List[List[Span]]] = {}
+    for block in sleep_blocks(spans, same_sleep):
+        night = _day_of(block[0][0] + timedelta(hours=24 - boundary_hour))
+        by_night.setdefault(night, []).append(block)
 
     observations: List[Observation] = []
-    for night, night_spans in sorted(by_night.items()):
-        total = sum((end - start).total_seconds() for start, end in merge_spans(night_spans))
+    for night, blocks in sorted(by_night.items()):
+        pieces = [piece for block in blocks for piece in block]
+        total = sum((end - start).total_seconds() for start, end in merge_spans(pieces))
+        main = max(blocks, key=lambda block: max(e for _, e in block) - block[0][0])
         observations.append(
             Observation(
                 source=source,
                 kind=kind,
                 value=round(total / 3600.0, 2),
                 at=night,
-                # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
-                # 쪼개므로, 한두 개뿐이면 측정이 실패한 것이다.
-                meta={"segments": len(night_spans)},
+                meta={
+                    # 조각 수는 측정 품질 신호다. 워치는 정상 수면을 10~20조각으로
+                    # 쪼개므로, 한두 개뿐이면 측정이 실패한 것이다.
+                    "segments": len(pieces),
+                    # 리듬(언제 자고 언제 깨나)의 재료. 합계만 남기면 다시 못 만든다.
+                    "onset": main[0][0].isoformat(),
+                    "wake": max(end for _, end in main).isoformat(),
+                },
             )
         )
     return observations
