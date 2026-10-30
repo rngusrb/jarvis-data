@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  폰(iCloud 파일)과 보낼 상자에 적힌 줄을 5분마다 서버로 보낸다.
+  직접 복사하지 않는다 — collectors/install.sh 가 __REPO__ 같은 자리를 채워 올린다.
+  토큰은 여기 적지 않는다. ~/Library/Application Support/jarvis/token 에서 읽는다.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.jarvis.forward</string>
+
+    <!-- 맥 시스템 파이썬. launchd 는 로그인 셸을 안 거쳐 anaconda 가 안 보인다. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>collectors.forward</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JARVIS_SERVER</key>
+        <string>__SERVER__</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- 5분마다. 아침 수면 데이터가 늦게 닿으면 자비스의 아침 말도 늦어진다. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__LOGS__/forward.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOGS__/forward.log</string>
+</dict>
+</plist>

@@ -8,7 +8,7 @@ entry_points:
 
 archive_dir: docs/sprints
 
-# 플랫폼 6 + 섹터 3 + 배선 1.
+# 플랫폼 6 + 섹터 3 + 배선 1 + 맥 수집기 1.
 # 플랫폼은 섹터를 import 하지 않는다 — tests/invariants/test_boundaries.py 가 집행한다.
 folder_guides:
   src/core: src/core/_GUIDE.md
@@ -21,6 +21,7 @@ folder_guides:
   src/sectors/commute: src/sectors/commute/_GUIDE.md
   src/sectors/interest: src/sectors/interest/_GUIDE.md
   app: app/_GUIDE.md
+  collectors: collectors/_GUIDE.md
 
 harness:
   max_active_tasks: 3
@@ -30,5 +31,5 @@ harness:
   always_run:
     - tests/invariants
   ruff: true
-  static_paths: ["src", "app", "tests"]
-  typecheck_paths: ["src", "app"]
+  static_paths: ["src", "app", "collectors", "tests"]
+  typecheck_paths: ["src", "app", "collectors"]

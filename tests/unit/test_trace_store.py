@@ -21,6 +21,30 @@ def _trace(text: str, minutes_ago: int = 0, kind: str = "web_visit") -> Trace:
     )
 
 
+KST = timezone(timedelta(hours=9))
+
+
+def test_same_moment_in_another_timezone_is_one_trace(tmp_path: Path) -> None:
+    """크롬은 UTC, 폰 단축어는 +09:00 으로 보낸다. 같은 순간이면 같은 줄이다."""
+    store = SQLiteTraceStore(tmp_path / "t.db")
+    store.write([_trace("a")])
+    seoul = Trace(source="mac_chrome", kind="web_visit", text="a", at=NOW.astimezone(KST))
+    assert store.write([seoul]) == 0
+
+
+def test_window_is_by_moment_not_by_how_it_was_written(tmp_path: Path) -> None:
+    """문자열로 비교하므로 표기가 섞이면 9시간이 어긋난다."""
+    store = SQLiteTraceStore(tmp_path / "t.db")
+    early = Trace(
+        source="phone", kind="web_visit", text="이른", at=(NOW - timedelta(hours=2)).astimezone(KST)
+    )
+    store.write([early, _trace("늦은")])
+
+    found = store.recent("web_visit", NOW - timedelta(hours=1))
+
+    assert [t.text for t in found] == ["늦은"]
+
+
 def test_write_returns_newly_stored_not_received(tmp_path: Path) -> None:
     """받은 수가 아니라 새로 들어간 수를 돌려줘야 수집기 상태가 보인다."""
     store = SQLiteTraceStore(tmp_path / "t.db")

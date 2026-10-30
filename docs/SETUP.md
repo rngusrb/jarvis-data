@@ -3,12 +3,14 @@
 자비스는 **네 조각**이 따로 돈다. 하나씩 세우고 각 단계 끝에서 확인한다.
 
 ```
-아이폰 단축어  ──HTTP──┐
-맥 수집기      ──HTTP──┼──→  자비스 서버 (8100)  ──→  vLLM (8000)
-                       │              │
-                       │              └──→  텔레그램
-                    (Tailscale)
+아이폰 단축어 ──파일──→ iCloud Drive ─┐
+                                      ├─→ 맥 수집기 ──HTTP──→ 자비스 서버 (8100) ──→ vLLM (8000)
+                 크롬 기록 · 앞에 뜬 앱 ─┘            (Tailscale)         │
+                                                                         └──→ 텔레그램
 ```
+
+> 단축어가 서버에 **직접** 쏘는 옛 길(2-1~2-4 의 마지막 블록)도 아직 받는다. 다만 그
+> 순간 폰이 서버에 닿지 않으면 데이터가 사라진다. 새로 만든다면 2-8 의 파일 방식으로 한다.
 
 > ⚠️ **데이터는 공유하지 않는다.** `data/*.db` 에는 수면·위치·브라우저 기록이
 > 들어 있고 gitignore 되어 있다. 같이 개발하더라도 **각자 자기 인스턴스를
@@ -310,27 +312,90 @@ docker update --restart unless-stopped vllm
 > **멱등**: 같은 데이터를 몇 번 보내도 `(source, kind, at)` 기준으로 정리된다.
 > 단축어가 두 번 울려도, 백필을 다시 돌려도 중복되지 않는다. 마음 놓고 재시도해도 된다.
 >
-> ⚠️ **다만 재시도는 자동이 아니다.** 서버가 꺼져 있거나 네트워크가 끊기면 **그날
-> 데이터는 유실된다.** 아이폰은 "실행됨" 알림까지 띄우는데 연결 실패는 조용히
-> 지나간다. 복구는 `export.xml` 백필을 다시 돌리는 것뿐이다.
+> ⚠️ **다만 직접 쏘는 단축어는 재시도가 없다.** 서버가 꺼져 있거나 네트워크가 끊기면
+> **그날 데이터는 유실된다.** 아이폰은 "실행됨" 알림까지 띄우는데 연결 실패는 조용히
+> 지나간다. 그래서 2-8 로 옮긴다.
 
-## 3. 맥 수집기 — 브라우저 기록
+### 2-8. 파일로 보내기 — 끊겨도 안 사라지게
 
-```bash
-python collectors/chrome_history.py --hours 24 --dry-run   # 뭐가 갈지 먼저 본다
-JARVIS_INGEST_TOKEN=... python collectors/chrome_history.py --hours 24
+단축어는 iCloud Drive 파일에 **한 줄 덧붙이기만** 하고, 서버로 보내는 건 맥의
+배달부(`collectors/forward.py`, 3절)가 한다. 폰은 인터넷만 되면 되고 Tailscale 이
+필요 없다. 맥이 꺼져 있으면 iCloud 에 쌓여 있다가 맥이 켜질 때 들어간다.
+
+> **왜**: 2026-08-25 부터 52일 중 폰 데이터가 들어온 날은 9일이었다. 폰 Tailscale 이
+> 꺼져 있었고, 실패한 단축어의 데이터는 다시 보낼 곳 없이 사라졌다.
+
+각 단축어에서 **두 군데만** 바꾼다.
+
+```
+① 본문 텍스트 맨 앞에 어느 문으로 갈지(to)를 붙인다
+
+   수면 (2-1 의 11번)
+     {"to":"spans","spans":[⟨합쳐진 텍스트⟩]}
+   휴식기 심박 (2-2 의 9번)
+     {"to":"samples","kind":"resting_heart_rate","samples":[⟨합쳐진 텍스트⟩]}
+   위치 (2-4 의 3번)
+     {"to":"samples","source":"shortcuts","kind":"location","samples":[ …그대로… ]}
+
+② 마지막 "URL 콘텐츠 가져오기" 를 지우고 "텍스트 파일에 추가" 를 넣는다
+     텍스트         ①의 텍스트
+     파일 경로       jarvis/inbox.jsonl
+     새 줄 만들기     켬
 ```
 
-한 시간마다 자동으로:
+> 액션 이름은 영어 화면에서 **Append to Text File** 이다. 한국어 이름이 기억과 다르면
+> 검색창에 "추가" 나 "텍스트 파일"로 찾는다. 파일은 iCloud Drive 의 `단축어` 폴더
+> 아래에 생긴다 — 맥에서는 `~/Library/Mobile Documents/iCloud~is~workflow~my~workflows/Documents/jarvis/`.
+
+확인은 맥에서 한다. 단축어를 한 번 손으로 돌린 뒤:
 
 ```bash
-cp collectors/launchd/ai.jarvis.chrome.plist ~/Library/LaunchAgents/
-# 안의 경로·토큰을 고친 뒤
-launchctl load ~/Library/LaunchAgents/ai.jarvis.chrome.plist
-tail -f /tmp/jarvis-chrome.log
+/usr/bin/python3 -m collectors.forward --dry-run   # 저장소 루트에서
 ```
 
-> 프로필을 자동 탐색한다. 크롬은 계정을 추가할 때마다 `Profile N` 을 만들고
+`→ /ingest/samples {...}` 처럼 갈 줄이 보이면 된다. 거절된 줄은 이유와 함께
+`~/Library/Application Support/jarvis/rejected.jsonl` 에 남는다.
+
+## 3. 맥 수집기 — 크롬 기록, 앞에 뜬 앱, 폰 파일 배달
+
+맥에서 셋이 돈다. 맥의 시스템 파이썬(`/usr/bin/python3`, 3.9)만 쓰고 설치할 패키지가 없다.
+
+| 수집기 | 하는 일 | 주기 |
+|--------|---------|------|
+| `chrome_history` | 크롬 방문 기록 → `web_visit`. 아이폰 크롬에서 본 것도 동기화로 들어온다 | 1시간 |
+| `mac_apps` | 앞에 뜬 앱 → `mac_app`. 앱 이름과 쓴 시간만, 창 제목은 안 읽는다 | 계속 (30초 표본) |
+| `forward` | 폰 단축어가 iCloud 에 적은 줄(2-8)과 `mac_apps` 가 적은 줄을 서버로 | 5분 |
+
+먼저 손으로 확인한다 (저장소 루트에서):
+
+```bash
+/usr/bin/python3 -m collectors.chrome_history --dry-run
+/usr/bin/python3 -m collectors.mac_apps --once
+/usr/bin/python3 -m collectors.forward --dry-run
+```
+
+토큰은 plist 가 아니라 파일 하나에 둔다. 그다음 launchd 에 올린다:
+
+```bash
+mkdir -p ~/Library/Application\ Support/jarvis
+printf '%s' '<서버 .env 의 JARVIS_INGEST_TOKEN>' > ~/Library/Application\ Support/jarvis/token
+chmod 600 ~/Library/Application\ Support/jarvis/token
+sh collectors/install.sh
+```
+
+```bash
+tail -f ~/Library/Logs/jarvis/*.log     # 확인
+sh collectors/install.sh --remove       # 내리기
+```
+
+어디까지 보냈는지는 `~/Library/Application Support/jarvis/` 에 남는다. 서버가 꺼져
+있거나 맥이 잠들었던 동안의 것은 다음 실행이 이어서 보낸다.
+
+> **서버를 먼저 올린다.** 서버가 `mac_app` 을 모르는 채로 수집기가 먼저 돌면 그 줄들이
+> 400 으로 거절돼 `rejected.jsonl` 로 간다. 서버를 재시작한 뒤
+> `/usr/bin/python3 -m collectors.forward --replay` 로 되살린다.
+>
+> 크롬 프로필은 자동 탐색한다. 크롬은 계정을 추가할 때마다 `Profile N` 을 만들고
 > `Default` 는 몇 달 전에 멈춰 있는 일이 흔하다.
 
 ---
@@ -435,7 +500,9 @@ Tailscale로 호스트 접근을 주면 `:8000` 과 `:8100` 이 함께 열린다
 
 | 증상 | 볼 곳 |
 |------|-------|
-| 폰에서 아무것도 안 옴 | 단축어 "실행 전에 묻기" 꺼졌나 / Tailscale 켜졌나 |
+| 폰에서 아무것도 안 옴 | 단축어 "실행 전에 묻기" 꺼졌나 / 파일 방식이면 `~/Library/Logs/jarvis/forward.log`, 직접 쏘면 폰 Tailscale |
+| 맥 수집기가 멈춘 듯함 | `tail ~/Library/Logs/jarvis/*.log` / `launchctl list | grep jarvis` |
+| 줄이 거절됨 | `~/Library/Application Support/jarvis/rejected.jsonl` 에 이유가 있다. 고친 뒤 `forward --replay` |
 | `404 Not Found` | 서비스가 옛 코드를 물고 있다 → `systemctl restart jarvis` |
 | `401` | `Authorization: Bearer <토큰>` 헤더 확인 |
 | 자비스가 아무 말도 안 함 | 텔레그램 설정 / `journalctl -u jarvis | grep 주기` |

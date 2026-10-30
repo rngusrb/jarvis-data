@@ -35,14 +35,16 @@
 
 | 루프 | 주기 | 하는 일 |
 |------|------|---------|
-| 수집 (push) | 기상 시 · 떠날 때 · 지갑 탭 | 아이폰 단축어 → `/ingest/*` |
-| 수집 (pull) | 한 시간마다 | 맥 크롬 기록 → `/ingest/traces` |
+| 수집 (push) | 기상 시 · 떠날 때 · 지갑 탭 | 아이폰 단축어 → iCloud 파일 → 맥 배달부(5분) → `/ingest/*` |
+| 수집 (pull) | 한 시간마다 · 계속 | 맥 크롬 기록 · 앞에 뜬 앱 → `/ingest/traces` |
 | 수집 (백필) | 수동 | `export.xml` → `src/sectors/health/backfill.py` |
 | 자비스 (반응) | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
 | 회고 | 주 단위 (지금은 수동) | 흔적 조회 → LLM → 믿음 갱신 · 망각 |
 
 애플 건강은 **push 만 가능하다** — HealthKit 은 기기 밖 조회 API가 없다.
-iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 에 수집기를 둔다.
+iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/sectors/<x>/` 에 수집기를 둔다.
+맥에서 읽어야 하는 것(크롬, 앞에 뜬 앱, 폰이 iCloud 에 적은 파일)은 `collectors/` 에 둔다 —
+서버와 따로 배포되고 맥 시스템 파이썬으로 돈다.
 
 ---
 
@@ -121,11 +123,12 @@ iMessage·캘린더·GitHub 처럼 pull 이 되는 소스는 `src/sectors/<x>/` 
 | 휴식기 심박 | push (기상 자동화 → `/ingest/samples`) | ✅ |
 | 위치 (이동관리) | push (떠날 때·지갑 자동화, `trigger` 라벨) | ✅ |
 | 브라우저 기록 | pull (맥 크롬 DB → `/ingest/traces`) | ✅ |
+| 맥 앱 사용 | pull (`lsappinfo` 30초 표본 → `/ingest/traces`) | ✅ 코드 |
 | 걸음수 / 원본 심박 | — | 접음 (표본 수 폭발) |
 | 캘린더 | pull (CalDAV/.ics) | 미착수 — 수면의 "왜"를 알려줄 후보 |
 | 충전 시작 시각 | push (단축어) | 미착수 — 워치 미착용 밤을 메움 |
 | 사진 메타데이터 | push (단축어) | 미착수 — 스크린샷 급증이 의도 신호 |
 | 구매 이력 (쇼핑) | pull (이메일 영수증) | 미착수 |
-| 카카오톡 | — | 불가 (읽기 경로 없음). 앱 실행 빈도로 우회 |
+| 카카오톡 | — | 내용은 안 가져온다(DB 암호화). 맥에서 쓴 시간은 `mac_app` 에 잡힌다 |
 
 설치 절차는 [docs/SETUP.md](docs/SETUP.md) 에 있다.

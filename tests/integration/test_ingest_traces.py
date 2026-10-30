@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from collectors.mac_apps import Span, to_line
 from src.core.config import Settings
 from src.core.metrics import MetricRegistry
 from src.core.traces import TraceRegistry
@@ -104,3 +107,14 @@ def test_빈_텍스트는_흔적이_아니다(tmp_path: Path) -> None:
 
 def test_토큰이_없으면_거절한다(tmp_path: Path) -> None:
     assert _client(tmp_path).post("/ingest/traces", json=_payload(["x"])).status_code == 401
+
+
+def test_맥_앱_수집기가_적은_줄을_그대로_받는다(tmp_path: Path) -> None:
+    """수집기와 서버는 따로 배포된다. 줄 모양이 어긋나면 맥 상자에 쌓이기만 한다."""
+    start = datetime(2026, 10, 30, 1, 0, tzinfo=timezone.utc)
+    line = json.loads(to_line([Span("Cursor", start, start + timedelta(minutes=30))]))
+    body = {k: v for k, v in line.items() if k != "to"}
+
+    response = _client(tmp_path).post("/ingest/traces", json=body, headers=AUTH)
+
+    assert response.json() == {"received": 1, "written": 1, "kind": "mac_app"}
