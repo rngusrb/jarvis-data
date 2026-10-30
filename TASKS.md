@@ -29,13 +29,13 @@
 ### Final Gate
 
 - [x] `harness all`
-- [ ] Reviewer PASS — 1차 REVISE(High 1, Medium 4) 반영 후 재검토 중
+- [x] Reviewer PASS — 1차 REVISE(High 1, Medium 4) 반영, 2차 PASS. 남은 Low 1건은 BACKLOG
 - [ ] 맥 설치 후 7일 연속 폰·웹 데이터 (0단계 끝 기준)
 
 ### 알려진 문제
 
-- 🟡 **폰 데이터가 iCloud 를 거친다** (파일 방식). 애플 서버에 남고 고급 데이터 보호 없이는
-  종단간 암호화가 아니다. 사용자 결정 대기 — OVERVIEW ⑦, SETUP 2-8 에 선택지를 적었다
+- **폰 데이터가 iCloud 를 거친다** (파일 방식). 애플 서버에 남고 고급 데이터 보호 없이는
+  종단간 암호화가 아니다. 2026-10-30 사용자 결정: **둘 다** — 직접 쏘기를 남기고 파일 쓰기를 더한다
 
 ---
 

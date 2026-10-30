@@ -100,7 +100,11 @@ def post(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:300]
+        try:
+            detail = exc.read().decode(errors="replace")[:300]
+        except (OSError, http.client.HTTPException):
+            # 머리만 오고 본문이 멈춘 경우. 여기서 새면 위의 분류가 다 소용없다.
+            detail = "(본문을 못 읽었다)"
         if exc.code in (400, 422):
             raise Rejected(f"서버가 내용을 거절했다 ({exc.code}): {detail}") from exc
         if exc.code == 401:

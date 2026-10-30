@@ -110,7 +110,10 @@ def files(create: bool = True) -> Found:
         try:
             if folder == inbox and not folder.is_dir():
                 if not folder.parent.is_dir():
-                    found.notes.append(f"iCloud 단축어 폴더가 없다: {folder.parent}")
+                    # iCloud Drive 를 안 쓰는 맥이다. 5분마다 찍으면 진짜 문제가 묻히므로
+                    # 시험 실행에서만 알린다. 폰 데이터가 끊기면 서버의 수집 감시가 잡는다.
+                    if not create:
+                        found.notes.append(f"iCloud 단축어 폴더가 없다: {folder.parent}")
                 elif create:
                     # 만들어 두면 폰의 파일 앱에서도 보여 단축어가 그 경로를 쓴다.
                     folder.mkdir()
