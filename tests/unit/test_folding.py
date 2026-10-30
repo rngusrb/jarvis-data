@@ -145,6 +145,8 @@ def test_한_시간_넘게_깨어_있었으면_다른_잠이다() -> None:
     joined = nights_from_spans(_night((0, 3), (3.8, 7)), kind="s", source="a")[0]
     split = nights_from_spans(_night((0, 3), (4.2, 5)), kind="s", source="a")[0]
 
+    # 48분 깼다 다시 잔 것은 같은 잠이다. 기준을 더 짧게 잡으면 잠든 시각이 03:48 이 된다.
+    assert joined.meta["onset"] == BASE.isoformat()
     assert joined.meta["wake"] == (BASE + timedelta(hours=7)).isoformat()
     # 틈이 1시간을 넘으면 덩어리가 갈리고, 긴 쪽(0~3시)이 잠든·깬 시각이 된다.
     assert split.meta["wake"] == (BASE + timedelta(hours=3)).isoformat()
