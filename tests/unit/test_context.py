@@ -65,7 +65,7 @@ def test_신호_없이도_맥락이_조립된다() -> None:
 
     provider = CollectionStatusProvider(
         catalog=FakeCatalog(),
-        metrics=[Metric(kind="sleep_hours", label="수면", fold=Fold.SPANS, collector="단축어")],
+        cards=[Metric(kind="sleep_hours", label="수면", fold=Fold.SPANS, collector="단축어")],
     )
     blocks = assemble([provider], None, NOW)
     assert blocks and "수면" in blocks[0].body

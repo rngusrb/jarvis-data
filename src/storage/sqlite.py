@@ -130,6 +130,11 @@ class SQLiteStore:
             )
             return {kind: datetime.fromisoformat(at) for kind, at, _ in cursor.fetchall()}
 
+    def remove_kind(self, kind: str) -> int:
+        """한 종류의 관측치를 지운다. 다른 표로 옮겼음을 확인한 뒤에만 쓴다(app/migrate.py)."""
+        with self._connect() as conn:
+            return int(conn.execute("DELETE FROM observations WHERE kind = ?", (kind,)).rowcount)
+
     def count(self) -> int:
         with self._connect() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM observations")

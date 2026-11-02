@@ -1,3 +1,4 @@
+from src.sectors.commute.events import EVENTS
 from src.sectors.commute.metrics import METRICS
 from src.sectors.commute.triggers import TRIGGERS
 
@@ -5,4 +6,4 @@ from src.sectors.commute.triggers import TRIGGERS
 # 특별 취급 없이 순회할 수 있다.
 TRACES: list = []
 
-__all__ = ["METRICS", "TRACES", "TRIGGERS"]
+__all__ = ["EVENTS", "METRICS", "TRACES", "TRIGGERS"]

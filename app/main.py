@@ -33,6 +33,7 @@ from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
+from src.core.events import EventRegistry
 from src.core.logs import hide_in_logs
 from src.core.metrics import MetricRegistry
 from src.core.traces import TraceRegistry
@@ -41,7 +42,9 @@ from src.runtime.listen import ListenLoop
 from src.runtime.loop import JarvisLoop
 from src.sectors import commute, health, interest
 from src.storage.beliefs import SQLiteBeliefStore
+from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
+from src.storage.events import SQLiteEventStore
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
@@ -96,19 +99,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 한 줄씩이면 되고, 플랫폼은 열지 않는다.
     metrics = MetricRegistry()
     trace_kinds = TraceRegistry()
+    event_kinds = EventRegistry()
     sector_triggers = []
     for sector in SECTORS:
         metrics.register(sector.METRICS)
         trace_kinds.register(sector.TRACES)
+        event_kinds.register(sector.EVENTS)
         sector_triggers.extend(sector.TRIGGERS)
     app.state.metrics = metrics
     app.state.trace_kinds = trace_kinds
+    app.state.event_kinds = event_kinds
 
-    # 지표와 흔적은 마지막 수신 시각을 한 장으로 합쳐서 본다. 이름이 겹치면
+    # 지표·흔적·사건은 마지막 수신 시각을 한 장으로 합쳐서 본다. 이름이 겹치면
     # 어느 쪽 시각인지 알 수 없으므로 여기서 멈춘다.
-    clash = {m.kind for m in metrics.all()} & {t.kind for t in trace_kinds.all()}
+    names = [
+        *(m.kind for m in metrics.all()),
+        *(t.kind for t in trace_kinds.all()),
+        *(e.kind for e in event_kinds.all()),
+    ]
+    clash = {kind for kind in names if names.count(kind) > 1}
     if clash:
-        raise ValueError(f"지표와 흔적의 이름이 겹친다: {sorted(clash)}")
+        raise ValueError(f"지표·흔적·사건의 이름이 겹친다: {sorted(clash)}")
+
+    # 흔적·사건은 관측치와 같은 DB 파일에 산다 — 백업 경로를 하나로 두려는 것.
+    traces = SQLiteTraceStore(settings.db_path)
+    events = SQLiteEventStore(settings.db_path)
+    catalog = MergedCatalog(store, traces, events)
 
     collection = CollectionWatch(
         sources=[
@@ -118,6 +134,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         + [
             Watched(t.kind, t.label, t.collector or "", t.via or "기기 미상", t.stale_after)
             for t in trace_kinds.active()
+        ]
+        + [
+            Watched(e.kind, e.label, e.collector or "", e.via or "기기 미상", e.stale_after)
+            for e in event_kinds.active()
         ],
         # 기기 전체가 끊겼을 때 무엇부터 볼지. 배포 환경의 사실이라 여기서 정한다.
         hints={
@@ -146,7 +166,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             SpeechHistoryProvider(log=gate.log),
             # 자기 수집 구조를 모르면 "배터리 최적화를 확인하라" 같은,
             # 이 시스템에 존재하지도 않는 조언을 지어낸다.
-            CollectionStatusProvider(catalog=store, metrics=metrics.all()),
+            CollectionStatusProvider(
+                catalog=catalog, cards=[*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
+            ),
             # 수집 "현황"만 알고 "값"을 모르면 자비스가 자기 데이터를 두고도
             # 판단을 못 한다. 실제로 그랬다.
             RecentValuesProvider(source=store, metrics=metrics.all()),
@@ -155,9 +177,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.settings = settings
     app.state.store = store
-    # 흔적은 관측치와 같은 DB 파일에 산다 — 백업 경로를 하나로 두려는 것.
-    traces = SQLiteTraceStore(settings.db_path)
     app.state.traces = traces
+    app.state.events = events
 
     jarvis = JarvisLoop(
         source=store,
@@ -165,7 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         agent=agent,
         channel=build_channel(settings),
         watches=[collection],
-        snapshot=lambda: {**store.last_seen(), **traces.last_seen()},
+        snapshot=catalog.last_seen,
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis

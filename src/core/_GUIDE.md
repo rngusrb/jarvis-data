@@ -73,6 +73,7 @@ message: "silent failure 금지 — 조용한 성공보다 시끄러운 실패"
 
 ```
 tests:
+  - tests/unit/test_events.py
   - tests/unit/test_metric_registry.py
   - tests/unit/test_folding.py
   - tests/unit/test_logs.py
@@ -97,6 +98,16 @@ python scripts/harness.py src/core/
 "상관관계가 뚜렷하게 나타난다"고 썼다. **근거를 실제보다 세게 말하는 게 이
 방식의 주된 실패 모양이다.** 그래서 저장소가 아니라 `Belief.__post_init__`
 에서 막는다 — 저장 직전에 막으면 이미 프롬프트에 들어간 뒤다.
+
+### ❌ 값이 없는 것을 관측치로 담지 않는다
+```python
+# ❌ 금지 — Observation(kind="location", value=0, meta={"lat": …, "lon": …, "trigger": …})
+# ✅ 대신 — Event(kind="location", label="wallet", lat=…, lon=…)   # 사건 표
+```
+**이유**: 관측치는 숫자 하나다. 접히고(합계·평균), 추이로 비교되고, "최근 값"으로 LLM 에게
+간다. 숫자가 아닌 것을 0 으로 채워 넣으면 그 모든 길에서 숫자로 취급된다.
+**사고 이력**: 2026-08-25 ~ 10-02 위치 74건이 전부 값 0 으로 쌓였고, 자비스에게 보여주는 "최근
+값"에 "위치 0 · 0 · 0" 이 들어갔다. 2026-11-02 사건 표로 옮겼다(`app/migrate.py`).
 
 ### ❌ 비밀값이 로그에 남게 두지 않는다
 ```python
@@ -136,3 +147,4 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
 | `clock.py` | 시각 규칙 두 가지 — 저장·비교용 UTC 표기(`stamp`), 보여줄 한국 시간(`KST`, `local`) |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
+| `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다) |

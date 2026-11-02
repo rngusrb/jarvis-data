@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Optional, Sequence
+from typing import List, Optional, Protocol, Sequence
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
@@ -37,6 +37,25 @@ class ObservationTrendProvider:
         kind = recent[0].kind
         lines = [f"- {local(o.at):%m/%d} {o.value:g}" for o in recent]
         return ContextBlock(label=f"{kind} 최근 추이", body="\n".join(lines))
+
+
+class Collected(Protocol):
+    """수집 경로 현황에 올라가는 카드 — 지표·흔적·사건 카드가 모두 이 모양이다."""
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def label(self) -> str: ...
+
+    @property
+    def collector(self) -> Optional[str]: ...
+
+    @property
+    def stale_after(self) -> timedelta: ...
+
+    @property
+    def active(self) -> bool: ...
 
 
 @dataclass
@@ -74,12 +93,14 @@ class CollectionStatusProvider:
     """
 
     catalog: ObservationCatalog
-    metrics: Sequence[Metric]
+    # 지표·흔적·사건 카드. 지표만 보면 다른 표로 옮긴 종류(위치 → 사건)가 "수집기 없음"이
+    # 되거나 목록에서 사라져, 자비스가 위치를 모으고 있다는 것 자체를 모른다.
+    cards: Sequence[Collected]
     name: str = "collection_status"
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         last_seen = self.catalog.last_seen()
-        known = {m.kind: m for m in self.metrics}
+        known = {m.kind: m for m in self.cards}
         lines: List[str] = []
 
         for kind in sorted(set(known) | set(last_seen)):

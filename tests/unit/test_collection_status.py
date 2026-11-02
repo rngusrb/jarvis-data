@@ -25,7 +25,7 @@ def _cards(collectors: Dict[str, Optional[str]]) -> List[Metric]:
 
 def _fetch(last_seen: Dict[str, datetime], collectors: Dict[str, Optional[str]]) -> str:
     block = CollectionStatusProvider(
-        catalog=FakeCatalog(last_seen), metrics=_cards(collectors)
+        catalog=FakeCatalog(last_seen), cards=_cards(collectors)
     ).fetch(INSIGHT, NOW)
     assert block is not None
     return block.body
@@ -86,3 +86,20 @@ def test_접었다는데_데이터가_들어오면_그대로_말한다() -> None
     """선언과 현실이 어긋났으면 선언 쪽이 낡은 것이다."""
     body = _fetch({"heart_rate_avg": NOW - timedelta(hours=2)}, {"heart_rate_avg": None})
     assert "선언이 낡았다" in body
+
+
+def test_지표가_아닌_카드도_수집_경로로_보인다() -> None:
+    """위치를 사건 표로 옮긴 뒤에도 자비스가 위치를 모으고 있다는 걸 안다."""
+    from src.core.events import EventKind
+    from src.core.traces import TraceKind
+
+    cards = [
+        EventKind(kind="location", label="위치", collector="아이폰 단축어"),
+        TraceKind(kind="web_visit", label="웹 방문", collector="mac_chrome"),
+    ]
+    seen = {"location": NOW - timedelta(days=30), "web_visit": NOW - timedelta(hours=1)}
+    block = CollectionStatusProvider(catalog=FakeCatalog(seen), cards=cards).fetch(INSIGHT, NOW)
+
+    assert block is not None
+    assert "위치(location): 아이폰 단축어 — 그런데 720시간째 끊김" in block.body
+    assert "웹 방문(web_visit): mac_chrome — 정상" in block.body

@@ -6,9 +6,17 @@ Apple Watch와 iPhone에서 오는 것들. 지표를 늘리려면 여기에 카�
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from src.core.metrics import Conflict, Fold, Metric
 
 SHORTCUT = "아이폰 단축어가 기상할 때 자동 전송"
+
+# 밤 단위 지표의 "마지막 수신"은 그 밤의 날짜 00:00 이다. 36시간이면 다음 날 정오부터
+# 끊긴 것으로 보여, 정오 넘어 깨는 날 기상 전송 전까지 "연결 문제" 경고가 났다
+# (2026-10-30 JAR-013 리뷰 확인). 48시간이면 다음 날 자정까지 기다린다 — 진짜로
+# 끊겼을 때 알림이 반나절 늦는 대신 잘못된 경고가 없다.
+NIGHTLY_STALE_AFTER = timedelta(hours=48)
 
 METRICS = [
     Metric(
@@ -19,6 +27,7 @@ METRICS = [
         fold=Fold.SPANS,
         collector=SHORTCUT,
         via="아이폰",
+        stale_after=NIGHTLY_STALE_AFTER,
         # 단축어의 "최근 1일" 창이 어제보다 일찍 깬 날 어젯밤을 반토막 낸다.
         # 잘린 조각이 온전한 밤을 덮어쓰면 과거가 조용히 줄어든다.
         on_conflict=Conflict.KEEP_LARGER,
@@ -43,6 +52,7 @@ METRICS = [
         fold=Fold.MEAN,
         collector=SHORTCUT,
         via="아이폰",
+        stale_after=NIGHTLY_STALE_AFTER,
     ),
     Metric(
         kind="heart_rate_avg",

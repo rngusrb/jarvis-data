@@ -24,6 +24,7 @@ WEB_VISIT = TraceKind(kind="web_visit", collector="mac_chrome", sensitive=True)
 ```python
 METRICS: list = []
 TRIGGERS: list = []
+EVENTS: list = []
 ```
 **이유**: 흔적은 하나로 말할 거리가 안 된다. "전세대출을 검색했다"고 알림을
 보내는 건 이상하다. 회고가 주기적으로 훑어 믿음으로 만들고, 발화는 그 믿음에서

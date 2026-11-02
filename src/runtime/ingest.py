@@ -33,6 +33,7 @@ from fastapi import (
 )
 from pydantic import AwareDatetime, BaseModel, Field
 
+from src.core.events import EventKind, EventRegistry, event_from_point
 from src.core.folding import (
     Sample,
     daily_first,
@@ -45,6 +46,7 @@ from src.core.folding import (
 from src.core.metrics import Fold, Metric, MetricRegistry
 from src.core.models import Observation, Trace
 from src.core.traces import TraceKind, TraceRegistry
+from src.storage.events import SQLiteEventStore
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
 
@@ -253,6 +255,44 @@ def _metric(request: Request, kind: str, expected: Fold) -> Metric:
     return metric
 
 
+def _event_kind(request: Request, kind: str) -> Optional[EventKind]:
+    """사건 카드가 있으면 돌려준다. 사건 저장소를 안 띄운 구성(일부 테스트)에선 없다."""
+    registry: Optional[EventRegistry] = getattr(request.app.state, "event_kinds", None)
+    return registry.get(kind) if registry is not None else None
+
+
+def _store_events(
+    payload: "SampleIngestRequest",
+    card: EventKind,
+    request: Request,
+    background: BackgroundTasks,
+) -> IngestResponse:
+    """표본 모양으로 온 사건을 사건 저장소에 담는다.
+
+    폰 단축어는 위치를 `/ingest/samples` 로 보낸다. 사건 표로 옮기면서 폰을 고치지
+    않으려고, 문은 그대로 두고 카드가 사건이면 여기서 갈라 담는다.
+    """
+    events = [
+        event_from_point(
+            payload.source,
+            card.kind,
+            item.at,
+            item.value,
+            {**item.meta, **({"device": item.source} if item.source else {})},
+        )
+        for item in payload.samples
+    ]
+    store: SQLiteEventStore = request.app.state.events
+    written = store.write(events)
+    labels = sorted({e.label or "(없음)" for e in events})
+    logger.info("사건 수집 — %s %d개 → 새로 %d개 (%s)", card.label, len(events), written, labels)
+    _wake_jarvis(request, background, written)
+    return IngestResponse(
+        written=written,
+        received={"samples": len(events), "stored_as": "events", "labels": labels},
+    )
+
+
 def _wake_jarvis(request: Request, background: BackgroundTasks, written: int) -> None:
     """새 데이터가 들어왔으니 판단을 앞당긴다.
 
@@ -374,6 +414,10 @@ def ingest_samples(
             written=0,
             received={"samples": 0, "note": f"'{payload.kind}' 표본이 0개로 도착했다"},
         )
+
+    event_card = _event_kind(request, payload.kind)
+    if event_card is not None:
+        return _store_events(payload, event_card, request, background)
 
     values = [p.value for p in points]
     received = {
