@@ -109,3 +109,27 @@ def test_상태_창구에_사건_표의_위치가_보인다(tmp_path: Path) -> N
 
     assert "location" in body["kinds"]
     assert body["last_seen"]["location"].startswith("2026-10-01T23:17")
+
+
+def test_상태_창구는_흔적의_시각을_보여주지_않는다(tmp_path: Path) -> None:
+    """인증 없는 창구다. 맥 앱의 마지막 시각이 보이면 "지금 맥을 쓰는 중인가"가 드러난다."""
+    from src.core.models import Trace
+    from src.core.traces import TraceKind, TraceRegistry
+    from src.storage.catalog import MergedCatalog
+    from src.storage.traces import SQLiteTraceStore
+
+    client = _with_events(tmp_path)
+    state = client.app.state  # type: ignore[attr-defined]
+    traces = SQLiteTraceStore(tmp_path / "t.db")
+    traces.write(
+        [Trace(source="mac_apps", kind="mac_app", text="Cursor 3분", at=datetime.now(timezone.utc))]
+    )
+    state.trace_kinds = TraceRegistry().register(
+        [TraceKind(kind="mac_app", label="맥 앱", collector="m")]
+    )
+    state.catalog = MergedCatalog(state.store, traces, state.events)
+    client.post("/ingest/samples", json=LOCATION, headers=AUTH)
+
+    kinds = client.get("/health").json()["kinds"]
+
+    assert "location" in kinds and "mac_app" not in kinds

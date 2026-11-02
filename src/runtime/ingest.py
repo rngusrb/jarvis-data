@@ -500,7 +500,11 @@ def health(request: Request) -> Dict[str, Any]:
     """
     store: SQLiteStore = request.app.state.store
     catalog = getattr(request.app.state, "catalog", None) or store
-    seen = catalog.last_seen()
+    # 흔적(웹 방문·맥 앱)은 뺀다. 인증 없는 창구라 맥 앱의 마지막 시각이 보이면 테일넷의
+    # 다른 기기에 "지금 맥을 쓰는 중인가"가 드러난다(2026-11-02 JAR-015 리뷰).
+    trace_kinds: Optional[TraceRegistry] = getattr(request.app.state, "trace_kinds", None)
+    hidden = {c.kind for c in trace_kinds.all()} if trace_kinds is not None else set()
+    seen = {k: at for k, at in catalog.last_seen().items() if k not in hidden}
     return {
         "ok": True,
         "observations": store.count(),

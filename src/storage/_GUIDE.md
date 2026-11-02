@@ -110,4 +110,4 @@ python scripts/harness.py src/storage/
 | `conversation.py` | 대화 기록 + 폴링 커서. 삽입 순서로 정렬한다 |
 | `beliefs.py` | 믿음 저장소. kind가 기본키 — 쌓이지 않고 **갱신**된다 |
 | `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC |
-| `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면 멈춘다 |
+| `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면(옮기는 중) 늦은 쪽을 쓰고 경고를 남긴다 |
