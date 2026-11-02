@@ -7,6 +7,8 @@ LLM 응답은 가짜로 두고 **그 주변의 규율**만 본다 — 근거는 
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,7 +18,7 @@ import pytest
 
 from src.brain.reflect import ReflectionFailed, Reflector, _parse
 from src.core.models import Trace
-from src.core.topics import RETIRE_AFTER, Op, plan
+from src.core.topics import CODE, RETIRE_AFTER, Op, plan
 from src.core.traces import TraceKind
 from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
@@ -92,7 +94,7 @@ def test_evidence_must_be_a_trace_in_the_prompt(tmp_path: Path) -> None:
     reflector = _build(tmp_path, '{"ops": [{"op": "create", "name": "주거", "evidence": [1, 3]}]}')
     reflector.traces.write([_web("검색: 오래된 것", NOW - timedelta(days=30))])
     result = asyncio.run(reflector.run_once(NOW))
-    assert result.applied == [] and "보여주지 않은 흔적 번호 1개" in result.notices[0]
+    assert result.applied == [] and "보여주지 않은 흔적 번호 1개" in result.rejected[0]
 
 
 def test_shows_the_tree_to_prevent_name_sprawl(tmp_path: Path) -> None:
@@ -260,8 +262,12 @@ def test_retires_long_quiet_topics_before_it_prompts(tmp_path: Path) -> None:
 
     result = asyncio.run(reflector.run_once(later))
 
-    assert result.retired == [f"#1 옛 관심사 접음 — {RETIRE_AFTER.days}일 동안 근거가 없다"]
+    assert result.retired == [
+        f"#1 옛 관심사 접음 — {RETIRE_AFTER.days + 1}일 동안 근거가 없다(마지막 08-27)"
+    ]
     assert "옛 관심사" not in _prompt(reflector)
+    # 코드가 접은 것은 모델의 구조 변경으로 세지 않는다.
+    assert [c.actor for c in reflector.topics.changes() if c.op == "retire"] == [CODE]
 
 
 def test_quiet_topics_are_listed_so_a_return_is_not_a_new_topic(tmp_path: Path) -> None:
@@ -284,6 +290,75 @@ def test_an_unreadable_reply_fails_loudly_and_is_recorded(tmp_path: Path) -> Non
     with pytest.raises(ReflectionFailed):
         asyncio.run(reflector.run_once(NOW))
     assert reflector.topics.last_run() is None
+    assert _outcomes(tmp_path) == [
+        "failed: 회고 응답을 못 읽었다 — 모델의 연산은 하나도 적용하지 않았다"
+    ]
+
+
+def _outcomes(tmp_path: Path) -> List[str]:
+    conn = sqlite3.connect(tmp_path / "t.db")
+    try:
+        return [r[0] for r in conn.execute("SELECT outcome FROM reflections ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def test_traces_of_a_retired_topic_are_not_offered_again(tmp_path: Path) -> None:
+    """접힌 주제의 흔적을 다시 내밀면 모델이 같은 이름으로 또 만든다(리뷰 재현)."""
+    reflector = _build(tmp_path, '{"ops": []}')
+    tree = reflector.topics.load()
+    reflector.topics.apply(
+        plan(tree, [Op("create", name="삿포로", evidence=(1, 2))], {1, 2}, NOW), NOW
+    )
+    topic = reflector.topics.load().live()[0].id
+    reflector.topics.apply(
+        plan(reflector.topics.load(), [Op("retire", topic=topic, reason="다녀왔다")], set(), NOW),
+        NOW,
+    )
+    reflector.traces.write([_web("검색: 새 것", NOW + timedelta(hours=1))])
+
+    result = asyncio.run(reflector.run_once(NOW + timedelta(hours=2)))
+
+    assert result.considered == 1 and "전세자금대출" not in _prompt(reflector)
+
+
+def test_dropped_evidence_numbers_are_logged_and_counted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """근거를 세게 말하는 게 주된 실패 모양이다. 반환값에만 두면 서버에서는 안 보인다(리뷰 재현)."""
+    reply = '{"ops": [{"op": "create", "name": "주거", "evidence": [1, 2, 901, 902]}]}'
+    reflector = _build(tmp_path, reply)
+    with caplog.at_level(logging.INFO, logger="src.brain.reflect"):
+        asyncio.run(reflector.run_once(NOW))
+    assert "보여주지 않은 흔적 번호 2개는 뺐다" in caplog.text
+    conn = sqlite3.connect(tmp_path / "t.db")
+    try:
+        assert conn.execute("SELECT changed, notices FROM reflections").fetchall() == [(1, 1)]
+    finally:
+        conn.close()
+
+
+def test_the_prompt_budget_drops_the_oldest_lines_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """나무와 메모는 상한 없이 자란다.
+
+    흔적 줄이 남은 몫을 최신 것부터 채우고, 뺀 건 경고로 남긴다.
+    """
+    reflector = _build(tmp_path, '{"ops": [{"op": "create", "name": "주거", "evidence": [1, 2]}]}')
+    reflector.traces.write(
+        [_web(f"검색: 최근 {i}", NOW - timedelta(minutes=50 - i)) for i in range(10)]
+    )
+    reflector.budget_chars = 300
+    with caplog.at_level(logging.WARNING, logger="src.brain.reflect"):
+        result = asyncio.run(reflector.run_once(NOW))
+
+    prompt = _prompt(reflector)
+    assert 0 < result.considered < 12 and result.trimmed == 12 - result.considered
+    assert "검색: 최근 9" in prompt and "전세자금대출" not in prompt
+    assert f"오래된 {result.trimmed}건은 뺐다" in prompt and "프롬프트 상한" in caplog.text
+    # 보여주지 않은 줄은 근거가 될 수 없다.
+    assert result.applied == [] and "보여주지 않은 흔적 번호 2개" in result.rejected[0]
 
 
 def test_parse_tolerates_fences_and_chatter() -> None:

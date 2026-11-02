@@ -466,12 +466,23 @@ sh collectors/install.sh --remove       # 내리기
 
 ## 5. 회고 돌려보기
 
-흔적이 쌓이면 손으로 한 번 돌린다. 아직 자동으로 안 돈다.
+서버가 매일 05:30(한국 시간)에 스스로 돈다. 그 시각에 꺼져 있었으면 켜지고 5분 뒤 따라잡는다.
+손으로 돌려 볼 때:
 
 ```bash
 .venv/bin/python -m app.reflect --days 7
-.venv/bin/python -m app.reflect --show     # 지금 믿음만 본다
+.venv/bin/python -m app.reflect --show     # 돌리지 않고 지금 나무만 본다
 ```
+
+**처음 나무 키우기(되감기).** 지난 흔적으로 하루씩 회고를 돌려 나무를 키운다. 그 DB 의 나무를 바꾸므로
+운영 DB **사본**에서 돌린다(이미 그 날짜 뒤까지 자란 나무에서는 거절한다). 하루 30초 안팎이다.
+
+```bash
+.venv/bin/python -c "import sqlite3; s=sqlite3.connect('data/jarvis.db'); d=sqlite3.connect('/tmp/replay.db'); s.backup(d)"
+JARVIS_DB_PATH=/tmp/replay.db .venv/bin/python -m app.reflect --replay 2026-08-08 2026-11-02 --verbose
+```
+
+끝에 모델이 낸 연산 수, 코드가 접은 주제 수, 모델이 나무 모양을 바꾼 날 수가 찍힌다.
 
 ---
 

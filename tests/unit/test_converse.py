@@ -170,3 +170,28 @@ def test_상태는_합친_수신과_카드별_기준으로_말한다(tmp_path: P
 
     assert "✅ location" in answer  # 위치는 나흘까지 정상
     assert "⚠️ sleep_hours" in answer  # 카드 기준을 모르면 36시간
+
+
+def test_topics_fits_in_one_telegram_message(tmp_path: Path) -> None:
+    """텔레그램은 4,096자가 넘는 메시지를 거절한다. 그러면 사용자는 아무 답도 못 받는다."""
+    c = _build(tmp_path)
+    traces = SQLiteTraceStore(tmp_path / "t.db")
+    traces.write(
+        [
+            Trace(
+                source="mac_chrome", kind="web_visit", text=f"흔적 {i}", at=NOW - timedelta(hours=i)
+            )
+            for i in range(400)
+        ]
+    )
+    ids = sorted(t.id for t in traces.recent("web_visit", NOW - timedelta(days=30)) if t.id)
+    ops = [
+        Op("create", name=f"꽤 긴 이름의 주제 번호 {i}", evidence=(ids[2 * i], ids[2 * i + 1]))
+        for i in range(200)
+    ]
+    c.topics.apply(plan(c.topics.load(), ops, set(ids), NOW), NOW)
+
+    answer = _ask(c, "/topics")
+
+    assert answer is not None and len(answer) <= 4096
+    assert answer.splitlines()[-1].startswith("… 외 ")

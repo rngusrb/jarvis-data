@@ -56,6 +56,7 @@ message: "app/ 은 조립만 한다 — 판단·집계·발송 로직은 플랫�
 ```
 tests:
   - tests/unit/test_migrate.py
+  - tests/unit/test_replay.py
   - tests/integration/test_startup.py
   - tests/invariants/test_boundaries.py
 ```

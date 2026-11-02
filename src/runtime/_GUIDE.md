@@ -80,6 +80,15 @@ metric = registry.get(kind); FOLDERS[metric.fold](...)
 **사고 이력**: 게이트는 발송에 **성공한 뒤에야** 쿨다운을 기록한다. 나란히 달리는 두
 주기는 둘 다 게이트를 통과해 같은 말을 두 번 한다. `JarvisLoop` 이 잠금을 들고 있다.
 
+### ❌ 오래 도는 태스크가 예외 한 번으로 끝나게 두지 않는다
+```python
+# ❌ 금지 — while True: due = self.due(now, self.last_run())   # 기록 읽기가 try 밖
+# ✅ 대신 — 한 바퀴 전체를 감싸고, 실패는 로그를 남긴 뒤 다시 시도한다(DailyLoop.run_forever)
+```
+**사고 이력**: 2026-11-02 JAR-023 리뷰 재현. 매일 회고의 기록 읽기가 `database is locked` 를 한 번 던지자
+태스크가 끝났다 — job 호출 0번, 로그 0줄. `app/main.py` 는 끌 때만 태스크를 거두므로 **서버가 도는 동안
+아무도 모른 채** 재시작까지 회고가 멈춘다.
+
 ---
 
 ## GC 패턴

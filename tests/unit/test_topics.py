@@ -9,12 +9,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Set
 
 from src.core.topics import (
+    CODE,
+    MODEL,
     RETIRE_AFTER,
+    ChangeRecord,
     Ground,
     Node,
     Op,
     Tree,
     Trend,
+    churn,
     plan,
     stale,
     standings,
@@ -74,7 +78,15 @@ def test_evidence_must_be_a_trace_that_was_shown() -> None:
     p = plan(_tree(), [Op("create", name="주거", evidence=(100, 999, 998))], SHOWN, NOW)
     assert p.after.live() == []
     assert "근거가 1개뿐" in p.rejected[0]
-    assert "보여주지 않은 흔적 번호 2개는 뺐다" in p.notices[0]
+    assert "보여주지 않은 흔적 번호 2개는 뺐다" in p.rejected[0]
+    # 빠진 연산의 사정은 기각 이유에만 — 받은 연산의 고침(notices)과 섞지 않는다.
+    assert p.notices == []
+
+
+def test_a_kept_op_says_what_it_dropped() -> None:
+    p = plan(_tree(), [Op("create", name="주거", evidence=(100, 101, 999))], SHOWN, NOW)
+    assert p.rejected == []
+    assert p.notices == ["create 주거: 보여주지 않은 흔적 번호 1개는 뺐다"]
 
 
 def test_same_name_in_the_same_place_attaches_instead_of_creating() -> None:
@@ -201,7 +213,42 @@ def test_a_rejected_create_takes_its_dependents_down() -> None:
         NOW,
     )
     assert [n.name for n in p.after.live()] == ["여행"]
-    assert "모르는 ref 'a'" in p.rejected[1]
+    assert "앞에서 빠진 create(ref 'a')" in p.rejected[1]
+
+
+def test_a_numeric_ref_wins_over_an_existing_topic_with_that_number() -> None:
+    """있는 번호를 먼저 보면 새 주제에 줄 메모가 아무 표시 없이 #1 로 간다(리뷰 재현)."""
+    tree = _tree(_node(1, "취업"))
+    p = plan(
+        tree,
+        [
+            Op("create", ref="1", name="여행", evidence=(100, 101)),
+            Op("note", topic=1, text="삿포로 여행 준비"),
+            Op("create", name="항공권", parent="1", evidence=(102, 103)),
+        ],
+        SHOWN,
+        NOW,
+    )
+    trip = next(n for n in p.after.live() if n.name == "여행")
+    assert p.notes[0].topic == trip.id
+    assert next(n for n in p.after.live() if n.name == "항공권").parent == trip.id
+    assert "겹친다" in p.notices[0]
+
+
+def test_pointing_at_a_rejected_create_does_not_leak_to_an_existing_topic() -> None:
+    tree = _tree(_node(1, "취업"), _node(3, "주거"))
+    p = plan(
+        tree,
+        [
+            Op("create", ref="3", name="여행", evidence=(100,)),
+            Op("attach", topic=3, evidence=(101,)),
+            Op("note", topic="3", text="x"),
+        ],
+        SHOWN,
+        NOW,
+    )
+    assert p.after.links[3] == set() and p.notes == []
+    assert len(p.rejected) == 3 and "앞에서 빠진 create(ref '3')" in p.rejected[1]
 
 
 def test_unknown_ops_are_rejected_not_ignored() -> None:
@@ -254,10 +301,92 @@ def test_stale_retires_long_quiet_topics_from_the_leaves_up() -> None:
     assert [op.topic for op in ops] == [2, 1]
     p = plan(tree, ops, set(), NOW)
     assert p.rejected == [] and [n.name for n in p.after.live()] == ["취업"]
-    assert p.changes[0].reason == f"{RETIRE_AFTER.days}일 동안 근거가 없다"
+    assert p.changes[0].reason == f"{old}일 동안 근거가 없다(마지막 09-03)"
 
 
 def test_a_trunk_stays_while_a_branch_is_alive() -> None:
     tree = _tree(_node(1, "취업"), _node(2, "자소서", 1))
     grounds = _grounds(1, [RETIRE_AFTER.days + 5]) + _grounds(2, [3])
     assert stale(tree, grounds, NOW) == []
+
+
+def test_retiring_a_branch_keeps_its_evidence_in_the_trunk() -> None:
+    """가지를 접으면 줄기의 근거가 0 이 되고, 다음 회고가 거짓 이유로 줄기를 접었다(리뷰 재현).
+
+    D0 취업(a,b) → D1 자소서가 a,b 를 가져감(줄기 연결이 닫힘) → 자소서에 근거가 쌓임
+    → 자소서를 접음.
+    """
+    trunk = _node(1, "취업")
+    trunk.created_at = NOW - timedelta(days=70)
+    branch = _node(2, "자소서", 1)
+    tree = _tree(trunk, branch, links={2: {100, 101, 102}})
+    grounds = [
+        Ground(2, 100, NOW - timedelta(days=69), "a"),
+        Ground(2, 101, NOW - timedelta(days=69), "b"),
+        Ground(2, 102, NOW - timedelta(days=1), "c"),
+    ]
+    retired = plan(tree, [Op("retire", topic=2, reason="마감이 끝났다")], SHOWN, NOW).after
+
+    board = standings(retired, grounds, NOW)
+    assert [(s.node.name, s.count, s.trend) for s in board] == [("취업", 3, Trend.RISING)]
+    assert stale(retired, grounds, NOW) == []
+
+
+def test_an_emptied_trunk_is_retired_with_the_true_reason() -> None:
+    """가지가 옮겨 가 근거가 하나도 안 남은 줄기.
+
+    만든 때를 마지막 근거로 치면 거짓 이유("60일 동안 근거가 없다")가 남는다.
+    """
+    trunk = _node(1, "취업")
+    tree = _tree(trunk, _node(2, "자소서", 1), _node(3, "글쓰기"), links={2: {100}})
+    moved = plan(tree, [Op("move", topic=2, parent=3, reason="글쓰기 쪽")], SHOWN, NOW).after
+    grounds = [Ground(2, 100, NOW - timedelta(days=1), "a")]
+    ops = stale(moved, grounds, NOW)
+    assert [(op.topic, op.reason) for op in ops] == [
+        (1, "근거가 하나도 남지 않았다(가지가 옮겨 가거나 합쳐졌다)")
+    ]
+
+
+def test_merging_a_branch_into_its_parent_with_a_same_named_grandchild() -> None:
+    """곧 접힐 자기 자신과 이름이 겹친다고 막지 않는다."""
+    tree = _tree(_node(1, "취업"), _node(2, "자소서", 1), _node(3, "자소서", 2))
+    p = plan(tree, [Op("merge", topic=2, into=1, reason="한 단계면 된다")], SHOWN, NOW)
+    assert p.rejected == [] and p.after.nodes[3].parent == 1
+
+
+def test_moving_or_merging_keeps_each_trace_on_the_most_specific_topic() -> None:
+    tree = _tree(
+        _node(1, "취업"), _node(2, "자소서"), _node(3, "구직"), links={1: {100}, 2: {100}, 3: {101}}
+    )
+    p = plan(
+        tree,
+        [
+            Op("move", topic=2, parent=1, reason="취업의 일부"),
+            Op("attach", topic=1, evidence=(101,)),
+            Op("merge", topic=3, into=2, reason="같은 것"),
+        ],
+        SHOWN,
+        NOW,
+    )
+    assert p.rejected == []
+    assert p.after.links[1] == set() and p.after.links[2] == {100, 101}
+
+
+def test_churn_counts_only_the_models_reshaping() -> None:
+    """코드가 접은 것을 모델의 구조 변경으로 세면 변경 빈도가 부풀려진다(리뷰 재현)."""
+    day1 = NOW - timedelta(days=1)
+    records = [
+        ChangeRecord(day1, "create", 1, {}, "", MODEL),
+        ChangeRecord(day1, "rename", 1, {}, "r", MODEL),
+        ChangeRecord(NOW, "retire", 2, {}, "61일 동안 근거가 없다", CODE),
+        ChangeRecord(NOW, "merge", 3, {}, "r", MODEL),
+        ChangeRecord(NOW, "move", 4, {}, "r", MODEL),
+    ]
+    c = churn(records, days=2)
+    assert c.ops == {"create": 1, "rename": 1, "merge": 1, "move": 1}
+    assert (c.auto_retired, c.reshaped_days, c.busiest) == (1, 2, (2, 1))
+
+
+def test_ops_carry_who_made_them() -> None:
+    p = plan(_tree(_node(1, "야구")), [Op("retire", topic=1, reason="r")], SHOWN, NOW, actor=CODE)
+    assert p.changes[0].actor == CODE

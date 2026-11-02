@@ -55,34 +55,45 @@ class DailyLoop:
         await asyncio.sleep(self.startup_delay.total_seconds())
         tried: Dict[datetime, int] = {}
         while True:
-            now = self.clock()
-            due = self.due(now, self.last_run())
-            if due > now:
-                wait = due - now
-            else:
-                slot = self.slot(now)
-                if tried.get(slot, 0) >= self.attempts:
-                    logger.error(
-                        "%s — %s 회차를 %d번 실패해 다음 회차까지 쉰다",
-                        self.name,
-                        f"{local(slot):%m-%d %H:%M}",
-                        self.attempts,
-                    )
-                    wait = slot + timedelta(days=1) - now
-                else:
-                    tried[slot] = tried.get(slot, 0) + 1
-                    try:
-                        await self.job(now)
-                    except Exception:
-                        logger.exception("%s 실패 — %s 뒤 다시", self.name, self.retry_after)
-                        wait = self.retry_after
-                    else:
-                        last = self.last_run()
-                        if last is not None and last >= slot:
-                            continue
-                        # 돌았다는데 기록이 없으면 바로 또 돌게 된다. 다음 회차까지 쉰다.
-                        logger.error(
-                            "%s — 돌았는데 실행 기록이 없다. 다음 회차까지 쉰다", self.name
-                        )
-                        wait = slot + timedelta(days=1) - now
+            try:
+                wait = await self._tick(tried)
+                if wait is None:
+                    continue
+            except Exception:
+                # 기록을 읽다 터진 것(database is locked 등). 여기서 태스크가 끝나면 서버가 도는
+                # 동안 아무 로그 없이 회고가 영영 멈춘다 — 끄는 쪽만 태스크를 거두기 때문이다
+                # (리뷰 재현).
+                logger.exception("%s — 돌지 판단하다 실패. %s 뒤 다시", self.name, self.retry_after)
+                wait = self.retry_after
             await asyncio.sleep(max(wait.total_seconds(), 1.0))
+
+    async def _tick(self, tried: Dict[datetime, int]) -> Optional[timedelta]:
+        """한 번 보고 필요하면 돈다. 다음에 볼 때까지 쉴 시간을 돌려준다.
+
+        방금 돌았으면 None — 쉬지 않고 바로 다음 회차를 계산한다.
+        """
+        now = self.clock()
+        due = self.due(now, self.last_run())
+        if due > now:
+            return due - now
+        slot = self.slot(now)
+        if tried.get(slot, 0) >= self.attempts:
+            logger.error(
+                "%s — %s 회차를 %d번 실패해 다음 회차까지 쉰다",
+                self.name,
+                f"{local(slot):%m-%d %H:%M}",
+                self.attempts,
+            )
+            return slot + timedelta(days=1) - now
+        tried[slot] = tried.get(slot, 0) + 1
+        try:
+            await self.job(now)
+        except Exception:
+            logger.exception("%s 실패 — %s 뒤 다시", self.name, self.retry_after)
+            return self.retry_after
+        last = self.last_run()
+        if last is not None and last >= slot:
+            return None
+        # 돌았다는데 기록이 없으면 바로 또 돌게 된다. 다음 회차까지 쉰다.
+        logger.error("%s — 돌았는데 실행 기록이 없다. 다음 회차까지 쉰다", self.name)
+        return slot + timedelta(days=1) - now

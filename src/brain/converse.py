@@ -41,6 +41,10 @@ SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 사용자가 너에게 
 - 숫자를 나열하지 말고 그래서 어떻다는 것을 말한다.
 - 사용자가 네 판단을 부정하면 받아들인다. 우기지 않는다."""
 
+# 텔레그램은 한 메시지에 4,096자까지 받는다. 넘으면 거절돼 사용자는 아무 답도 못 받는다
+# (리뷰 측정: 주제 150개면 5,094자).
+REPLY_LIMIT = 3500
+
 MARKS = {
     Trend.RISING: "▲",
     Trend.STEADY: "●",
@@ -125,13 +129,19 @@ class Conversationalist:
         board = standings(self.topics.load(), self.topics.grounds(), now)
         if not board:
             return "아직 아는 게 없어. 흔적이 더 쌓여야 해."
-        lines = []
-        for s in board:
+        lines: List[str] = []
+        size = 0
+        for i, s in enumerate(board):
             pad = "  " * s.depth
-            lines.append(
+            line = (
                 f"{pad}{MARKS[s.trend]} {s.node.name} — {s.trend.value}"
                 f" (근거 {s.count} · {s.days}일)"
             )
+            if size + len(line) + 1 > REPLY_LIMIT:
+                lines.append(f"… 외 {len(board) - i}개")
+                break
+            lines.append(line)
+            size += len(line) + 1
         return "\n".join(lines)
 
     # ── 비싼 길 ──────────────────────────────────────

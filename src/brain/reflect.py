@@ -41,9 +41,9 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from src.brain.client import Reasoner
 from src.core.clock import local, shown
 from src.core.models import Trace
-from src.core.topics import Op, Ref, Standing, Trend, describe, plan, stale, standings
+from src.core.topics import CODE, Op, Ref, Standing, Trend, describe, plan, stale, standings
 from src.core.traces import TraceKind
-from src.storage.topics import Note, SQLiteTopicStore
+from src.storage.topics import Note, Run, SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,10 @@ JSON 으로만 답한다. 다른 말은 쓰지 않는다.
 
 
 class ReflectionFailed(Exception):
-    """회고가 나무에 아무것도 못 했다(응답을 못 읽음). 기록은 남겼고, 다시 돌려 볼 일이다."""
+    """회고가 모델의 연산을 하나도 못 적용했다(응답을 못 읽음). 기록은 남겼고, 다시 돌려 볼 일이다.
+
+    그 앞의 오래 잠잠한 주제 접기는 따로 이미 적용됐을 수 있다 — 모델과 상관없는 일이다.
+    """
 
 
 @dataclass
@@ -98,8 +101,9 @@ class Reflection:
     considered: int = 0
     # 낱줄 대신 넣은 하루 요약 줄 수(앱 사용처럼 낱줄로 안 훑는 종류).
     digested: int = 0
-    # 프롬프트 글자 수. 나무와 메모가 자라면 모델 한도(위 per_kind_limit 설명)에 다가간다.
+    # 프롬프트 글자 수와, 글자 상한 때문에 못 보여준 흔적 줄 수.
     prompt_chars: int = 0
+    trimmed: int = 0
     # 적용한 변경, 사람이 읽는 한 줄씩.
     applied: List[str] = field(default_factory=list)
     notes: int = 0
@@ -124,11 +128,16 @@ class Reflector:
     # 1,000줄(약 3.4만 + 번호)이 들어간다. 회고 종류가 늘면 합이 넘으니 다시 잰다 — 넘으면 회고가
     # 400 으로 죽는다(조용히 잘리지는 않는다). 하루 요약에는 이 상한을 걸지 않는다.
     per_kind_limit: int = 1000
+    # 프롬프트 **전체** 글자 상한. 나무(주제마다 메모·근거 예)는 주제 수만큼 자라므로, 흔적 줄은
+    # 나무를 넣고 남은 몫을 최신 것부터 채운다. 되감기 실측으로 줄당 약 60자, 0.6 토큰/자 안팎 —
+    # 5.7만 토큰 몫에 여유를 두고 8만 자. 줄을 덜 보여주면 경고로 남긴다(조용히 잘리지 않게).
+    # 리뷰 측정: 메모 200자인 주제 50개면 나무만 2.6만 자, 100개면 5.2만 자다.
+    budget_chars: int = 80_000
     # 주제마다 보여줄 근거 예와 메모 수. 메모는 모델이 매 회고 새로 적으므로 최근 것 하나면
-    # 지금 생각이고, 주제가 쉰 개를 넘으면 메모 둘이 프롬프트의 큰 몫이 된다
-    # (되감기 시험에서 메모 한 개가 150~250자).
+    # 지금 생각이다. 메모는 저장할 때 길이를 안 자르고(필요한 만큼) 보여줄 때만 자른다.
     samples: int = 3
     notes_per_topic: int = 1
+    note_chars: int = 400
 
     async def run_once(self, now: datetime) -> Reflection:
         result = Reflection()
@@ -136,43 +145,56 @@ class Reflector:
         try:
             return await self._run(now, result, ran_at)
         except Exception as exc:
-            self.topics.record_run(
-                now, ran_at, result.considered, result.digested, 0, 0, f"failed: {exc}"[:200]
-            )
+            self._record(now, ran_at, result, f"failed: {exc}"[:200])
             raise
 
     async def _run(self, now: datetime, result: Reflection, ran_at: datetime) -> Reflection:
         # 먼저 접는다. 오래 조용한 주제를 그대로 보여주면 모델이 거기에 아무거나 붙여 되살린다.
+        # 모델의 연산과 따로 적용하고 따로 기록한다(actor=code) — 변경 빈도는 모델 것만 센다.
         tree = self.topics.load()
         quiet = stale(tree, self.topics.grounds(), now)
         if quiet:
-            folded = plan(tree, quiet, set(), now)
+            folded = plan(tree, quiet, set(), now, actor=CODE)
+            for reason in folded.rejected:
+                # 코드가 낸 접기가 빠질 일은 없어야 한다. 빠지면 그 주제는 계속 살아 있다.
+                logger.warning("회고 — 접기 기각: %s", reason)
             ids = self.topics.apply(folded, now)
             result.retired = [describe(c, folded.after, ids) for c in folded.changes]
+            for line in result.retired:
+                logger.info("회고 접음 — %s", line)
 
         tree = self.topics.load()
         grounds = self.topics.grounds()
-        live = {n.id for n in tree.live()}
-        attached = {g.trace for g in grounds if g.topic in live}
+        # 어느 주제에든 — 접힌 주제에도 — 붙은 흔적은 다시 안 보여준다. 접힌 주제는 프롬프트에
+        # 안 나오는데 그 흔적만 다시 내밀면 모델이 같은 이름으로 또 만든다
+        # (리뷰 재현: 접은 다음 날 같은 주제).
+        attached = {g.trace for g in grounds}
 
         harvest = self._gather(now, attached)
         digests = self._digest(now)
-        result.considered = sum(len(v) for v in harvest.values())
         result.digested = sum(len(v) for v in digests.values())
         if not harvest and not digests:
             logger.info("회고 — 훑을 흔적이 없다")
-            self.topics.record_run(now, ran_at, 0, 0, len(result.retired), 0, "empty")
+            self._record(now, ran_at, result, "empty")
             return result
 
         board = standings(tree, grounds, now)
         notes = self.topics.latest_notes(self.notes_per_topic)
-        prompt, offered = self._build_prompt(board, notes, harvest, digests, now)
+        prompt, offered, result.considered = self._build_prompt(board, notes, harvest, digests, now)
         result.prompt_chars = len(prompt)
+        result.trimmed = sum(len(v) for v in harvest.values()) - result.considered
+        if result.trimmed:
+            logger.warning(
+                "회고 — 프롬프트 상한(%d자) 때문에 오래된 흔적 %d줄을 빼고 %d줄만 보여준다",
+                self.budget_chars,
+                result.trimmed,
+                result.considered,
+            )
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
 
         ops = _parse(reply)
         if ops is None:
-            raise ReflectionFailed("회고 응답을 못 읽었다 — 나무는 그대로다")
+            raise ReflectionFailed("회고 응답을 못 읽었다 — 모델의 연산은 하나도 적용하지 않았다")
 
         planned = plan(tree, ops, offered, now)
         ids = self.topics.apply(planned, now)
@@ -180,28 +202,42 @@ class Reflector:
         result.notes = len(planned.notes)
         result.rejected = planned.rejected
         result.notices = planned.notices
-        self.topics.record_run(
-            now,
-            ran_at,
-            result.considered,
-            result.digested,
-            len(result.applied) + result.notes,
-            len(result.rejected),
-            "ok",
-        )
+        self._record(now, ran_at, result, "ok")
         logger.info(
-            "회고 — 흔적 %d줄, 요약 %d줄, 프롬프트 %d자, 변경 %d, 메모 %d, 기각 %d, 접음 %d",
+            "회고 — 흔적 %d줄, 요약 %d줄, 프롬프트 %d자,"
+            " 변경 %d, 메모 %d, 기각 %d, 고침 %d, 접음 %d",
             result.considered,
             result.digested,
             result.prompt_chars,
             len(result.applied),
             result.notes,
             len(result.rejected),
+            len(result.notices),
             len(result.retired),
         )
         for reason in result.rejected:
             logger.info("회고 기각 — %s", reason)
+        # 보여주지 않은 근거 번호를 뺀 것도 여기 남는다 — 근거를 세게 말하는 게 이 구조가 막으려는
+        # 주된 실패 모양이라, 반환값에만 두면 서버에서는 아무 데도 안 보인다(리뷰 재현).
+        for notice in result.notices:
+            logger.info("회고 고침 — %s", notice)
         return result
+
+    def _record(self, now: datetime, ran_at: datetime, result: Reflection, outcome: str) -> None:
+        self.topics.record_run(
+            Run(
+                at=now,
+                ran_at=ran_at,
+                outcome=outcome,
+                considered=result.considered,
+                digested=result.digested,
+                changed=len(result.applied),
+                noted=result.notes,
+                retired=len(result.retired),
+                rejected=len(result.rejected),
+                notices=len(result.notices),
+            )
+        )
 
     def _gather(self, now: datetime, attached: Set[int]) -> Dict[TraceKind, List[Trace]]:
         """낱줄로 훑는 종류의, 아직 아무 주제에도 안 붙은 흔적. 상한은 최신 것부터 채운다."""
@@ -240,8 +276,8 @@ class Reflector:
         harvest: Dict[TraceKind, List[Trace]],
         digests: Dict[TraceKind, List[str]],
         now: datetime,
-    ) -> Tuple[str, Set[int]]:
-        """프롬프트와, 거기 보여준 흔적 번호. 근거는 보여준 번호로만 받는다."""
+    ) -> Tuple[str, Set[int], int]:
+        """프롬프트, 거기 보여준 흔적 번호, 보여준 흔적 줄 수. 근거는 보여준 번호로만 받는다."""
         offered: Set[int] = set()
         parts: List[str] = []
 
@@ -256,13 +292,16 @@ class Reflector:
                     f"근거 {s.count}개({s.days}일){last}"
                 )
                 for note in notes.get(s.node.id, []):
-                    lines.append(f"{pad}   메모 {local(note.at):%m-%d}: {note.text}")
+                    text = _short(note.text, self.note_chars)
+                    lines.append(f"{pad}   메모 {local(note.at):%m-%d}: {text}")
                 for g in s.own[: self.samples]:
                     lines.append(
                         f"{pad}   근거 #{g.trace} {local(g.at):%m-%d %H:%M} {_short(g.text)}"
                     )
                     offered.add(g.trace)
             parts.append(f"[주제 나무] {len(awake)}개\n" + "\n".join(lines))
+        elif board:
+            parts.append("[주제 나무]\n  (깨어 있는 주제 없음 — 아래 잠잠한 주제만 있다)")
         else:
             parts.append("[주제 나무]\n  (아직 없음)")
 
@@ -280,21 +319,38 @@ class Reflector:
 
         loose_notes = notes.get(None, [])
         if loose_notes:
-            lines = [f"  {local(n.at):%m-%d}: {n.text}" for n in loose_notes]
+            lines = [
+                f"  {local(n.at):%m-%d}: {_short(n.text, self.note_chars)}" for n in loose_notes
+            ]
             parts.append("[나무 밖 메모]\n" + "\n".join(lines))
 
-        for card, traces in harvest.items():
-            lines = [f"  #{t.id} {local(t.at):%m-%d %H:%M}  {t.text}" for t in traces]
-            offered.update(t.id for t in traces if t.id is not None)
-            parts.append(
-                f"[{card.label} — 아직 주제에 안 붙은 것] {len(traces)}건\n" + "\n".join(lines)
-            )
-        for card, days in digests.items():
-            lines = [f"  {day}" for day in days]
-            parts.append(f"[{card.label} — 하루 요약] {len(days)}일\n" + "\n".join(lines))
+        tail = [
+            f"[{card.label} — 하루 요약] {len(days)}일\n" + "\n".join(f"  {day}" for day in days)
+            for card, days in digests.items()
+        ]
+        tail.append(f"지금: {shown(now)}. 나무에서 바꿀 것을 연산으로 내라.")
 
-        parts.append(f"지금: {shown(now)}. 나무에서 바꿀 것을 연산으로 내라.")
-        return "\n\n".join(parts), offered
+        # 흔적 줄은 나무와 요약을 넣고 남은 몫을 최신 것부터 채운다(머리줄 몫으로 종류마다 100자).
+        room = self.budget_chars - sum(len(p) + 2 for p in parts + tail) - 100 * len(harvest)
+        shown_lines = 0
+        for card, traces in harvest.items():
+            kept: List[str] = []
+            for t in reversed(traces):
+                line = f"  #{t.id} {local(t.at):%m-%d %H:%M}  {t.text}"
+                if len(line) + 1 > room:
+                    break
+                room -= len(line) + 1
+                kept.append(line)
+                if t.id is not None:
+                    offered.add(t.id)
+            dropped = len(traces) - len(kept)
+            head = f"[{card.label} — 아직 주제에 안 붙은 것] {len(kept)}건"
+            if dropped:
+                head += f" (프롬프트 상한으로 오래된 {dropped}건은 뺐다)"
+            parts.append(head + "\n" + "\n".join(reversed(kept)))
+            shown_lines += len(kept)
+
+        return "\n\n".join(parts + tail), offered, shown_lines
 
 
 def _short(text: str, limit: int = 60) -> str:
@@ -321,7 +377,10 @@ def _parse(reply: str) -> Optional[List[Op]]:
     if not isinstance(raw, list):
         logger.warning("회고 응답에 연산 목록이 없다: %.200s", text)
         return None
-    return [_op(item) for item in raw if isinstance(item, dict)]
+    # 객체가 아닌 항목도 버리지 않고 연산으로 넘긴다 — 검사가 "모르는 연산"으로 빼고 기각에 센다.
+    return [
+        _op(item) if isinstance(item, dict) else Op(op=f"형식 아님 {item!r:.30}") for item in raw
+    ]
 
 
 def _json(text: str) -> Any:

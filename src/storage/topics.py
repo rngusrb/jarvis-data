@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from src.core.clock import stamp
-from src.core.topics import Ground, Node, Plan, Tree
+from src.core.topics import ChangeRecord, Ground, Node, Plan, Tree
 from src.storage.traces import SCHEMA as TRACE_SCHEMA
 
 SCHEMA = """
@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS topic_changes (
     op       TEXT NOT NULL,
     topic_id INTEGER,
     detail   TEXT NOT NULL DEFAULT '{}',
-    reason   TEXT NOT NULL DEFAULT ''
+    reason   TEXT NOT NULL DEFAULT '',
+    -- 누가 바꿨나: model(회고의 연산) · code(오래 잠잠해 접음). 변경 빈도는 model 만 센다.
+    actor    TEXT NOT NULL DEFAULT 'model'
 );
 CREATE TABLE IF NOT EXISTS notes (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,10 +67,13 @@ CREATE TABLE IF NOT EXISTS reflections (
     -- 회고가 '지금'으로 본 때. 되감기에서는 실제로 돈 때(ran_at)와 다르다.
     at         TEXT NOT NULL,
     ran_at     TEXT NOT NULL,
-    considered INTEGER NOT NULL,
-    digested   INTEGER NOT NULL,
-    applied    INTEGER NOT NULL,
-    rejected   INTEGER NOT NULL,
+    considered INTEGER NOT NULL,  -- 낱줄로 보여준 흔적
+    digested   INTEGER NOT NULL,  -- 하루 요약 줄
+    changed    INTEGER NOT NULL,  -- 모델 연산으로 적용한 변경
+    noted      INTEGER NOT NULL,  -- 메모
+    retired    INTEGER NOT NULL,  -- 오래 잠잠해 코드가 접은 주제
+    rejected   INTEGER NOT NULL,  -- 통째로 뺀 연산
+    notices    INTEGER NOT NULL,  -- 받되 고친 연산(보여주지 않은 근거 번호를 뺌 등)
     -- ok · empty(훑을 게 없음) · failed: 이유
     outcome    TEXT NOT NULL
 );
@@ -90,12 +95,19 @@ class Note:
 
 
 @dataclass(frozen=True)
-class ChangeRecord:
+class Run:
+    """회고 한 번이 남기는 줄. 매일 회고가 "오늘 돌았나"를 여기서 본다(실패는 안 센다)."""
+
     at: datetime
-    op: str
-    topic: Optional[int]
-    detail: Dict[str, Any]
-    reason: str
+    ran_at: datetime
+    outcome: str
+    considered: int = 0
+    digested: int = 0
+    changed: int = 0
+    noted: int = 0
+    retired: int = 0
+    rejected: int = 0
+    notices: int = 0
 
 
 class SQLiteTopicStore:
@@ -176,7 +188,7 @@ class SQLiteTopicStore:
         return found
 
     def changes(self, since: Optional[datetime] = None) -> List[ChangeRecord]:
-        sql = "SELECT at, op, topic_id, detail, reason FROM topic_changes"
+        sql = "SELECT at, op, topic_id, detail, reason, actor FROM topic_changes"
         params: List[Any] = []
         if since is not None:
             sql += " WHERE at >= ?"
@@ -190,6 +202,7 @@ class SQLiteTopicStore:
                 topic=int(r[2]) if r[2] is not None else None,
                 detail=json.loads(r[3]),
                 reason=str(r[4]),
+                actor=str(r[5]),
             )
             for r in rows
         ]
@@ -229,22 +242,23 @@ class SQLiteTopicStore:
         finally:
             conn.close()
 
-    def record_run(
-        self,
-        at: datetime,
-        ran_at: datetime,
-        considered: int,
-        digested: int,
-        applied: int,
-        rejected: int,
-        outcome: str,
-    ) -> None:
+    def record_run(self, run: Run) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO reflections "
-                "(at, ran_at, considered, digested, applied, rejected, outcome) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (stamp(at), stamp(ran_at), considered, digested, applied, rejected, outcome),
+                "INSERT INTO reflections (at, ran_at, considered, digested, changed, noted,"
+                " retired, rejected, notices, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    stamp(run.at),
+                    stamp(run.ran_at),
+                    run.considered,
+                    run.digested,
+                    run.changed,
+                    run.noted,
+                    run.retired,
+                    run.rejected,
+                    run.notices,
+                    run.outcome,
+                ),
             )
 
 
@@ -313,13 +327,15 @@ def _write(conn: sqlite3.Connection, plan: Plan, now: datetime) -> Dict[int, int
         if "children" in detail:
             detail["children"] = [real(k) for k in detail["children"]]
         conn.execute(
-            "INSERT INTO topic_changes (at, op, topic_id, detail, reason) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO topic_changes (at, op, topic_id, detail, reason, actor)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             (
                 stamp(now),
                 change.op,
                 real(change.topic),
                 json.dumps(detail, ensure_ascii=False),
                 change.reason,
+                change.actor,
             ),
         )
     for note in plan.notes:

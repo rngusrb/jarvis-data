@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime, time, timedelta, timezone
 from typing import List, Optional
 
@@ -125,3 +126,28 @@ def test_slot_is_in_korean_time_whatever_the_clock_zone() -> None:
     utc_now = datetime(2026, 11, 2, 21, 0, tzinfo=timezone.utc)  # 한국 11-03 06:00
     assert loop.slot(utc_now) == _kst(3, 5, 30)
     assert loop.due(utc_now, _kst(3, 5, 30) - timedelta(seconds=1)) == utc_now
+
+
+def test_a_failing_record_read_does_not_end_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기록을 읽다 한 번 터졌다고 태스크가 끝나면 안 된다.
+
+    서버가 도는 동안 로그 없이 회고가 멈춘다(리뷰 재현).
+    """
+    now = _kst(3, 13, 0)
+    reads: List[int] = []
+    ran: List[datetime] = []
+
+    def last_run() -> Optional[datetime]:
+        reads.append(1)
+        if len(reads) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return ran[-1] if ran else None
+
+    async def job(at: datetime) -> None:
+        ran.append(at)
+
+    loop = DailyLoop(job=job, at=AT, last_run=last_run, clock=lambda: now)
+    waits = _drive(loop, monkeypatch, sleeps=2)
+
+    assert waits[1] == loop.retry_after.total_seconds()
+    assert ran == [now]

@@ -10,8 +10,8 @@ from typing import List, Tuple
 import pytest
 
 from src.core.models import Trace
-from src.core.topics import Op, plan
-from src.storage.topics import SQLiteTopicStore, StaleTree
+from src.core.topics import CODE, MODEL, Op, plan
+from src.storage.topics import Run, SQLiteTopicStore, StaleTree
 from src.storage.traces import SQLiteTraceStore
 
 NOW = datetime(2026, 11, 2, 20, 30, tzinfo=timezone.utc)
@@ -144,6 +144,21 @@ def test_nothing_is_written_when_one_write_fails(tmp_path: Path) -> None:
 def test_last_run_counts_only_runs_that_did_not_fail(tmp_path: Path) -> None:
     store, _ = _store(tmp_path, [])
     assert store.last_run() is None
-    store.record_run(NOW, NOW, 10, 1, 3, 0, "ok")
-    store.record_run(NOW + timedelta(days=1), NOW, 0, 0, 0, 0, "failed: 응답을 못 읽었다")
+    store.record_run(Run(NOW, NOW, "ok", considered=10, changed=3, notices=2))
+    store.record_run(Run(NOW + timedelta(days=1), NOW, "failed: 응답을 못 읽었다"))
     assert store.last_run() == NOW
+    assert _rows(tmp_path, "SELECT considered, changed, notices FROM reflections LIMIT 1") == [
+        (10, 3, 2)
+    ]
+
+
+def test_changes_remember_who_made_them(tmp_path: Path) -> None:
+    """코드가 접은 것과 모델이 바꾼 것을 가려야 변경 빈도를 잴 수 있다."""
+    store, ids = _store(tmp_path, ["a", "b"])
+    store.apply(
+        plan(store.load(), [Op("create", name="야구", evidence=tuple(ids))], set(ids), NOW), NOW
+    )
+    topic = store.load().live()[0].id
+    retire = [Op("retire", topic=topic, reason="61일 동안 근거가 없다")]
+    store.apply(plan(store.load(), retire, set(), NOW, actor=CODE), NOW)
+    assert [(c.op, c.actor) for c in store.changes()] == [("create", MODEL), ("retire", CODE)]

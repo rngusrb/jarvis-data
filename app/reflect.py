@@ -19,21 +19,16 @@ import argparse
 import asyncio
 import logging
 import time
-from collections import Counter
 from datetime import date, datetime, timedelta, timezone
-from typing import List
 
 from app.main import REFLECT_AT, build_reflector
 from src.brain.reflect import Reflection, Reflector
 from src.core.clock import KST, local
 from src.core.config import load_settings
-from src.core.topics import standings
+from src.core.topics import Churn, churn, standings
 from src.storage.topics import SQLiteTopicStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s — %(message)s")
-
-# 나무 모양을 바꾸는 연산. 이게 매일 쏟아지면 나무를 믿을 수 없다.
-RESHAPING = ("rename", "move", "merge", "retire")
 
 
 def show(now: datetime) -> None:
@@ -56,7 +51,7 @@ def show(now: datetime) -> None:
 
 def report(result: Reflection, verbose: bool) -> None:
     for line in result.retired:
-        print(f"  접음  {line}")
+        print(f"  접음  {line}", flush=True)
     if not verbose:
         return
     for line in result.applied:
@@ -67,9 +62,18 @@ def report(result: Reflection, verbose: bool) -> None:
         print(f"  고침  {line}")
 
 
-async def replay(reflector: Reflector, start: date, end: date, verbose: bool) -> None:
-    """그날들의 회고 시각을 차례로 '지금'으로 삼아 돈다. 흔적은 그때까지 있던 것만 본다."""
+async def replay(reflector: Reflector, start: date, end: date, verbose: bool) -> Churn:
+    """그날들의 회고 시각을 차례로 '지금'으로 삼아 돈다. 흔적은 그때까지 있던 것만 본다.
+
+    이미 시작일 뒤까지 자란 나무(운영 DB, 되감기를 한 번 돌린 사본)에서는 돌지 않는다. 그 나무의
+    근거는 '지금'보다 뒤의 흔적이라, 되감기가 미래를 보고 변경 빈도가 섞인다.
+    """
     first = datetime.combine(start, REFLECT_AT, tzinfo=KST)
+    last = reflector.topics.last_run()
+    if (last is not None and last >= first) or reflector.topics.changes(since=first):
+        raise SystemExit(
+            f"이 DB 의 나무는 이미 {start} 뒤까지 자랐다 — 빈 사본에서 되감는다(JARVIS_DB_PATH)"
+        )
     day = start
     while day <= end:
         now = datetime.combine(day, REFLECT_AT, tzinfo=KST)
@@ -77,26 +81,28 @@ async def replay(reflector: Reflector, start: date, end: date, verbose: bool) ->
         try:
             result = await reflector.run_once(now)
         except Exception as exc:  # 하루가 실패해도 되감기는 이어간다 — 실패도 기록에 남았다
-            print(f"{day:%m-%d} 실패: {exc}")
+            print(f"{day:%m-%d} 실패: {exc}", flush=True)
         else:
             print(
                 f"{day:%m-%d} 흔적 {result.considered:4d}줄 → 변경 {len(result.applied):2d} · "
                 f"메모 {result.notes:2d} · 기각 {len(result.rejected):2d}"
-                f" · 접음 {len(result.retired)}"
-                f"  ({result.prompt_chars:,}자, {time.monotonic() - began:.0f}초)"
+                f" · 고침 {len(result.notices):2d} · 접음 {len(result.retired)}"
+                f"  ({result.prompt_chars:,}자, {time.monotonic() - began:.0f}초)",
+                flush=True,
             )
             report(result, verbose)
         day += timedelta(days=1)
 
-    changes = reflector.topics.changes(since=first)
-    ops = Counter(c.op for c in changes)
-    days = (end - start).days + 1
-    reshaped = Counter(local(c.at).date() for c in changes if c.op in RESHAPING)
-    alive = [n for n in reflector.topics.load().live()]
-    print(f"\n{days}일 되감기 — 살아 있는 주제 {len(alive)}개")
-    print("연산: " + ", ".join(f"{op} {n}" for op, n in ops.most_common()))
-    spread: List[int] = sorted(reshaped.values(), reverse=True)
-    print(f"모양 바꾼 날 {len(reshaped)}/{days}일" + (f", 많은 날 {spread[:5]}" if spread else ""))
+    found = churn(reflector.topics.changes(since=first), days=(end - start).days + 1)
+    alive = reflector.topics.load().live()
+    print(f"\n{found.days}일 되감기 — 살아 있는 주제 {len(alive)}개")
+    print("모델의 연산: " + ", ".join(f"{op} {n}" for op, n in sorted(found.ops.items())))
+    print(f"오래 잠잠해 코드가 접은 주제: {found.auto_retired}")
+    print(
+        f"모델이 나무 모양을 바꾼 날 {found.reshaped_days}/{found.days}일"
+        + (f", 많은 날 {list(found.busiest[:5])}" if found.busiest else "")
+    )
+    return found
 
 
 def main() -> None:
