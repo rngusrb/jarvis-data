@@ -180,13 +180,14 @@ class RecentTraces(Protocol):
 
 @dataclass
 class TraceDigestProvider:
-    """하루 요약이 있는 흔적 종류(앱 사용)를 어제·오늘치로 보여준다.
+    """하루 요약이 있는 흔적 종류(앱 사용, 웹 방문)를 어제·오늘치로 보여준다.
 
     흔적은 낱줄로는 맥락에 안 들어간다 — 하루 수백 줄이다. 카드가 들고 온 요약으로 접어서
     넣는다. "어젯밤 늦게 잠들었다"는 신호 옆에 "새벽 두 시까지 맥을 썼다"가 있어야 말이 된다.
 
-    민감한 종류는 요약이 있어도 넣지 않는다. 반응·대화의 말은 텔레그램으로 나가는데, 거기서
-    민감한 걸 거르는 장치는 아직 없다(4단계).
+    민감한 종류(웹 방문의 검색어)는 `include_sensitive` 일 때만 넣는다. 반응·대화의 말은
+    텔레그램으로 나가는데, 거기서 민감한 걸 거르는 장치는 아직 없다(4단계). 넣을지는 조립하는
+    곳이 정한다.
     """
 
     source: RecentTraces
@@ -194,12 +195,15 @@ class TraceDigestProvider:
     name: str = "trace_digest"
     # 어제 하루와 오늘 지금까지. 요약이 창 앞에서 잘린 날을 빼서 두 줄 남짓이 된다.
     window: timedelta = timedelta(days=2)
+    include_sensitive: bool = False
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         since = now - self.window
         chunks: List[str] = []
         for card in self.kinds:
-            if card.digest is None or not card.active or card.sensitive:
+            if card.digest is None or not card.active:
+                continue
+            if card.sensitive and not self.include_sensitive:
                 continue
             days = card.digest(self.source.recent(card.kind, since), since, now)
             if days:

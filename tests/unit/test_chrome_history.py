@@ -305,3 +305,63 @@ def test_상자에_못_쓰면_커서를_옮기지_않는다(
         _run(chrome, tmp_path, monkeypatch)
 
     assert not (tmp_path / "state" / "chrome_history.json").exists()
+
+
+def test_검색은_검색어로_적는다() -> None:
+    from collectors.chrome_history import describe
+
+    assert describe("https://www.google.com/search?q=%EC%A0%84%EC%84%B8", "전세 - Google 검색") == (
+        "검색: 전세"
+    )
+    assert describe("https://www.youtube.com/results?search_query=kbo", "YouTube") == "검색: kbo"
+
+
+def test_검색_사이트의_보통_페이지는_버리지_않는다() -> None:
+    # 2026-11-02 까지 검색어가 없으면 다 버려 GitHub 1,045건, 유튜브 영상 179건이 빠졌다
+    # (JAR-020 리뷰).
+    from collectors.chrome_history import describe
+
+    assert (
+        describe("https://github.com/rngusrb/jarvis-data/pull/43", "PR 43") == "PR 43 (github.com)"
+    )
+    assert describe("https://www.youtube.com/watch?v=abc", "경기 하이라이트") == (
+        "경기 하이라이트 (www.youtube.com)"
+    )
+    assert (
+        describe("https://www.google.com/maps/place/x", "Google 지도")
+        == "Google 지도 (www.google.com)"
+    )
+
+
+def test_첫_화면과_이동용_주소는_흔적이_아니다() -> None:
+    from collectors.chrome_history import describe
+
+    for url in (
+        "https://www.google.com/",
+        "https://www.google.com/webhp?hl=ko",
+        "https://www.google.com/search?tbm=isch",
+        "https://www.google.com/url?sa=t&url=https://example.com",
+        "https://www.google.com/aclk?ai=x&adurl=https://shop.example",
+        "https://search.naver.com/p/crd/rd?m=1&u=https://example.com",
+        "https://www.youtube.com/",
+        "https://www.youtube.com/results",
+        "https://github.com/",
+        "https://github.com/notifications?query=reason%3Aassign",
+        "https://github.com/login?return_to=x",
+    ):
+        assert describe(url, "목적지 제목") is None, url
+
+
+def test_이동용_주소는_검색어가_있어도_검색이_아니다() -> None:
+    # 구글 /url?q=<목적지> 가 "검색: https://…"로 적혔다(JAR-020 재리뷰).
+    from collectors.chrome_history import describe
+
+    assert describe("https://www.google.com/url?q=https://example.com&sa=U", "Example") is None
+
+
+def test_검색_사이트마다_보통_페이지가_아닌_경로를_적어_둔다() -> None:
+    # 한쪽에만 호스트를 더하면 describe 가 KeyError 로 수집기 전체를 멈춘다.
+    from collectors.chrome_history import NOT_PAGES, REDIRECTS, SEARCH_HOSTS
+
+    assert set(NOT_PAGES) == set(SEARCH_HOSTS)
+    assert set(REDIRECTS) <= set(SEARCH_HOSTS)

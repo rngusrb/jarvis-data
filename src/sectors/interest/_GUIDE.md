@@ -82,6 +82,7 @@ tests:
   - tests/integration/test_ingest_traces.py
   - tests/unit/test_trace_store.py
   - tests/unit/test_app_digest.py
+  - tests/unit/test_web_digest.py
 ```
 
 ```bash
@@ -94,5 +95,5 @@ python scripts/harness.py src/sectors/interest/
 
 | 파일 | 책임 |
 |------|------|
-| `traces.py` | 흔적 카드. `web_visit`(크롬), `mac_app`(맥 앞에 뜬 앱, 하루 요약을 단다) |
-| `digest.py` | 앱 사용 하루 요약 — 날짜, 처음~끝, 모두 쓴 시간, 시간대, 앱 상위 다섯. 저장하지 않는다 |
+| `traces.py` | 흔적 카드. `web_visit`(크롬), `mac_app`(맥 앞에 뜬 앱). 둘 다 하루 요약을 단다 |
+| `digest.py` | 흔적 하루 요약. 앱 사용(처음~끝, 모두 쓴 시간, 시간대, 앱 상위 다섯), 웹 방문(몇 곳·기기, 시간대, 많이 간 곳, 최근 검색어). 날 나누기는 둘이 같이 쓴다. 저장하지 않는다 |

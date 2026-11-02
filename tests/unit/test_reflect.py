@@ -138,6 +138,26 @@ def test_folds_kinds_kept_out_of_reflection_into_day_digests(tmp_path: Path) -> 
     assert result.digested == 1
 
 
+def test_kinds_read_line_by_line_ignore_their_digest(tmp_path: Path) -> None:
+    """웹 방문은 요약이 있어도 회고는 낱줄로 훑는다 — 요약은 제목과 검색어 대부분을 버린다."""
+    reflector = _build(tmp_path, GOOD)
+    called: List[int] = []
+
+    def digest(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
+        called.append(len(traces))
+        return ["요약 한 줄"]
+
+    reflector.kinds = [
+        TraceKind(kind="web_visit", label="웹 방문", collector="mac_chrome", digest=digest)
+    ]
+    asyncio.run(reflector.run_once(NOW))
+
+    reasoner = reflector.reasoner
+    assert isinstance(reasoner, ScriptedReasoner)
+    assert "전세자금대출" in reasoner.prompts[-1] and "요약 한 줄" not in reasoner.prompts[-1]
+    assert called == []
+
+
 def test_reflects_on_digests_alone(tmp_path: Path) -> None:
     """웹 기록이 없는 주에도 앱 사용 요약만으로 회고가 돈다."""
     db = tmp_path / "t.db"

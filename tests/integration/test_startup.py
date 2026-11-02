@@ -75,8 +75,10 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         for name in ("events", "places", "catalog", "event_kinds"):
             assert getattr(client.app.state, name, None) is not None, name
         # 앱 사용 하루 요약이 반응·대화의 맥락에 들어간다(JAR-019).
-        providers = [p.name for p in client.app.state.jarvis.agent.providers]
-        assert "trace_digest" in providers
+        digest = [p for p in client.app.state.jarvis.agent.providers if p.name == "trace_digest"]
+        assert len(digest) == 1
+        # 민감한 웹 방문도 맥락에 넣는다 — 실험 단계라 허들을 낮췄다(JAR-020).
+        assert digest[0].include_sensitive is True
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:

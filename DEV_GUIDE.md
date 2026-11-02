@@ -78,7 +78,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |-------------|-------|
 | **지표 추가** (예: 혈중산소) | `src/sectors/health/metrics.py` 에 카드 한 장 |
 | **흔적 종류 추가** (예: 앱 실행) | 섹터의 `traces.py` 에 카드 한 장 |
-| 하루 수백 줄인 흔적을 요약해 보여주기 | 카드의 `digest` — 예: `src/sectors/interest/digest.py`(앱 사용) |
+| 하루 수백 줄인 흔적을 요약해 보여주기 | 카드의 `digest` — 예: `src/sectors/interest/digest.py`(앱 사용·웹 방문) |
 | 믿음 수명 바꾸기 | `src/core/beliefs.py` — `FADE_AFTER` · `FORGET_AFTER` |
 | 회고 프롬프트 | `src/brain/reflect.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |

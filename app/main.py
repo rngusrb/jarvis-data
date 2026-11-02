@@ -182,8 +182,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 수집 "현황"만 알고 "값"을 모르면 자비스가 자기 데이터를 두고도
             # 판단을 못 한다. 실제로 그랬다.
             RecentValuesProvider(source=store, metrics=metrics.all()),
-            # 흔적은 낱줄로 못 넣는다. 하루 요약이 있는 종류(앱 사용)만 어제·오늘치로.
-            TraceDigestProvider(source=traces, kinds=trace_kinds.all()),
+            # 흔적은 낱줄로 못 넣는다. 하루 요약이 있는 종류(앱 사용, 웹 방문)를 어제·오늘치로.
+            # 요약이 있는 **모든** 민감 종류를 넣는다(지금은 웹 방문 — 검색어) — 실험 단계라 허들을
+            # 낮춰 자비스가 보게 한다(2026-11-02 사용자 결정). 거르는 건 4단계(BACKLOG).
+            TraceDigestProvider(source=traces, kinds=trace_kinds.all(), include_sensitive=True),
         ),
     )
 
