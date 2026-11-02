@@ -50,20 +50,24 @@ def roles(events: Iterable[Event]) -> List[Role]:
     weekday = [e for e in events if e.place_id is not None and local(e.at).weekday() < 5]
     found: List[Role] = []
 
-    home = Counter(
-        e.place_id for e in weekday if e.label == LEAVE_HOME and local(e.at).hour in MORNING
-    )
-    found += _winner("집", home, sum(home.values()))
+    # 근거는 탭 수가 아니라 **날 수**다. 지오펜스를 들락날락하면 "집 나섬"이 한 아침에 두 번,
+    # 버스→지하철 환승역은 내리고 타며 두 번 찍힌다 — 탭으로 세면 이틀이 "나흘 근거"가
+    # 되어 사흘 문턱을 넘었다(2026-11-02 JAR-016 리뷰).
+    home_days: Dict[date, set] = {}
+    for e in weekday:
+        if e.label == LEAVE_HOME and local(e.at).hour in MORNING:
+            home_days.setdefault(local(e.at).date(), set()).add(e.place_id)
+    home = Counter(place for places in home_days.values() for place in places)
+    found += _winner("집", home, len(home_days))
 
     mornings = _taps_by_day(weekday, MORNING)
     first = Counter(taps[0].place_id for taps in mornings.values())
     found += _winner("아침에 타는 곳", first, len(mornings))
 
     middle = Counter(
-        e.place_id
+        place
         for taps in mornings.values()
-        for e in taps[1:-1]
-        if e.place_id not in (taps[0].place_id, taps[-1].place_id)
+        for place in {e.place_id for e in taps[1:-1]} - {taps[0].place_id, taps[-1].place_id}
     )
     found += _winner("아침에 갈아타는 곳", middle, len(mornings))
 

@@ -68,3 +68,20 @@ def test_시각은_한국_시각으로_센다() -> None:
         for d in range(3)
     ]
     assert [r.name for r in roles(taps)] == ["아침에 타는 곳"]
+
+
+def test_근거는_탭_수가_아니라_날_수다() -> None:
+    # 환승역은 내리고 타며 두 번, 지오펜스는 들락날락하며 두 번 찍힌다. 이틀은 이틀이다.
+    days: List[Event] = []
+    for d in (0, 1):
+        days += [
+            _at(d, 7, 0, HOME, "leave_home"),
+            _at(d, 7, 2, HOME, "leave_home"),
+            _at(d, 7, 12, STATION),
+            _at(d, 7, 39, TRANSFER),
+            _at(d, 7, 40, TRANSFER),
+            _at(d, 8, 5, WORK_STATION),
+        ]
+    found = {r.name: r for r in roles(days)}
+
+    assert "집" not in found and "아침에 갈아타는 곳" not in found

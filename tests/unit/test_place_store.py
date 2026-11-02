@@ -76,3 +76,23 @@ def test_장소_열이_없던_사건_표에도_붙는다(tmp_path: Path) -> None
     SQLiteEventStore(db).write([_event(HOME, 0)])
 
     assert SQLitePlaceStore(db).assign_new() == 1
+
+
+def test_동시에_붙여도_한_곳이_두_번호가_되지_않는다(tmp_path: Path) -> None:
+    """수신구는 요청을 동시에 처리한다. 쓰기 잠금을 먼저 잡지 않으면 같은 사건을 둘이 읽는다."""
+    import threading
+
+    db = tmp_path / "t.db"
+    events, places = SQLiteEventStore(db), SQLitePlaceStore(db)
+    spots = [(37.0 + i * 0.01, 127.0) for i in range(10)]  # 서로 1km 넘게 떨어진 열 곳
+    events.write([_event(spots[i % 10], i) for i in range(200)])
+
+    workers = [threading.Thread(target=places.assign_new) for _ in range(4)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+
+    found = places.all()
+    assert len(found) == 10
+    assert sum(p.visits for p in found) == 200
