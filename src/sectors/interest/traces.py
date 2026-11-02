@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from src.core.traces import TraceKind
+from src.sectors.interest.digest import app_days
 
 WEB_VISIT = TraceKind(
     kind="web_visit",
@@ -29,7 +30,6 @@ WEB_VISIT = TraceKind(
 )
 
 # 무엇을 알아보는지(웹)와 함께 무엇을 하며 시간을 보내는지(앱)도 관심의 한 면이다.
-# 시간대별 리듬을 읽는 일이 생기면(계획 2단계) 그쪽 섹터로 옮길 수 있다.
 MAC_APP = TraceKind(
     kind="mac_app",
     label="맥 앱 사용",
@@ -37,8 +37,13 @@ MAC_APP = TraceKind(
     via="맥",
     # 앱 이름과 쓴 시간만 남는다. 창 제목은 읽지 않는다.
     stale_after=timedelta(days=2),
-    # 하루 수백 줄이라 회고에 낱줄로 넣지 않는다. 쌓아두고 패턴 층이 접어 읽는다.
+    # 하루 수백 줄이라 회고에 낱줄로 넣지 않는다. 하루 한 줄로 접어서 보여준다 —
+    # 회고(7일)와 자비스의 맥락(어제·오늘)이 같은 요약을 읽는다.
     reflect=False,
+    digest=app_days,
+    # 민감하지 않다고 봤다 — 앱 이름과 쓴 시간뿐이다. 요약이 반응·대화의 맥락에 들어가 텔레그램
+    # 답에 앱 이름이 나올 수 있다는 걸 알고 정했다(JAR-019). 싫으면 True 로 — 맥락에서 빠진다.
+    sensitive=False,
 )
 
 TRACES = [WEB_VISIT, MAC_APP]

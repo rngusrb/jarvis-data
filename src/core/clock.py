@@ -32,3 +32,16 @@ def local(at: datetime) -> datetime:
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
     return at.astimezone(KST)
+
+
+WEEKDAYS = "월화수목금토일"
+
+
+def shown(at: datetime) -> str:
+    """LLM 에게 "지금"을 알려줄 때의 표기. '2026-11-02(월) 12:55' — 한국 시간, 요일까지.
+
+    요일이 없으면 "평일 아침 루틴", "주말에 늦게까지" 같은 걸 모델이 날짜에서 계산해야 하고,
+    지금 시각이 없으면 "(지금까지)"나 "어젯밤"이 언제인지 모른다(JAR-019 리뷰).
+    """
+    when = local(at)
+    return f"{when:%Y-%m-%d}({WEEKDAYS[when.weekday()]}) {when:%H:%M}"

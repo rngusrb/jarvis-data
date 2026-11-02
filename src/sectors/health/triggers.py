@@ -45,6 +45,23 @@ def is_measured(observation: Observation, min_segments: int = MIN_SEGMENTS) -> b
         return True
 
 
+def _not_tonight(trigger: str, night: Observation, now: datetime, passed: Set[datetime]) -> bool:
+    """오늘 아침 끝난 밤이 아니면 True — 그 밤으로는 말하지 않는다. 밤의 날짜는 깬 날이다.
+
+    새 밤이 안 들어오면 지난 밤을 며칠씩 "어젯밤"으로 다시 판단했다(JAR-017 리뷰 재현: 워치
+    없는 밤이 이어지면 쿨다운마다 같은 밤을 LLM 에 물었다). 넘긴 밤은 한 번 남긴다 — 안 남기면
+    "이탈 없음"과 구별되지 않는다(재리뷰). 두 수면 트리거가 이 판정을 같이 쓴다.
+    """
+    if local(night.at).date() == local(now).date():
+        return False
+    if night.at not in passed:
+        passed.add(night.at)
+        logger.info(
+            "%s — 이탈한 밤이지만 오늘 밤이 아니라 넘긴다: %s", trigger, local(night.at).date()
+        )
+    return True
+
+
 @dataclass
 class SleepDropTrigger:
     """평소 수면 대비 어젯밤이 유난히 짧았는지 본다.
@@ -52,6 +69,9 @@ class SleepDropTrigger:
     절대 기준("7시간 미만")이 아니라 **본인 baseline 대비 편차**를 쓴다.
     실제 데이터로 확인된 차이다 — 이 사용자의 4개월치에 7시간 기준을 대면
     83일 중 73일(88%)에 알림이 울린다. baseline 기준으로는 11회다.
+
+    **오늘 아침에 끝난 밤만** 판단한다(`_not_tonight`). 자정을 넘겨 들어온 밤은 URGENT 라도
+    말하지 않는다 — 같은 밤을 며칠씩 되풀이하는 것보다 낫다고 봤다(JAR-018).
     """
 
     name: str = "sleep_drop"
@@ -69,6 +89,8 @@ class SleepDropTrigger:
     # 37% 감소지만 평소 5시간 자는 사람에겐 61% 감소다.
     urgent_ratio: float = 0.5
     min_segments: int = MIN_SEGMENTS
+    # 넘긴 밤을 한 번만 남기려는 기억. 판단에는 쓰지 않는다.
+    _passed: Set[datetime] = field(default_factory=set, repr=False, compare=False)
 
     def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
         # 측정 실패는 판단 대상에서도, baseline에서도 뺀다. baseline에 남겨두면
@@ -86,6 +108,8 @@ class SleepDropTrigger:
         avg = mean(o.value for o in baseline)
         delta = avg - latest.value
         if delta < self.drop_hours:
+            return None
+        if _not_tonight(self.name, latest, now, self._passed):
             return None
 
         severity = Severity.URGENT if latest.value <= avg * self.urgent_ratio else Severity.NOTABLE
@@ -206,8 +230,8 @@ class LateSleepTrigger:
     두 시가 평소인 사람에게 매일 울린다 — 이 사용자의 export 82밤 중 잠든 시각이 1~3시인 밤이
     72밤이다). 잠든 시각은 수면 집계가 남기는 `meta.onset` 이다(JAR-013).
 
-    **오늘 아침에 끝난 밤만** 판단한다. 새 밤이 안 들어오면 지난 밤을 며칠씩 "어젯밤"으로
-    다시 말했다(리뷰 재현: 워치 없는 밤이 이어지면 사흘 동안 같은 말).
+    **오늘 아침에 끝난 밤만** 판단한다(`_not_tonight`). 새 밤이 안 들어오면 지난 밤을 며칠씩
+    "어젯밤"으로 다시 말했다(리뷰 재현: 워치 없는 밤이 이어지면 사흘 동안 같은 말).
 
     백테스트 (export 82밤, 정오 기준·중앙값): 문턱 1.0h → 15회, 1.5h → 8회(10밤에 한 번),
     2.0h → 5회. 1.5h 로 정했다. 같은 밤 sleep_drop 과 겹친 경우 2회.
@@ -220,7 +244,7 @@ class LateSleepTrigger:
     late_hours: float = 1.5
     min_segments: int = MIN_SEGMENTS
     # 넘긴 밤을 한 번만 남기려는 기억. 판단에는 쓰지 않는다.
-    _skipped: Set[datetime] = field(default_factory=set, repr=False, compare=False)
+    _passed: Set[datetime] = field(default_factory=set, repr=False, compare=False)
 
     def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
         nights = sorted(
@@ -235,12 +259,7 @@ class LateSleepTrigger:
         slept = _after_noon(_onset(latest) or latest.at)
         if slept - usual < self.late_hours:
             return None
-        if local(latest.at).date() != local(now).date():
-            # 늦은 밤이지만 오늘 아침 끝난 밤이 아니다 — 자정을 넘겨 들어왔거나 새 밤이 없다.
-            # 말하지 않되 한 번은 남긴다. 안 남기면 "이탈 없음"과 구별되지 않는다(재리뷰).
-            if latest.at not in self._skipped:
-                self._skipped.add(latest.at)
-                logger.info("늦게 잠든 밤이지만 오늘 밤이 아니라 넘긴다: %s", latest.at.date())
+        if _not_tonight(self.name, latest, now, self._passed):
             return None
         return Insight(
             trigger=self.name,

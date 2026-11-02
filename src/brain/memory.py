@@ -39,12 +39,22 @@ class SpeechRecord:
     at: datetime
     text: str
     spoken: bool = True
+    # 무엇에 대한 판단이었나 — 신호의 `at`(그 밤, 그 아침의 첫 사건). 게이트가 같은 것을 두 번
+    # 묻지 않으려고 본다. 2026-11-02 전에 남은 기록에는 없다.
+    about: Optional[datetime] = None
 
 
 class SpeechLog(Protocol):
     """발화 기억이 만족해야 할 전부. 읽는 쪽은 어느 구현인지 몰라도 된다."""
 
-    def record(self, trigger: str, at: datetime, text: str, spoken: bool = True) -> None: ...
+    def record(
+        self,
+        trigger: str,
+        at: datetime,
+        text: str,
+        spoken: bool = True,
+        about: Optional[datetime] = None,
+    ) -> None: ...
 
     def last(self, trigger: str) -> Optional[SpeechRecord]: ...
 
@@ -57,7 +67,14 @@ class SpeechLog(Protocol):
 class InMemorySpeechLog:
     _by_trigger: Dict[str, List[SpeechRecord]] = field(default_factory=dict)
 
-    def record(self, trigger: str, at: datetime, text: str, spoken: bool = True) -> None:
+    def record(
+        self,
+        trigger: str,
+        at: datetime,
+        text: str,
+        spoken: bool = True,
+        about: Optional[datetime] = None,
+    ) -> None:
         """판단을 기록한다.
 
         사고 이력: 2026-09-29. 재시작 후 20시간 동안 LLM을 68번 부르고 2번
@@ -66,7 +83,7 @@ class InMemorySpeechLog:
         **"싼 게이트 먼저, 비싼 LLM 나중"이 여기서 새고 있었다.**
         """
         self._by_trigger.setdefault(trigger, []).append(
-            SpeechRecord(trigger=trigger, at=at, text=text, spoken=spoken)
+            SpeechRecord(trigger=trigger, at=at, text=text, spoken=spoken, about=about)
         )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:

@@ -125,6 +125,16 @@ if not isinstance(content, str) or not content.strip():
 걸리면 `content` 를 **null** 로 준다. `str(None)` 은 `"None"` 이라는 문자열이 되고,
 그게 SKIP 검사와 빈 검사를 둘 다 통과해 사용자에게 발송된다.
 
+### ❌ "같은 밤"을 쿨다운 길이로 흉내 내지 않는다
+```python
+# ❌ 금지 — "late_sleep": timedelta(hours=16)   # 같은 밤을 하루 한 번으로 만들려고 늘린다
+# ✅ 대신 — 판단 기록에 about=insight.at 을 남기고, 게이트가 같은 신호면 막는다
+```
+**사고 이력**: 2026-11-02 JAR-018 리뷰 재현(30분 주기, 두뇌는 매번 말 안 걸기로). 쿨다운만으로 막으면
+07:30 에 들어온 밤을 6시간마다 세 번 물었다. 16시간으로 늘리자 그날 23:30 에 한 번 더 묻고, 그 판단이
+쿨다운을 밀어 **다음 날 아침의 새 밤이 15:30 에야** 판단됐다. 시간 길이는 "같은 것"의 대용품이 못 된다.
+신호의 `at` 이 판단 시각인 것(수집 감시)은 늘 새 신호라 전처럼 쿨다운만 본다.
+
 ### ❌ 발송 전에 쿨다운을 기록하지 않는다
 **사고 이력**: 발송 실패까지 기억에 남기면 사용자는 메시지를 못 받았는데 자비스는
 "아까 말했지" 하고 쿨다운 내내 침묵한다. `confirm_spoken` 은 **성공 후에만** 부른다.
@@ -163,6 +173,7 @@ tests:
   - tests/unit/test_vllm_client.py
   - tests/unit/test_reasoning_strip.py
   - tests/unit/test_reflect.py
+  - tests/unit/test_trace_digest_provider.py
 ```
 
 ```bash
@@ -176,10 +187,10 @@ python scripts/harness.py src/brain/
 | 파일 | 책임 |
 |------|------|
 | `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
-| `reflect.py` | 회고 루프. 흔적을 훑어 믿음을 만들고 시들게 한다 |
+| `reflect.py` | 회고 루프. 흔적을 훑어 믿음을 만들고 시들게 한다. 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
-| `gate.py` | 싼 필터. severity 임계값 + 트리거별 쿨다운 |
+| `gate.py` | 싼 필터. severity 임계값 + 같은 신호(`insight.at`)는 한 번 + 트리거별 쿨다운 |
 | `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지 |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |
-| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황) |
+| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약) |
 | `prompts.py` | 프롬프트 템플릿 + SKIP 파싱 |

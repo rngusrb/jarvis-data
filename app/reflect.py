@@ -54,7 +54,10 @@ def main() -> None:
     reflector.lookback = timedelta(days=args.days)
     result = asyncio.run(reflector.run_once(now))
 
-    print(f"\n흔적 {result.considered}건 → 믿음 {len(result.learned)}건 갱신")
+    print(
+        f"\n흔적 {result.considered}건 + 하루 요약 {result.digested}줄"
+        f" → 믿음 {len(result.learned)}건 갱신"
+    )
     if result.forgotten:
         print(f"잊음: {', '.join(result.forgotten)}")
     if result.skipped:

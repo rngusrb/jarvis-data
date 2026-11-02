@@ -19,9 +19,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Sequence
 
 from src.brain.context import ContextBlock, render
+from src.core.clock import shown
 from src.core.models import Insight
 
 logger = logging.getLogger(__name__)
@@ -51,8 +53,12 @@ class Decision:
     message: str = ""
 
 
-def build_prompt(insight: Insight, blocks: Sequence[ContextBlock]) -> str:
-    parts = [f"감지된 신호: {insight.summary}", f"심각도: {insight.severity.name}"]
+def build_prompt(insight: Insight, blocks: Sequence[ContextBlock], now: datetime) -> str:
+    parts = [
+        f"지금: {shown(now)}",
+        f"감지된 신호: {insight.summary}",
+        f"심각도: {insight.severity.name}",
+    ]
     if blocks:
         parts.append(f"참고 맥락:\n{render(blocks)}")
     parts.append("지금 말을 걸까?")

@@ -63,7 +63,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
         ↓
    triggers              평소 대비 편차 감지 → Insight
         ↓
-   brain/gate            severity · 쿨다운 (싼 필터)
+   brain/gate            severity · 같은 신호는 한 번 · 쿨다운 (싼 필터)
         ↓
    brain/agent           맥락 조립 → vLLM → 발화 결정
         ↓
@@ -78,6 +78,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |-------------|-------|
 | **지표 추가** (예: 혈중산소) | `src/sectors/health/metrics.py` 에 카드 한 장 |
 | **흔적 종류 추가** (예: 앱 실행) | 섹터의 `traces.py` 에 카드 한 장 |
+| 하루 수백 줄인 흔적을 요약해 보여주기 | 카드의 `digest` — 예: `src/sectors/interest/digest.py`(앱 사용) |
 | 믿음 수명 바꾸기 | `src/core/beliefs.py` — `FADE_AFTER` · `FORGET_AFTER` |
 | 회고 프롬프트 | `src/brain/reflect.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
@@ -98,7 +99,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |---------|------|------|
 | `Channel` | 텔레그램 | iOS 푸시 |
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
-| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 | 캘린더 · 프로필 |
+| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
 | `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 | 쇼핑 |
 | `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 (위치 사건) | 앱·웹 사건 |

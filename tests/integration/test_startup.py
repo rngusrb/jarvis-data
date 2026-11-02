@@ -74,9 +74,14 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         # 조용히 안 붙고, 장소를 보는 트리거가 영영 안 울린다(JAR-016 리뷰).
         for name in ("events", "places", "catalog", "event_kinds"):
             assert getattr(client.app.state, name, None) is not None, name
+        # 앱 사용 하루 요약이 반응·대화의 맥락에 들어간다(JAR-019).
+        providers = [p.name for p in client.app.state.jarvis.agent.providers]
+        assert "trace_digest" in providers
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:
     """회고 CLI 가 쓰는 조립 경로. 여기도 섹터 모양에 기댄다."""
     reflector = build_reflector(_settings(tmp_path))
     assert [c.kind for c in reflector.kinds if c.reflect] == ["web_visit"]
+    # 낱줄로 안 훑는 종류는 하루 요약으로 들어간다.
+    assert [c.kind for c in reflector.kinds if not c.reflect and c.digest] == ["mac_app"]

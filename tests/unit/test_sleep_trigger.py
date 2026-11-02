@@ -8,8 +8,10 @@ import pytest
 from src.core.models import Observation, Severity
 from src.sectors.health.triggers import SleepDropTrigger
 
-BASE = datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc)
-NOW = BASE + timedelta(days=10)
+# 밤 관측치의 시각은 깬 날의 한국 자정이다. 수면 트리거는 오늘 아침 끝난 밤만 판단하므로(JAR-018)
+# 판단 시각은 다섯째 밤(넷째 날)이 끝난 아침 9시다.
+BASE = datetime(2026, 8, 1, tzinfo=timezone(timedelta(hours=9)))
+NOW = BASE + timedelta(days=4, hours=9)
 
 
 def _nights(values: list[float]) -> list[Observation]:
@@ -92,6 +94,44 @@ def test_품질_정보가_없으면_통과시킨다() -> None:
     """단축어로 들어온 데이터엔 segments가 없다. 모르는 것과 나쁜 것은 다르다."""
     trigger = SleepDropTrigger()
     assert trigger.check(_nights([7.0, 7.2, 6.9, 7.1, 5.0]), NOW) is not None
+
+
+def test_오늘_아침_끝난_밤이_아니면_급감도_말하지_않는다() -> None:
+    # 새 밤이 안 들어오면 지난 밤을 쿨다운마다 다시 "어젯밤"으로 물었다(JAR-017 리뷰 재현).
+    trigger = SleepDropTrigger()
+    nights = _nights([7.5, 7.5, 7.5, 7.5, 3.0])
+    assert trigger.check(nights, NOW + timedelta(days=2)) is None
+
+
+def test_넘긴_급감한_밤은_한_번만_남긴다(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO)
+    trigger = SleepDropTrigger()
+    nights = _nights([7.5, 7.5, 7.5, 7.5, 3.0])
+    next_day = NOW + timedelta(days=1)
+
+    assert trigger.check(nights, next_day) is None
+    assert trigger.check(nights, next_day + timedelta(minutes=30)) is None
+    assert caplog.text.count("오늘 밤이 아니라 넘긴다") == 1
+
+
+def test_이탈_없는_지난_밤은_남기지_않는다(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO)
+    nights = _nights([7.0, 7.2, 6.9, 7.1, 7.0])
+    assert SleepDropTrigger().check(nights, NOW + timedelta(days=1)) is None
+    assert "넘긴다" not in caplog.text
+
+
+def test_UTC_로_들어온_아침도_오늘_아침이다() -> None:
+    # 운영 루프는 지금 시각을 UTC 로 넘긴다. 한국 07:30 은 UTC 로 전날 22:30 이라, 날짜를 한국
+    # 시간으로 바꾸지 않으면 밤이 보통 들어오는 00~09시에 오늘 밤을 넘긴다(JAR-018 리뷰 돌연변이).
+    nights = _nights([7.5, 7.5, 7.5, 7.5, 3.0])
+    morning = (NOW - timedelta(hours=1, minutes=30)).astimezone(timezone.utc)
+    assert morning.date() != NOW.date()
+    assert SleepDropTrigger().check(nights, morning) is not None
 
 
 def test_URGENT는_절반_이하일_때다() -> None:
