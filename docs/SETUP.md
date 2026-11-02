@@ -68,19 +68,32 @@ curl -s localhost:8100/health | python3 -m json.tool
 sudo tee /etc/systemd/system/jarvis.service <<'EOF'
 [Unit]
 Description=jarvis
-After=network-online.target
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
 
 [Service]
-User=%i
+User=YOURNAME
 WorkingDirectory=/home/YOURNAME/jarvis-data
+EnvironmentFile=/home/YOURNAME/jarvis-data/.env
 ExecStart=/home/YOURNAME/jarvis-data/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
+sudo systemctl enable chrony-wait.service   # 시계 맞추는 쪽이 chrony 일 때. timesyncd 면 systemd-time-wait-sync.service
 sudo systemctl enable --now jarvis
 ```
+
+**시계가 맞은 뒤에 띄운다.** `time-sync.target` 은 시계를 맞추는 서비스가 기다려줄 때만 의미가 있어서
+`chrony-wait` 를 같이 켠다(못 맞추면 3분 뒤 그냥 뜬다).
+
+> 사고 이력 (2026-11-02): 이 데스크탑은 윈도우와 번갈아 부팅한다. 윈도우가 하드웨어 시계를 한국 시간으로
+> 두고 가서, 리눅스로 켜면 NTP 가 맞추기 전까지 시계가 9시간 앞선다. 자비스가 그 사이에 떠서 첫 주기를
+> 16:20(실제 07:20)으로 돌았고 수집 끊김 알림까지 만들었다 — vLLM 이 아직 안 떠서 말은 안 나갔지만,
+> 나갔다면 발화 기록이 9시간 미래에 찍혀 그만큼 쿨다운이 길어진다. 이미 깔린 서버에는 덧붙이기만 한다:
+> `/etc/systemd/system/jarvis.service.d/clock.conf` 에 `[Unit]` `Wants=time-sync.target` `After=time-sync.target`.
 
 **vLLM도 자동 기동을 켠다.** 도커로 돌린다면:
 
