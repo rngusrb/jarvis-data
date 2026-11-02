@@ -128,10 +128,12 @@ class Reflector:
     # 1,000줄(약 3.4만 + 번호)이 들어간다. 회고 종류가 늘면 합이 넘으니 다시 잰다 — 넘으면 회고가
     # 400 으로 죽는다(조용히 잘리지는 않는다). 하루 요약에는 이 상한을 걸지 않는다.
     per_kind_limit: int = 1000
-    # 프롬프트 **전체** 글자 상한. 나무(주제마다 메모·근거 예)는 주제 수만큼 자라므로, 흔적 줄은
-    # 나무를 넣고 남은 몫을 최신 것부터 채운다. 되감기 실측으로 줄당 약 60자, 0.6 토큰/자 안팎 —
+    # 프롬프트 글자 상한. 나무(주제마다 메모·근거 예)는 주제 수만큼 자라므로, 흔적 줄은 나무를
+    # 넣고 남은 몫을 최신 것부터 채운다. 되감기 실측으로 줄당 약 60자, 0.6 토큰/자 안팎 —
     # 5.7만 토큰 몫에 여유를 두고 8만 자. 줄을 덜 보여주면 경고로 남긴다(조용히 잘리지 않게).
-    # 리뷰 측정: 메모 200자인 주제 50개면 나무만 2.6만 자, 100개면 5.2만 자다.
+    # 나무만으로 넘으면(깨어 있는 주제가 메모 400자로 110개쯤, 200자로 155개쯤 — 재리뷰 측정)
+    # 흔적 0줄로 상한을 넘겨 나간다. 그때도 경고를 남긴다 — 넘친 프롬프트는 vLLM 이 시끄럽게
+    # 거절한다.
     budget_chars: int = 80_000
     # 주제마다 보여줄 근거 예와 메모 수. 메모는 모델이 매 회고 새로 적으므로 최근 것 하나면
     # 지금 생각이다. 메모는 저장할 때 길이를 안 자르고(필요한 만큼) 보여줄 때만 자른다.
@@ -189,6 +191,13 @@ class Reflector:
                 self.budget_chars,
                 result.trimmed,
                 result.considered,
+            )
+        if result.prompt_chars > self.budget_chars:
+            logger.warning(
+                "회고 — 나무만으로 프롬프트 상한을 넘었다(%d자 > %d자) — 깨어 있는 주제 %d개",
+                result.prompt_chars,
+                self.budget_chars,
+                sum(1 for s in board if s.trend is not Trend.QUIET),
             )
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
 
@@ -411,8 +420,15 @@ def _op(item: Dict[str, Any]) -> Op:
         ),
         text=str(item.get("text") or ""),
         reason=str(item.get("reason") or ""),
-        ref=str(item.get("ref") or "").strip(),
+        ref=_ref_name(item.get("ref")),
     )
+
+
+def _ref_name(value: Any) -> str:
+    """create 가 짓는 ref. 가리키는 쪽(`_ref`)과 같은 규칙으로 맞춘다 — '#5'·'05' 로 지은 ref 를
+    가리키는 5 가 있는 주제 #5 로 새지 않게(재리뷰 재현)."""
+    ref = _ref(value)
+    return str(ref) if ref is not None else ""
 
 
 def _ref(value: Any) -> Optional[Ref]:

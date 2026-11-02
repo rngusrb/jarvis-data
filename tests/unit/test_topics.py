@@ -390,3 +390,30 @@ def test_churn_counts_only_the_models_reshaping() -> None:
 def test_ops_carry_who_made_them() -> None:
     p = plan(_tree(_node(1, "야구")), [Op("retire", topic=1, reason="r")], SHOWN, NOW, actor=CODE)
     assert p.changes[0].actor == CODE
+
+
+def test_merge_takes_retired_branches_along() -> None:
+    """근거가 다 접힌 가지에 있던 주제를 합치면 그 근거가 옛 부모 쪽에 남았다.
+
+    합친 쪽은 근거 0개가 돼 맥락에서 빠졌다(재리뷰 재현).
+    """
+    gone = _node(3, "자소서", 2)
+    gone.retired_at = NOW - timedelta(days=1)
+    tree = _tree(_node(1, "취업"), _node(2, "구직"), gone, links={1: {100, 101}, 3: {102, 103}})
+    grounds = [
+        Ground(1, 100, NOW - timedelta(days=9), "a"),
+        Ground(1, 101, NOW - timedelta(days=9), "b"),
+        Ground(3, 102, NOW - timedelta(days=2), "c"),
+        Ground(3, 103, NOW - timedelta(days=1), "d"),
+    ]
+    p = plan(tree, [Op("merge", topic=2, into=1, reason="같은 것")], SHOWN, NOW)
+
+    assert p.after.nodes[3].parent == 1 and p.changes[0].detail["children"] == [3]
+    board = standings(p.after, grounds, NOW)
+    assert [(s.node.name, s.count) for s in board] == [("취업", 4)]
+
+
+def test_a_ref_that_lands_on_an_existing_topic_says_where_it_went() -> None:
+    tree = _tree(_node(1, "취업"), _node(2, "여행"))
+    p = plan(tree, [Op("create", ref="1", name="여행", evidence=(100,))], SHOWN, NOW)
+    assert any("이 응답에서 1 는 #2다" in n for n in p.notices)

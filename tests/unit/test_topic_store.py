@@ -162,3 +162,58 @@ def test_changes_remember_who_made_them(tmp_path: Path) -> None:
     retire = [Op("retire", topic=topic, reason="61일 동안 근거가 없다")]
     store.apply(plan(store.load(), retire, set(), NOW, actor=CODE), NOW)
     assert [(c.op, c.actor) for c in store.changes()] == [("create", MODEL), ("retire", CODE)]
+
+
+def _copy(tmp_path: Path, name: str) -> Path:
+    """운영 DB 에서 뜬 사본처럼 — 흔적 번호가 같다."""
+    copy = tmp_path / name
+    source = sqlite3.connect(tmp_path / "t.db")
+    target = sqlite3.connect(copy)
+    source.backup(target)
+    source.close()
+    target.close()
+    return copy
+
+
+def test_adopts_a_tree_grown_in_a_copy(tmp_path: Path) -> None:
+    """되감기는 사본에서 돌고, 키운 나무를 번호째 운영 DB 로 들인다."""
+    live, ids = _store(tmp_path, ["a", "b", "c"])
+    grown = SQLiteTopicStore(_copy(tmp_path, "replay.db"))
+    grown.apply(
+        plan(grown.load(), [Op("create", name="취업", evidence=tuple(ids))], set(ids), NOW), NOW
+    )
+    grown.record_run(Run(NOW, NOW, "ok", changed=1))
+
+    counts = live.adopt(tmp_path / "replay.db")
+
+    assert counts["topics"] == 1 and counts["topic_evidence"] == 3 and counts["reflections"] == 1
+    assert [n.name for n in live.load().live()] == ["취업"]
+    assert live.last_run() == NOW and [c.op for c in live.changes()] == ["create"]
+
+
+def test_adopt_refuses_to_overwrite_a_tree(tmp_path: Path) -> None:
+    live, ids = _store(tmp_path, ["a", "b"])
+    replay = _copy(tmp_path, "replay.db")
+    live.record_run(Run(NOW, NOW, "empty"))
+    with pytest.raises(ValueError, match="이미 있다"):
+        live.adopt(replay)
+
+
+def test_adopt_refuses_when_trace_numbers_disagree(tmp_path: Path) -> None:
+    """사본이 이 DB 에서 뜬 게 아니면 같은 번호가 다른 흔적이다. 하나도 들이지 않는다."""
+    live, ids = _store(tmp_path, ["a", "b"])
+    other = tmp_path / "other"
+    other.mkdir()
+    grown, other_ids = _store(other, ["전혀", "다른"])
+    grown.apply(
+        plan(
+            grown.load(),
+            [Op("create", name="여행", evidence=tuple(other_ids))],
+            set(other_ids),
+            NOW,
+        ),
+        NOW,
+    )
+    with pytest.raises(ValueError, match="흔적 2개가 이 DB 와 다르다"):
+        live.adopt(other / "t.db")
+    assert live.load().live() == [] and live.last_run() is None

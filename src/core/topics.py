@@ -526,8 +526,13 @@ class _Planner:
                     " — 그 둘부터 합친다"
                 )
 
+        # 접힌 가지도 데려간다. 근거는 접힌 가지까지 세므로(lineage) 두고 가면 그 근거가 옛 부모
+        # 쪽에 남고 합친 쪽에서는 빠진다(재리뷰 재현: 근거가 다 접힌 가지에 있던 주제를 합치니 0개).
+        # 접힌 주제에는 살아 있는 자손이 없어서(접기·합치기가 막는다) 옮겨도 순환이 안 생긴다.
+        folded = [n for n in self.tree.nodes.values() if n.parent == topic and not n.live]
+
         # 가지부터 옮긴다. 근거를 붙일 때 더 구체적인 자리(옮겨 온 가지)에 이미 있는지 봐야 한다.
-        for kid in kids:
+        for kid in kids + folded:
             kid.parent = into
         moved: List[int] = []
         for trace in sorted(self.tree.links.get(topic, set())):
@@ -536,7 +541,7 @@ class _Planner:
                 moved.append(trace)
         self.tree.nodes[topic].retired_at = self.now
         self._settle(into)
-        detail = {"into": into, "evidence": moved, "children": [k.id for k in kids]}
+        detail = {"into": into, "evidence": moved, "children": [k.id for k in kids + folded]}
         self._change("merge", topic, detail, reason)
 
     def _retire(self, op: Op) -> None:
@@ -596,9 +601,10 @@ class _Planner:
         if not op.ref:
             return
         if op.ref.isdigit() and int(op.ref) in self.tree.nodes:
+            meant = "새 주제" if topic < 0 else f"#{topic}"
             self.result.notices.append(
                 f"{op.label()}: ref '{op.ref}' 가 있는 주제 #{op.ref} 와 겹친다"
-                f" — 이 응답에서 {op.ref} 는 새 주제다"
+                f" — 이 응답에서 {op.ref} 는 {meant}다"
             )
         self.refs[op.ref] = topic
 

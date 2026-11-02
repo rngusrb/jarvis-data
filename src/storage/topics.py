@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS reflections (
 # 변경 내용(detail) 안에서 주제 번호인 칸. 새 주제의 임시 번호(음수)를 진짜 번호로 바꿔 적는다.
 _TOPIC_KEYS = ("parent", "into", "from", "to")
 
+# 나무를 이루는 표와 칸. 다른 DB(되감기 사본)에서 나무를 들일 때(`adopt`) 번호째 옮긴다.
+TREE_TABLES = {
+    "topics": "id, parent_id, name, created_at, retired_at",
+    "topic_evidence": "topic_id, trace_id, added_at, removed_at",
+    "topic_changes": "id, at, op, topic_id, detail, reason, actor",
+    "notes": "id, at, topic_id, text",
+    "reflections": "id, at, ran_at, considered, digested, changed, noted, retired, rejected,"
+    " notices, outcome",
+}
+
 
 class StaleTree(Exception):
     """읽어 온 뒤에 다른 회고가 나무를 바꿨다. 낡은 나무 위에서 짠 계획은 적용하지 않는다."""
@@ -235,6 +245,50 @@ class SQLiteTopicStore:
             ids = _write(conn, plan, now)
             conn.execute("COMMIT")
             return ids
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def adopt(self, source: Path) -> Dict[str, int]:
+        """다른 DB(되감기 사본)에서 키운 나무를 통째로 들인다. 표마다 들인 줄 수를 돌려준다.
+
+        이 DB 에 나무가 이미 있으면(주제나 회고 기록이 한 줄이라도) 거절한다 — 덮어쓰지 않는다.
+        서버가 새 코드로 뜨면 첫 회고가 최근 7일로 새 나무를 시작하므로, 들이는 건 그 **전에** 한다.
+        근거가 가리키는 흔적 번호마다 이 DB 의 같은 번호가 같은 흔적(때·글)인지 본다. 사본은 이 DB
+        에서 떴으니 같아야 하고, 하나라도 다르면 엉뚱한 흔적이 근거가 되므로 하나도 들이지 않는다.
+        """
+        conn = sqlite3.connect(self._path, isolation_level=None)
+        try:
+            conn.execute("ATTACH DATABASE ? AS src", (str(source),))
+            conn.execute("BEGIN IMMEDIATE")
+            grown = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM main.topics)"
+                " + (SELECT COUNT(*) FROM main.reflections)"
+            ).fetchone()[0]
+            if grown:
+                raise ValueError("이 DB 에는 나무가 이미 있다 — 들이지 않는다(덮어쓰지 않는다)")
+            wrong = conn.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT trace_id FROM src.topic_evidence) e"
+                " LEFT JOIN src.traces s ON s.id = e.trace_id"
+                " LEFT JOIN main.traces m ON m.id = e.trace_id"
+                " WHERE s.id IS NULL OR m.id IS NULL OR m.at != s.at OR m.text != s.text"
+            ).fetchone()[0]
+            if wrong:
+                raise ValueError(
+                    f"근거가 가리키는 흔적 {wrong}개가 이 DB 와 다르다 — 들이지 않는다"
+                )
+            for table, columns in TREE_TABLES.items():
+                conn.execute(
+                    f"INSERT INTO main.{table} ({columns}) SELECT {columns} FROM src.{table}"
+                )
+            conn.execute("COMMIT")
+            return {
+                table: int(conn.execute(f"SELECT COUNT(*) FROM main.{table}").fetchone()[0])
+                for table in TREE_TABLES
+            }
         except BaseException:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")

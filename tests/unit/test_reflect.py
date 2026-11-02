@@ -370,5 +370,12 @@ def test_parse_tolerates_fences_and_chatter() -> None:
     assert _parse(messy) == [Op("attach", topic=3, evidence=(12, 13))]
     assert _parse('[{"op": "note", "topic": null, "text": "a"}]') == [Op("note", text="a")]
     assert _parse('{"ops": []}') == []
+    # ref 를 '#5'·'05' 로 지어도 가리키는 쪽(5)과 같은 이름이 된다 — 있는 #5 로 새지 않게.
+    assert [
+        op.ref for op in _parse('{"ops": [{"op": "create", "ref": "#5"}, {"ref": "05"}]}') or []
+    ] == [
+        "5",
+        "5",
+    ]
     assert _parse("설명만 하고 JSON 이 없음") is None
     assert _parse("") is None

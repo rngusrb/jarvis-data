@@ -3,6 +3,7 @@
     python -m app.reflect                                  # 지금 한 번 (최근 7일)
     python -m app.reflect --show                           # 돌리지 않고 나무만 본다
     python -m app.reflect --replay 2026-08-08 2026-11-02   # 그날들의 회고 시각마다 차례로(되감기)
+    python -m app.reflect --adopt /tmp/replay.db           # 사본에서 키운 나무를 이 DB 로 들인다
 
 서버는 매일 회고 시각(`REFLECT_AT`)에 스스로 돈다. 이건 손으로 돌려 볼 때와, 지난 기록으로 나무를
 처음부터 키워 볼 때(되감기) 쓴다. 되감기는 그 DB 의 나무를 바꾼다 — 운영 DB 사본에서 먼저 돌린다
@@ -20,6 +21,7 @@ import asyncio
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from app.main import REFLECT_AT, build_reflector
 from src.brain.reflect import Reflection, Reflector
@@ -113,10 +115,16 @@ def main() -> None:
         "--replay", nargs=2, metavar=("시작", "끝"), help="그날들을 하루씩 되감는다(YYYY-MM-DD)"
     )
     parser.add_argument("--verbose", action="store_true", help="되감기에서 변경·기각을 다 찍는다")
+    parser.add_argument("--adopt", metavar="사본", help="되감기 사본의 나무를 이 DB 로 들인다")
     args = parser.parse_args()
 
     now = datetime.now(timezone.utc)
     if args.show:
+        show(now)
+        return
+    if args.adopt:
+        counts = SQLiteTopicStore(load_settings().db_path).adopt(Path(args.adopt))
+        print("들인 줄: " + ", ".join(f"{table} {n}" for table, n in counts.items()))
         show(now)
         return
 

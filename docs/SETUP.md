@@ -482,7 +482,18 @@ sh collectors/install.sh --remove       # 내리기
 JARVIS_DB_PATH=/tmp/replay.db .venv/bin/python -m app.reflect --replay 2026-08-08 2026-11-02 --verbose
 ```
 
-끝에 모델이 낸 연산 수, 코드가 접은 주제 수, 모델이 나무 모양을 바꾼 날 수가 찍힌다.
+끝에 모델이 낸 연산 수, 코드가 접은 주제 수, 모델이 나무 모양을 바꾼 날 수가 찍힌다. 사본은 매번 새로 뜬다 —
+예전 코드가 만든 사본은 표 모양이 달라 시끄럽게 실패한다.
+
+**키운 나무를 운영 DB 로 들이기.** 서버를 새 코드로 재시작하기 **전에** 한다. 새 코드가 뜨면 첫 회고가 최근 7일로
+새 나무를 시작하고, 그 뒤로는 나무가 이미 있어 들이기를 거절한다. 근거가 가리키는 흔적 번호가 운영 DB 와
+하나라도 다르면 하나도 들이지 않는다.
+
+```bash
+git pull                                              # 새 코드(재시작은 아직)
+.venv/bin/python -m app.reflect --adopt /tmp/replay.db
+sudo systemctl restart jarvis
+```
 
 ---
 
