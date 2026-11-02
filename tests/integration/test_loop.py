@@ -12,6 +12,7 @@ from src.runtime.loop import JarvisLoop
 from src.sectors.health.triggers import SleepDropTrigger
 
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
+KST = timezone(timedelta(hours=9))
 
 
 @dataclass
@@ -41,6 +42,8 @@ class FakeSource:
 
 
 def _source_with_drop() -> FakeSource:
+    # 마지막 밤이 오늘 아침 끝난 밤이어야 판단한다(JAR-018). 밤의 시각은 깬 날의 한국 자정이다.
+    today = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
     values = [7.0, 7.2, 6.9, 7.1, 3.0]
     return FakeSource(
         [
@@ -48,7 +51,7 @@ def _source_with_drop() -> FakeSource:
                 source="apple_health",
                 kind="sleep_hours",
                 value=v,
-                at=datetime.now(timezone.utc) - timedelta(days=len(values) - i),
+                at=today - timedelta(days=len(values) - 1 - i),
                 meta={"segments": 15},
             )
             for i, v in enumerate(values)
