@@ -8,11 +8,11 @@
 
 ```
 ┌─ 플랫폼 (섹터가 뭐든 안 바뀐다) ──────────────────────┐
-│  core      도메인 모델 · 지표/흔적 카드 · 믿음 · 접는 계산 │
-│  storage   SQLite — 관측치 · 흔적 · 믿음 · 발화 기억     │
+│  core      도메인 모델 · 지표/흔적 카드 · 주제 나무 · 접는 계산 │
+│  storage   SQLite — 관측치 · 흔적 · 주제 나무 · 발화 기억 │
 │  brain     게이트 → 맥락 → 추론 → 발화 결정 · 회고       │
 │  channels  텔레그램 (→ 추후 iOS 푸시)                  │
-│  runtime   자비스 루프 · 수신구                        │
+│  runtime   자비스 루프 · 수신구 · 하루 한 번(회고)       │
 │  triggers  변화 감지 (순수 함수)                       │
 └───────────────────────────────────────────────────────┘
                       ↑ 섹터만 위를 쓴다
@@ -39,7 +39,7 @@
 | 수집 (pull) | 한 시간마다 · 계속 | 맥 크롬 기록 · 앞에 뜬 앱 → `/ingest/traces` |
 | 수집 (백필) | 수동 | `export.xml` → `src/sectors/health/backfill.py` |
 | 자비스 (반응) | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
-| 회고 | 주 단위 (지금은 수동) | 흔적 조회 → LLM → 믿음 갱신 · 망각 |
+| 회고 | 매일 05:30 (꺼져 있었으면 켜진 뒤) | 오래 잠잠한 주제 접기 → 나무 + 안 붙은 흔적 → LLM 연산 → 검사 → 한 트랜잭션 |
 
 애플 건강은 **push 만 가능하다** — HealthKit 은 기기 밖 조회 API가 없다.
 iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/sectors/<x>/` 에 수집기를 둔다.
@@ -79,8 +79,10 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | **지표 추가** (예: 혈중산소) | `src/sectors/health/metrics.py` 에 카드 한 장 |
 | **흔적 종류 추가** (예: 앱 실행) | 섹터의 `traces.py` 에 카드 한 장 |
 | 하루 수백 줄인 흔적을 요약해 보여주기 | 카드의 `digest` — 예: `src/sectors/interest/digest.py`(앱 사용·웹 방문) |
-| 믿음 수명 바꾸기 | `src/core/beliefs.py` — `FADE_AFTER` · `FORGET_AFTER` |
+| 주제 하이라이트·접는 때 | `src/core/topics.py` — `RECENT_DAYS` · `BEFORE_DAYS` · `RETIRE_AFTER` |
+| 회고가 낼 수 있는 연산·검사 | `src/core/topics.py` — `plan` |
 | 회고 프롬프트 | `src/brain/reflect.py` — `SYSTEM_PROMPT` |
+| 회고 시각 | `app/main.py` — `REFLECT_AT` (되감기도 같은 시각) |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
 | 감지 기준 바꾸기 | `src/triggers/` — 백테스트 수치를 근거로 |
@@ -99,7 +101,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |---------|------|------|
 | `Channel` | 텔레그램 | iOS 푸시 |
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
-| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 | 캘린더 · 프로필 |
+| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
 | `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 | 쇼핑 |
 | `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 (위치 사건) | 앱·웹 사건 |
