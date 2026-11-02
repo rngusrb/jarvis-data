@@ -79,5 +79,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 2026-10-30 | [0단계: 데이터가 끊기지 않게 (코드)](docs/sprints/2026-10-30-collection-resilience.md) |
 | 2026-10-30 | [1단계: 버리는 것 멈추기](docs/sprints/2026-10-30-phase1-stop-discarding.md) |
 | 2026-11-02 | [2단계: 위치 사건, 장소, 루틴 이탈](docs/sprints/2026-11-02-phase2-patterns.md) |
+| 2026-11-02 | [2단계 둘째: 수면 판단 한 번만, 맥·웹 하루 요약](docs/sprints/2026-11-02-phase2-mac-day.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
