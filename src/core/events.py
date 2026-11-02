@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
 from src.core.models import Event
 
@@ -33,6 +33,12 @@ class EventKind:
     @property
     def active(self) -> bool:
         return self.collector is not None
+
+
+class EventSource(Protocol):
+    """사건을 읽어오는 곳. 사건 트리거가 이걸로 창을 받는다."""
+
+    def recent(self, kind: str, since: datetime) -> Sequence[Event]: ...
 
 
 class EventRegistry:

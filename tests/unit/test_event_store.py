@@ -43,3 +43,14 @@ def test_마지막_수신(tmp_path: Path) -> None:
     store = SQLiteEventStore(tmp_path / "t.db")
     store.write([_event(at=AT - timedelta(days=1)), _event(at=AT)])
     assert store.last_seen() == {"location": AT}
+
+
+def test_받은_때는_처음_받은_때로_남는다(tmp_path: Path) -> None:
+    """출발·탑승 트리거는 받은 때로 신선도를 잰다. 다시 보낸 줄이 그 때를 미루면 안 된다."""
+    store = SQLiteEventStore(tmp_path / "t.db")
+    store.write([_event()])
+    first = store.recent("location", AT - timedelta(days=1))[0].received_at
+    store.write([_event()])
+
+    again = store.recent("location", AT - timedelta(days=1))[0].received_at
+    assert first is not None and again == first

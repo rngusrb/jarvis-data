@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Sequence
 
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
     lon    REAL,
     meta   TEXT NOT NULL DEFAULT '{}',
     place_id INTEGER,
+    received_at TEXT,
     UNIQUE (source, kind, at, label)
 );
 CREATE INDEX IF NOT EXISTS idx_events_kind_at ON events (kind, at);
@@ -44,10 +45,11 @@ class SQLiteEventStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
-            # 장소 번호 열은 표가 생긴 뒤에 붙었다(JAR-016). 먼저 만든 표에는 더한다.
+            # 표가 생긴 뒤에 붙은 열들(JAR-016 장소, JAR-017 받은 때). 먼저 만든 표에는 더한다.
             columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
-            if "place_id" not in columns:
-                conn.execute("ALTER TABLE events ADD COLUMN place_id INTEGER")
+            for column in ("place_id INTEGER", "received_at TEXT"):
+                if column.split()[0] not in columns:
+                    conn.execute(f"ALTER TABLE events ADD COLUMN {column}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -60,6 +62,8 @@ class SQLiteEventStore:
 
     def write(self, events: Iterable[Event]) -> int:
         """새로 저장된 줄 수를 돌려준다. 다시 보낸 것은 세지 않는다."""
+        # 다시 보낸 줄은 무시되므로 받은 때는 처음 받은 때로 남는다.
+        received = stamp(datetime.now(timezone.utc))
         rows = [
             (
                 e.source,
@@ -69,6 +73,7 @@ class SQLiteEventStore:
                 e.lat,
                 e.lon,
                 json.dumps(e.meta, ensure_ascii=False),
+                received,
             )
             for e in events
         ]
@@ -77,8 +82,9 @@ class SQLiteEventStore:
         with self._connect() as conn:
             before = conn.total_changes
             conn.executemany(
-                "INSERT OR IGNORE INTO events (source, kind, at, label, lat, lon, meta) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO events "
+                "(source, kind, at, label, lat, lon, meta, received_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             return conn.total_changes - before
@@ -86,7 +92,7 @@ class SQLiteEventStore:
     def recent(self, kind: str, since: datetime) -> List[Event]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT source, kind, at, label, lat, lon, meta, place_id FROM events "
+                "SELECT source, kind, at, label, lat, lon, meta, place_id, received_at FROM events "
                 "WHERE kind = ? AND at >= ? ORDER BY at, id",
                 (kind, stamp(since)),
             ).fetchall()
@@ -112,4 +118,5 @@ def _to_event(row: Sequence[Any]) -> Event:
         lon=row[5],
         meta=json.loads(row[6]) if row[6] else {},
         place_id=row[7],
+        received_at=datetime.fromisoformat(str(row[8])) if row[8] else None,
     )

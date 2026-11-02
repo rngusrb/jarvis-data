@@ -118,5 +118,5 @@ python scripts/harness.py src/runtime/
 
 | 파일 | 책임 |
 |------|------|
-| `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금 |
+| `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금. 관측치 트리거 → 사건 트리거 → 감시 순서, 트리거 하나가 터져도 나머지는 돈다 |
 | `ingest.py` | 수신구(`/ingest`, `/ingest/spans`, `/ingest/samples`, `/ingest/traces`) + `/health`. 사건 카드가 있는 종류는 표본 문으로 와도 사건 표에 담고, 좌표가 있으면 장소에 붙인다 |

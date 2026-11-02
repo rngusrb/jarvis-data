@@ -84,6 +84,9 @@ class Event:
     meta: Dict[str, Any] = field(default_factory=dict)
     # 붙은 장소 번호(`places` 표). 좌표가 있는 사건만 붙고, 붙기 전엔 None.
     place_id: Optional[int] = None
+    # 서버가 처음 받은 때. 폰이 직접 못 보낸 날은 맥을 거쳐 몇 시간 늦게 들어온다 —
+    # "방금 일어난 일인가"는 일어난 때가 아니라 받은 때로 본다(JAR-017 재리뷰).
+    received_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)

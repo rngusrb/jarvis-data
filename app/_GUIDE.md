@@ -72,6 +72,7 @@ python scripts/harness.py app/
 ```python
 # ❌ 금지 — getattr(sector, "TRACES", [])
 # ✅ 대신 — sector.TRACES (없으면 기동이 실패해야 한다)
+#           섹터는 METRICS · TRACES · EVENTS · TRIGGERS · EVENT_TRIGGERS 를 모두 내보낸다
 ```
 **사고 이력**: 2026-08-28. health 섹터에만 `TRACES` 가 없어서 서버가 기동
 즉시 죽고 재시작을 반복했다. 그런데 `harness all` 은 통과했다 —

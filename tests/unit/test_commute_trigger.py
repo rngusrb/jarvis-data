@@ -1,76 +1,159 @@
+"""commute 트리거 — 평일 아침 루틴 이탈."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
-from src.core.models import Observation, Severity
-from src.sectors.commute.triggers import LateDepartureTrigger, _clock
+from src.core.models import Event
+from src.sectors.commute.triggers import LateDepartureTrigger, UnusualBoardingTrigger, _clock
 
 KST = timezone(timedelta(hours=9))
-# 2026-08-03 은 월요일
-MONDAY = datetime(2026, 8, 3, tzinfo=KST)
-NOW = MONDAY + timedelta(days=30)
+MONDAY = datetime(2026, 9, 7, tzinfo=KST)  # 월요일
+HOME, STATION, OTHER = 1, 2, 9
 
 
-def _days(values: list[float], start: datetime = MONDAY) -> list[Observation]:
-    """평일만 골라 하루씩 채운다."""
-    out, day = [], start
-    for v in values:
-        while day.weekday() >= 5:
-            day += timedelta(days=1)
-        out.append(Observation(source="shortcuts", kind="work_departure", value=v, at=day))
+def _day(n: int) -> datetime:
+    """n 번째 평일 (주말은 건너뛴다)."""
+    day, seen = MONDAY, 0
+    while True:
+        if day.weekday() < 5:
+            if seen == n:
+                return day
+            seen += 1
         day += timedelta(days=1)
-    return out
 
 
-def test_평소대로_퇴근하면_조용하다() -> None:
-    trigger = LateDepartureTrigger()
-    assert trigger.check(_days([17.5, 17.4, 17.6, 17.5, 17.5]), NOW) is None
+def _morning(n: int, leave: float, board_place: int = STATION) -> List[Event]:
+    start = _day(n) + timedelta(hours=leave)
+    return [
+        Event(source="s", kind="location", at=start, label="leave_home", place_id=HOME),
+        Event(
+            source="s",
+            kind="location",
+            at=start + timedelta(minutes=12),
+            label="wallet",
+            place_id=board_place,
+        ),
+    ]
 
 
-def test_평소보다_늦으면_감지한다() -> None:
-    trigger = LateDepartureTrigger()
-    insight = trigger.check(_days([17.5, 17.4, 17.6, 17.5, 19.5]), NOW)
+def _usual(days: int = 6, leave: float = 7.0) -> List[Event]:
+    return [e for n in range(days) for e in _morning(n, leave)]
+
+
+def _now(n: int, hour: int = 10) -> datetime:
+    return _day(n) + timedelta(hours=hour)
+
+
+def _late(events: List[Event], n: int) -> Optional[str]:
+    insight = LateDepartureTrigger().check(events, _now(n))
+    return insight.summary if insight else None
+
+
+def test_평소대로_나서면_조용하다() -> None:
+    assert _late(_usual() + _morning(6, 7.1), 6) is None
+
+
+def test_평소보다_30분_넘게_늦게_나서면_말할_거리다() -> None:
+    summary = _late(_usual() + _morning(6, 7.75), 6)
+    assert summary is not None
+    assert "07:45" in summary and "07:00" in summary and "45분" in summary
+
+
+def test_오늘_나선_기록이_없으면_판단하지_않는다() -> None:
+    # 지난날의 늦은 출발을 다시 꺼내 말하지 않는다.
+    assert _late(_usual() + _morning(6, 9.0), 7) is None
+
+
+def test_평일이_나흘_안_되면_판단하지_않는다() -> None:
+    assert _late(_usual(days=3) + _morning(3, 9.0), 3) is None
+
+
+def test_주말은_평소에_넣지도_오늘로_보지도_않는다() -> None:
+    saturday = MONDAY + timedelta(days=5, hours=11)
+    weekend = [Event(source="s", kind="location", at=saturday, label="leave_home", place_id=HOME)]
+    assert LateDepartureTrigger().check(_usual() + weekend, saturday) is None
+
+
+def test_시각은_한국_시각으로_본다() -> None:
+    # UTC 로 저장된 사건이어도 07:00 KST 는 07:00 이다.
+    utc = [
+        Event(source="s", kind="location", at=e.at.astimezone(timezone.utc), label=e.label)
+        for e in _usual() + _morning(6, 7.75)
+    ]
+    insight = LateDepartureTrigger().check(utc, _now(6))
+    assert insight is not None and "07:45" in insight.summary
+
+
+def test_평소와_다른_곳에서_타면_말할_거리다() -> None:
+    insight = UnusualBoardingTrigger().check(_usual() + _morning(6, 7.0, OTHER), _now(6))
+
     assert insight is not None
-    assert insight.severity is Severity.NOTABLE
-    assert "19:30" in insight.summary
+    assert f"장소 #{STATION}" in insight.summary and f"장소 #{OTHER}" in insight.summary
+    # 역할 후보가 있으면 이름을 같이 준다 — LLM 이 "장소 #2"를 사람 말로 바꿀 재료다.
+    assert "아침에 타는 곳" in insight.summary
 
 
-def test_아주_늦으면_URGENT() -> None:
-    trigger = LateDepartureTrigger()
-    insight = trigger.check(_days([17.5, 17.4, 17.6, 17.5, 21.0]), NOW)
-    assert insight is not None and insight.severity is Severity.URGENT
+def test_평소_타는_곳에서_타면_조용하다() -> None:
+    assert UnusualBoardingTrigger().check(_usual() + _morning(6, 7.0), _now(6)) is None
 
 
-def test_늦게_퇴근하는_사람에게는_같은_시각도_정상이다() -> None:
-    """절대 기준이 아니라 본인 패턴을 쓰는지 확인한다."""
-    trigger = LateDepartureTrigger()
-    assert trigger.check(_days([21.0, 20.8, 21.2, 21.0, 21.1]), NOW) is None
-
-
-def test_기록이_적으면_판단하지_않는다() -> None:
-    """며칠 치로 '평소'를 정하면 그 평소가 우연이다."""
-    trigger = LateDepartureTrigger()
-    assert trigger.check(_days([17.5, 22.0]), NOW) is None
-
-
-def test_주말은_baseline에서_뺀다() -> None:
-    """주말 기록이 섞이면 주 5일 패턴의 평균이 흐트러진다."""
-    trigger = LateDepartureTrigger()
-    weekend = Observation(
-        source="shortcuts",
-        kind="work_departure",
-        value=13.0,
-        at=datetime(2026, 8, 8, tzinfo=KST),  # 토요일
-    )
-    window = _days([17.5, 17.4, 17.6, 17.5, 19.5]) + [weekend]
-    insight = trigger.check(window, NOW)
-    assert insight is not None
-    assert "17:30" in insight.summary  # 13시가 섞였다면 평균이 내려갔을 것
+def test_평소_타는_곳이_뚜렷하지_않으면_판단하지_않는다() -> None:
+    mixed = [e for n in range(6) for e in _morning(n, 7.0, STATION if n % 2 else 3)]
+    assert UnusualBoardingTrigger().check(mixed + _morning(6, 7.0, OTHER), _now(6)) is None
 
 
 def test_시각_표기() -> None:
-    assert _clock(17.5) == "17:30"
-    assert _clock(9.0) == "09:00"
-    assert _clock(17.99) == "17:59"
-    # 분이 60으로 반올림되면 시간으로 올린다
-    assert _clock(17.999) == "18:00"
+    assert _clock(7.5) == "07:30"
+    assert _clock(7.999) == "08:00"
+
+
+def test_지난_일은_다시_꺼내지_않는다() -> None:
+    # 늦게 나선 날, 자정까지 6시간마다 같은 얘기가 다시 판단됐다(JAR-017 리뷰).
+    events = _usual() + _morning(6, 7.75)
+    assert LateDepartureTrigger().check(events, _day(6) + timedelta(hours=8, minutes=45))
+    assert LateDepartureTrigger().check(events, _day(6) + timedelta(hours=11)) is None
+
+
+def test_튀는_하루가_평소를_끌고_가지_않는다() -> None:
+    # 재택일 10:30 외출 하루가 섞여도 평소는 07:00 이다. 평균이면 40분 늦음이 안 잡혔다.
+    usual = _usual(days=9) + _morning(9, 10.5)
+    summary = _late(usual + _morning(10, 7.75), 10)
+    assert summary is not None and "45분" in summary
+
+
+def _boarding_at(n: int, lat: float, place: int) -> List[Event]:
+    start = _day(n) + timedelta(hours=7)
+    return [
+        Event(
+            source="s",
+            kind="location",
+            at=start,
+            label="wallet",
+            lat=lat,
+            lon=127.0,
+            place_id=place,
+        )
+    ]
+
+
+def test_GPS가_튀어_생긴_다른_장소는_다른_곳이_아니다() -> None:
+    usual = [e for n in range(6) for e in _boarding_at(n, 37.5, STATION)]
+    jump = _boarding_at(6, 37.5 + 160 / 110_540, OTHER)  # 160m 옆 — 새 장소가 됐지만 같은 정류장
+    far = _boarding_at(6, 37.52, OTHER)  # 2km 넘게 — 정말 다른 곳
+
+    assert UnusualBoardingTrigger().check(usual + jump, _now(6)) is None
+    assert UnusualBoardingTrigger().check(usual + far, _now(6)) is not None
+
+
+def test_늦게_들어온_아침도_받은_직후에는_판단한다() -> None:
+    # 폰이 직접 못 보낸 날은 맥을 거쳐 몇 시간 늦게 들어온다. 일어난 때로 재면 조용히 빠졌다.
+    from dataclasses import replace
+
+    now = _day(6) + timedelta(hours=12)  # 출발 07:45 에서 4시간 넘게 지났다
+    late = [replace(e, received_at=now - timedelta(minutes=5)) for e in _morning(6, 7.75)]
+    stale = [replace(e, received_at=now - timedelta(hours=4)) for e in _morning(6, 7.75)]
+
+    assert LateDepartureTrigger().check(_usual() + late, now) is not None
+    assert LateDepartureTrigger().check(_usual() + stale, now) is None

@@ -8,5 +8,6 @@ TRACES: list = []
 
 # 사건도 아직 없다. 모양을 맞추려고 빈 목록을 내보낸다.
 EVENTS: list = []
+EVENT_TRIGGERS: list = []
 
-__all__ = ["EVENTS", "METRICS", "TRACES", "TRIGGERS", "parse_export"]
+__all__ = ["EVENTS", "EVENT_TRIGGERS", "METRICS", "TRACES", "TRIGGERS", "parse_export"]

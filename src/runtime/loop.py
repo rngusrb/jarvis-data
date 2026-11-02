@@ -24,8 +24,9 @@ from typing import Callable, Mapping, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
 from src.channels.base import Channel
+from src.core.events import EventSource
 from src.core.models import Insight, ObservationSource
-from src.triggers.base import Trigger, Watch
+from src.triggers.base import EventTrigger, Trigger, Watch
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,18 @@ class JarvisLoop:
     # 중요해지는 신호는 트리거의 창에 담으면 오래될수록 안 보인다.
     watches: Sequence[Watch] = ()
     snapshot: Optional[Callable[[], Mapping[str, datetime]]] = None
+    # 사건(위치 등)을 보는 트리거와 그 재료.
+    event_triggers: Sequence[EventTrigger] = ()
+    events: Optional[EventSource] = None
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
     # 말하게 된다 — 게이트는 **발송에 성공한 뒤에야** 쿨다운을 기록하므로,
     # 나란히 달리는 두 실행은 둘 다 게이트를 통과해버린다.
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.event_triggers and self.events is None:
+            # 조용히 건너뛰면 트리거가 등록돼 있는데 영영 안 울린다.
+            raise ValueError("사건 트리거가 있는데 사건 저장소를 안 넘겼다")
 
     async def run_once(self) -> int:
         """한 주기를 돈다. 실제로 발송한 메시지 수를 돌려준다."""
@@ -55,10 +64,27 @@ class JarvisLoop:
         sent = 0
 
         for trigger in self.triggers:
-            window = self.source.recent(trigger.kind, since=now - trigger.lookback)
-            insight = trigger.check(window, now)
+            try:
+                window = self.source.recent(trigger.kind, since=now - trigger.lookback)
+                insight = trigger.check(window, now)
+            except Exception:
+                # 트리거 하나가 터졌다고 뒤의 트리거와 수집 감시까지 그 주기를 건너뛰면 안 된다.
+                # 2026-11-02 리뷰: 잠든 시각 한 줄이 깨져 있으면 주기 전체가 멈췄다.
+                logger.exception("트리거 실패 — 건너뛴다: %s", trigger.name)
+                continue
             if insight is not None:
                 sent += await self._speak(insight, now)
+
+        if self.events is not None:
+            for event_trigger in self.event_triggers:
+                try:
+                    happened = self.events.recent(event_trigger.kind, now - event_trigger.lookback)
+                    insight = event_trigger.check(happened, now)
+                except Exception:
+                    logger.exception("사건 트리거 실패 — 건너뛴다: %s", event_trigger.name)
+                    continue
+                if insight is not None:
+                    sent += await self._speak(insight, now)
 
         if self.watches and self.snapshot is not None:
             try:

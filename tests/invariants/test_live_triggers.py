@@ -19,3 +19,14 @@ def test_등록된_트리거는_수집기가_있는_지표를_본다() -> None:
         if trigger.kind not in cards or not cards[trigger.kind].active
     ]
     assert dead == [], f"수집기 없는 지표를 보는 트리거: {dead}"
+
+
+def test_사건_트리거는_수집기가_있는_사건_종류를_본다() -> None:
+    cards = {card.kind: card for sector in SECTORS for card in sector.EVENTS}
+    dead = [
+        f"{trigger.name} → {trigger.kind}"
+        for sector in SECTORS
+        for trigger in sector.EVENT_TRIGGERS
+        if trigger.kind not in cards or not cards[trigger.kind].active
+    ]
+    assert dead == [], f"수집기 없는 사건 종류를 보는 트리거: {dead}"

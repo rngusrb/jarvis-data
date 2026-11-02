@@ -100,7 +100,9 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
 | `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
-| `Trigger` | 수면 급감 · 만성 수면 부족 · 수집 중단 | 이동 · 쇼핑 |
+| `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 | 쇼핑 |
+| `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 (위치 사건) | 앱·웹 사건 |
+| `Watch` | 수집 중단 (종류별 마지막 수신) | — |
 | `SpeechLog` | SQLite | — (메모리 구현은 테스트용) |
 | `Fold` | 구간 · 합계 · 평균 | 최대/최소 등 |
 
