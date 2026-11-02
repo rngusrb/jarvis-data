@@ -130,6 +130,20 @@ class SQLiteStore:
             )
             return {kind: datetime.fromisoformat(at) for kind, at, _ in cursor.fetchall()}
 
+    def remove(self, observations: Iterable[Observation]) -> int:
+        """이 관측치들만 지운다. 다른 표로 옮겼음을 확인한 줄에만 쓴다(app/migrate.py).
+
+        종류째 지우면, 읽고 나서 지우기 전에 들어온 줄(옛 코드 서버가 아직 쓰는 중)이
+        옮겨지지 않은 채 사라진다(2026-11-02 리뷰 재현).
+        """
+        keys = [(o.source, o.kind, o.at.isoformat()) for o in observations]
+        with self._connect() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                "DELETE FROM observations WHERE source = ? AND kind = ? AND at = ?", keys
+            )
+            return conn.total_changes - before
+
     def count(self) -> int:
         with self._connect() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM observations")

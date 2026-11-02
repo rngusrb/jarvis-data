@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
-from typing import Any, Dict, Protocol, Sequence, Tuple
+from typing import Any, Dict, Optional, Protocol, Sequence, Tuple
 
 
 class Severity(IntEnum):
@@ -60,6 +60,27 @@ class Trace:
     kind: str
     text: str
     at: datetime
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Event:
+    """어느 순간 어디서 일어난 일 하나 — "08:17 카드를 찍었다(이 좌표에서)".
+
+    관측치와 다르게 **값이 없다.** 위치를 관측치로 담았을 때는 값 칸에 0 을 넣고
+    좌표와 이유를 meta 에 우겨넣었다(2026-10 기준 74건 전부 값 0). 그러면 숫자로
+    취급돼, 자비스에게 보여주는 "최근 값"에 "위치 0 · 0 · 0" 이 들어갔다.
+
+    `label` 은 왜 찍혔나(leave_home, wallet). 같은 좌표라도 "집을 나섬"과 "카드 탭"은
+    다른 사건이다. 좌표는 없을 수도 있다 — 앞으로 붙을 사건(앱 열기 등)을 위해.
+    """
+
+    source: str
+    kind: str
+    at: datetime
+    label: str = ""
+    lat: Optional[float] = None
+    lon: Optional[float] = None
     meta: Dict[str, Any] = field(default_factory=dict)
 
 

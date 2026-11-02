@@ -178,7 +178,7 @@ Belief(
                       runtime/ingest          네 개의 문
                        /ingest        이미 계산된 값
                        /ingest/spans  구간 원본      ← 수면
-                       /ingest/samples 표본 원본     ← 위치·심박
+                       /ingest/samples 표본 원본     ← 심박 · 위치(사건 표로 간다)
                        /ingest/traces  텍스트        ← 브라우저
                               ↓
                       core/folding            겹침 병합 · 기기 중복 제거 · 하루치 집계

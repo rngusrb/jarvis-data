@@ -5,4 +5,7 @@ from src.sectors.interest.traces import TRACES
 METRICS: list = []
 TRIGGERS: list = []
 
-__all__ = ["METRICS", "TRACES", "TRIGGERS"]
+# 사건도 아직 없다. 모양을 맞추려고 빈 목록을 내보낸다.
+EVENTS: list = []
+
+__all__ = ["EVENTS", "METRICS", "TRACES", "TRIGGERS"]

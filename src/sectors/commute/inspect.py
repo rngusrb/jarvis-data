@@ -16,9 +16,10 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Sequence, Tuple
 
+from src.core.clock import local
 from src.core.config import load_settings
-from src.core.models import Observation
-from src.storage.sqlite import SQLiteStore
+from src.core.models import Event
+from src.storage.events import SQLiteEventStore
 
 # 이 안쪽이면 같은 장소로 본다. 도시에서 건물 하나 남짓.
 SAME_PLACE_METERS = 150.0
@@ -34,16 +35,20 @@ def meters_between(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     return math.hypot(dx, dy)
 
 
-def coords(observation: Observation) -> Tuple[float, float] | None:
-    lat, lon = observation.meta.get("lat"), observation.meta.get("lon")
-    if lat is None or lon is None:
+def coords(event: Event) -> Tuple[float, float] | None:
+    if event.lat is None or event.lon is None:
         return None
-    return float(lat), float(lon)
+    return event.lat, event.lon
 
 
-def cluster(points: Sequence[Observation]) -> List[List[Observation]]:
+def accurate(event: Event) -> bool:
+    """정확도를 모르면(단축어는 안 보낸다) 쓴다. 알고 있고 크면 뺀다."""
+    return float(event.meta.get("accuracy") or 0) <= MAX_ACCURACY_METERS
+
+
+def cluster(points: Sequence[Event]) -> List[List[Event]]:
     """가까운 점끼리 묶는다. 첫 점을 중심으로 삼는 단순한 방식."""
-    groups: List[List[Observation]] = []
+    groups: List[List[Event]] = []
     for point in points:
         here = coords(point)
         if here is None:
@@ -58,25 +63,25 @@ def cluster(points: Sequence[Observation]) -> List[List[Observation]]:
     return sorted(groups, key=len, reverse=True)
 
 
-def by_trigger(points: Sequence[Observation]) -> Dict[str, List[Observation]]:
+def by_trigger(points: Sequence[Event]) -> Dict[str, List[Event]]:
     """어느 자동화가 보낸 점인지로 나눈다.
 
     같은 좌표라도 의미가 다르다 — 집을 나선 지점과 교통카드를 찍은 지점은
     전혀 다른 사실이고, 후자가 곧 "타는 곳"이다. 라벨이 없으면 6개 점 중
     무엇이 무엇인지 알 수 없다.
     """
-    groups: Dict[str, List[Observation]] = {}
+    groups: Dict[str, List[Event]] = {}
     for point in points:
-        groups.setdefault(str(point.meta.get("trigger") or "(라벨 없음)"), []).append(point)
+        groups.setdefault(point.label or "(라벨 없음)", []).append(point)
     return groups
 
 
 def main() -> int:
-    store = SQLiteStore(load_settings().db_path)
+    store = SQLiteEventStore(load_settings().db_path)
     since = datetime.now(timezone.utc) - timedelta(days=60)
-    raw = list(store.recent("location", since))
+    raw = store.recent("location", since)
 
-    usable = [o for o in raw if coords(o) and o.value <= MAX_ACCURACY_METERS]
+    usable = [o for o in raw if coords(o) and accurate(o)]
     dropped = len(raw) - len(usable)
 
     print(f"위치 기록 {len(raw)}개" + (f" (정확도 미달 {dropped}개 제외)" if dropped else ""))
@@ -85,13 +90,14 @@ def main() -> int:
         return 0
 
     span = (usable[-1].at - usable[0].at).days + 1
-    print(f"기간 {span}일  ({usable[0].at:%m-%d} ~ {usable[-1].at:%m-%d})\n")
+    print(f"기간 {span}일  ({local(usable[0].at):%m-%d} ~ {local(usable[-1].at):%m-%d})\n")
 
     groups = cluster(usable)
     print(f"=== 자주 간 곳 {len(groups)}군데 ===")
     for i, group in enumerate(groups[:8], 1):
         lat, lon = coords(group[0]) or (0.0, 0.0)
-        hours = Counter(o.at.hour for o in group)
+        # 사건 시각은 UTC 로 저장된다. 시간대별로 셀 땐 한국 시각으로.
+        hours = Counter(local(o.at).hour for o in group)
         busiest = ", ".join(f"{h}시({n})" for h, n in hours.most_common(3))
         print(f"  {i}. {len(group):3}회  {lat:.4f},{lon:.4f}   주로 {busiest}")
 
@@ -107,7 +113,7 @@ def main() -> int:
     print("\n=== 시간대별 출발 횟수 ===")
     by_hour: Dict[int, int] = defaultdict(int)
     for o in usable:
-        by_hour[o.at.hour] += 1
+        by_hour[local(o.at).hour] += 1
     for hour in sorted(by_hour):
         print(f"  {hour:02d}시  {'█' * by_hour[hour]} {by_hour[hour]}")
 

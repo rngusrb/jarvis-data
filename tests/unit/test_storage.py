@@ -147,3 +147,13 @@ def test_표기가_섞여도_시간_순서로_돌려준다(tmp_path: Path) -> No
     found = store.recent("sleep_hours", datetime(2026, 10, 29, tzinfo=timezone.utc))
 
     assert [o.value for o in found] == [1.0, 2.0]
+
+
+def test_지울_때는_넘겨받은_줄만_지운다(tmp_path: Path) -> None:
+    """옮기기가 읽은 뒤에 들어온 줄은 남아야 한다 — 종류째 지우면 옮기지 않은 줄이 사라진다."""
+    store = SQLiteStore(tmp_path / "t.db")
+    read = [_observation(1.0, NIGHT, kind="location")]
+    store.write(read + [_observation(2.0, NIGHT + timedelta(days=1), kind="location")])
+
+    assert store.remove(read) == 1
+    assert [o.value for o in store.recent("location", NIGHT - timedelta(days=1))] == [2.0]

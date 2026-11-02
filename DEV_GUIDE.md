@@ -53,11 +53,11 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 ```
 아이폰 단축어 / export.xml
         ↓
-   runtime/ingest        지표 카드를 조회해 접는 법을 알아낸다
-        ↓
-   core/folding          겹침 병합 · 기기 중복 제거 · 하루치 집계
-        ↓
-   storage/sqlite        (source, kind, at) 멱등 쓰기
+   runtime/ingest        카드를 조회해 어디에 담을지 알아낸다
+        ↓                  지표 → core/folding (겹침 병합 · 기기 중복 제거 · 하루치 집계)
+        ↓                  사건(위치) → storage/events (언제·어디서·왜, 접지 않음)
+        ↓                  흔적(웹·앱) → storage/traces
+   storage/sqlite        관측치 (source, kind, at) 멱등 쓰기
         ↓
    runtime/loop          주기 + 수집 직후
         ↓

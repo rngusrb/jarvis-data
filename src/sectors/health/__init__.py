@@ -6,4 +6,7 @@ from src.sectors.health.triggers import TRIGGERS
 # 특별 취급 없이 순회할 수 있다.
 TRACES: list = []
 
-__all__ = ["METRICS", "TRACES", "TRIGGERS", "parse_export"]
+# 사건도 아직 없다. 모양을 맞추려고 빈 목록을 내보낸다.
+EVENTS: list = []
+
+__all__ = ["EVENTS", "METRICS", "TRACES", "TRIGGERS", "parse_export"]

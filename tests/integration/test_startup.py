@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from app.main import SECTORS, build_reflector
 from src.core.config import Settings
 
-SECTOR_CONTRACT = ("METRICS", "TRACES", "TRIGGERS")
+SECTOR_CONTRACT = ("METRICS", "TRACES", "EVENTS", "TRIGGERS")
 
 
 @pytest.mark.parametrize("name", SECTOR_CONTRACT)

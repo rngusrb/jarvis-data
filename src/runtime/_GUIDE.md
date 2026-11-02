@@ -100,6 +100,7 @@ message: "runtime 은 플랫폼이다 — 섹터를 알면 안 된다"
 
 ```
 tests:
+  - tests/integration/test_ingest_events.py
   - tests/integration/test_listen_loop.py
   - tests/integration/test_loop.py
   - tests/integration/test_ingest.py
@@ -118,4 +119,4 @@ python scripts/harness.py src/runtime/
 | 파일 | 책임 |
 |------|------|
 | `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금 |
-| `ingest.py` | 수신구 세 개(`/ingest`, `/ingest/spans`, `/ingest/samples`) + `/health` |
+| `ingest.py` | 수신구(`/ingest`, `/ingest/spans`, `/ingest/samples`, `/ingest/traces`) + `/health`. 사건 카드가 있는 종류는 표본 문으로 와도 사건 표에 담는다 |

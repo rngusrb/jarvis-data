@@ -126,3 +126,21 @@ def test_아직_안_붙은_버튼은_알려준다(tmp_path: Path) -> None:
         c.reply(Incoming(text="x", at=NOW, cursor=1, action="useless:sleep_drop"), NOW)
     )
     assert answer is not None and "아직" in answer
+
+
+def test_상태는_합친_수신과_카드별_기준으로_말한다(tmp_path: Path) -> None:
+    """위치를 사건 표로 옮긴 뒤에도 /status 에 보이고, 36시간 고정이 아니라 카드 기준이다."""
+    from datetime import timedelta
+
+    class Merged:
+        def last_seen(self) -> dict:
+            return {"location": NOW - timedelta(hours=50), "sleep_hours": NOW - timedelta(hours=50)}
+
+    c = _build(tmp_path)
+    c.catalog = Merged()
+    c.stale_after = {"location": timedelta(days=4)}
+
+    answer = _ask(c, "/status") or ""
+
+    assert "✅ location" in answer  # 위치는 나흘까지 정상
+    assert "⚠️ sleep_hours" in answer  # 카드 기준을 모르면 36시간
