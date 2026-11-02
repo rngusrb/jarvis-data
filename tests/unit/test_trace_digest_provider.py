@@ -54,12 +54,22 @@ def test_요약이_없는_종류는_넣지_않는다() -> None:
     assert TraceDigestProvider(source=_source(), kinds=[web]).fetch(None, NOW) is None
 
 
-def test_민감한_종류는_요약이_있어도_넣지_않는다() -> None:
+def test_민감한_종류는_기본으로는_넣지_않는다() -> None:
     # 반응·대화의 말은 텔레그램으로 나가는데 민감한 걸 거르는 장치가 아직 없다(4단계).
     web = TraceKind(
         kind="web_visit", label="웹 방문", collector="mac_chrome", sensitive=True, digest=_count
     )
     assert TraceDigestProvider(source=_source(), kinds=[web]).fetch(None, NOW) is None
+
+
+def test_민감한_종류도_넣기로_하면_넣는다() -> None:
+    # 실험 단계라 허들을 낮춘다(2026-11-02 사용자 결정) — 조립하는 곳이 켠다.
+    web = TraceKind(
+        kind="web_visit", label="웹 방문", collector="mac_chrome", sensitive=True, digest=_count
+    )
+    provider = TraceDigestProvider(source=_source(), kinds=[web], include_sensitive=True)
+    block = provider.fetch(None, NOW)
+    assert block is not None and "웹 방문" in block.body
 
 
 def test_접힌_종류는_넣지_않는다() -> None:

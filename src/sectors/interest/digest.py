@@ -1,19 +1,20 @@
-"""맥 앱 사용 하루 요약.
+"""흔적 하루 요약 — 맥 앱 사용, 웹 방문.
 
 맥 앞에 뜬 앱은 하루 수백 줄이다 — 앱을 바꿀 때마다, 정각마다, 5분 손을 놓을 때마다 구간이
-끊긴다. 낱줄로는 회고에도 맥락에도 못 넣는다(일주일이면 수천 줄이 관심사가 아니라 잡음이 된다).
-그래서 하루 한 줄로 접어 보여준다. **저장하지 않는다** — 볼 때마다 흔적에서 다시 접는다.
+끊긴다. 웹 방문도 하루 수십~수백 줄이다. 낱줄로는 자비스의 맥락에 못 넣는다. 그래서 하루 한 줄로
+접어 보여준다. **저장하지 않는다** — 볼 때마다 흔적에서 다시 접는다.
 
-한 줄에 담는 것: 날짜, 처음~끝 시각, 모두 쓴 시간, 시간대(오전·오후·저녁·새벽), 앱 상위 다섯과
-그 외. 창 제목은 수집기가 처음부터 안 읽는다.
+하루를 나누고, 창 앞에서 잘린 날을 빼고, 빈 날을 "기록 없음"으로 적는 일은 두 요약이 같이 쓴다
+(`_render`). 한 줄에 무엇을 담는지만 다르다.
 """
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar
 
 from src.core.clock import KST, WEEKDAYS, local
 from src.core.models import Trace
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 DAY_STARTS = time(5)
 # 이름으로 적는 앱 수. 나머지는 "그 외 n개"로 묶는다.
 TOP_APPS = 5
+# 웹: 많이 간 곳 몇 개, 최근 검색어 몇 개.
+TOP_HOSTS = 5
+LAST_SEARCHES = 5
+SEARCH = "검색: "  # 크롬 수집기가 검색 흔적 앞에 붙이는 말
 # 시간대. 하루가 시작하는 순서대로. 수집기가 구간을 정각마다 끊어서 시작 시각으로 나누면 정확하다.
 # 새벽은 하루가 바뀌는 시각까지다 — 5시를 따로 들고 있으면 한쪽만 바뀌어 순서가 조용히 어긋난다.
 PARTS: Tuple[Tuple[str, int, int], ...] = (
@@ -34,6 +39,9 @@ PARTS: Tuple[Tuple[str, int, int], ...] = (
     ("저녁", 18, 24),
     ("새벽", 0, DAY_STARTS.hour),
 )
+
+
+D = TypeVar("D")
 
 
 @dataclass
@@ -52,13 +60,7 @@ class _Day:
 
 
 def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
-    """`mac_app` 흔적을 하루 한 줄로. 창 앞에서 잘린 날은 빼고, until 이 든 날은 "지금까지".
-
-    기록이 있는 첫 날부터 지금까지, 흔적 없는 날은 "기록 없음"으로 적는다. 빼 버리면 맥을 안 쓴
-    날인지 수집이 멈춘 날인지 모른 채 그날이 없었던 것처럼 읽힌다. 첫 기록 앞은 적지 않는다 —
-    수집기가 생기기 전 날까지 "기록 없음"이면 "요즘 맥을 쓰기 시작했다"로 읽힌다(재리뷰). 보일 날에
-    기록이 하나도 없으면 빈 목록이다 — 그건 수집 감시가 말할 일이다.
-    """
+    """`mac_app` 흔적을 하루 한 줄로. 날을 나누는 규칙은 `_render`."""
     days: Dict[date, _Day] = {}
     unreadable = 0
     for trace in traces:
@@ -75,6 +77,56 @@ def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
         # 수집기가 바뀌어 메타 모양이 달라지면 요약이 조용히 줄어든다. 줄 수를 남긴다.
         logger.warning("앱 사용 %d줄은 앱 이름이나 쓴 시간이 없어 하루 요약에서 뺐다", unreadable)
 
+    return _render(days, since, until, _line)
+
+
+@dataclass
+class _WebDay:
+    first: datetime
+    last: datetime
+    pages: int = 0
+    devices: Counter = field(default_factory=Counter)
+    parts: Counter = field(default_factory=Counter)
+    hosts: Counter = field(default_factory=Counter)
+    searches: List[str] = field(default_factory=list)
+
+
+def web_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
+    """`web_visit` 흔적을 하루 한 줄로 — 몇 곳(어느 기기), 시간대, 많이 간 곳, 최근 검색어.
+
+    크롬은 다른 기기(폰 크롬)의 방문도 동기화해 온다. 폰 데이터가 끊겨도 새벽에 폰으로 본 게 여기
+    보인다. 검색어까지 넣는다 — 민감하지만 실험 단계라 자비스가 보게 한다(2026-11-02 사용자 결정).
+    """
+    days: Dict[date, _WebDay] = {}
+    for trace in sorted(traces, key=lambda t: t.at):
+        when = local(trace.at)
+        day = _day_of(when)
+        if day not in days:
+            days[day] = _WebDay(first=when, last=when)
+        d = days[day]
+        d.last = max(d.last, when)
+        d.pages += 1
+        d.devices[str(trace.meta.get("device") or "기기 모름")] += 1
+        d.parts[_part(when.hour)] += 1
+        if trace.text.startswith(SEARCH):
+            term = trace.text[len(SEARCH) :].strip()
+            if term and (not d.searches or d.searches[-1] != term):
+                d.searches.append(term)
+        elif trace.meta.get("host"):
+            d.hosts[str(trace.meta["host"])] += 1
+    return _render(days, since, until, _web_line)
+
+
+def _render(
+    days: Mapping[date, D], since: datetime, until: datetime, line: Callable[[date, D, bool], str]
+) -> List[str]:
+    """날마다 한 줄. 창 앞에서 잘린 날은 빼고, until 이 든 날은 "지금까지".
+
+    기록이 있는 첫 날부터 지금까지, 흔적 없는 날은 "기록 없음"으로 적는다. 빼 버리면 안 쓴 날인지
+    수집이 멈춘 날인지 모른 채 그날이 없었던 것처럼 읽힌다. 첫 기록 앞은 적지 않는다 — 수집기가
+    생기기 전 날까지 "기록 없음"이면 "요즘 쓰기 시작했다"로 읽힌다(재리뷰). 보일 날에 기록이 하나도
+    없으면 빈 목록이다 — 그건 수집 감시가 말할 일이다.
+    """
     # 창 앞에서 잘린 날은 뺀다. 넣으면 몇 시간만 센 날이 "덜 쓴 날"로 읽힌다.
     shown = [d for d in days if _day_start(d) >= since]
     if not shown:
@@ -84,7 +136,7 @@ def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
     lines: List[str] = []
     while day <= max(ongoing, max(shown)):
         if day in days:
-            lines.append(_line(day, days[day], ongoing=day == ongoing))
+            lines.append(line(day, days[day], day == ongoing))
         else:
             lines.append(f"{_date(day)} 기록 없음" + (" (지금까지)" if day == ongoing else ""))
         day += timedelta(days=1)
@@ -130,10 +182,14 @@ def _clock(when: datetime, day: date) -> str:
     return f"다음 날 {when:%H:%M}" if when.date() > day else f"{when:%H:%M}"
 
 
-def _line(day: date, d: _Day, ongoing: bool) -> str:
-    start = _clock(d.first, day)
+def _head(day: date, first: datetime, last: datetime, ongoing: bool) -> str:
+    start = _clock(first, day)
     # 시작부터 자정을 넘겼으면 "다음 날"은 앞에 한 번만 붙인다.
-    end = f"{d.last:%H:%M}" if d.first.date() > day else _clock(d.last, day)
+    end = f"{last:%H:%M}" if first.date() > day else _clock(last, day)
+    return f"{_date(day)} {start}~{end}" + (" (지금까지)" if ongoing else "")
+
+
+def _line(day: date, d: _Day, ongoing: bool) -> str:
     parts = " · ".join(
         f"{name} {_duration(d.parts[name])}" for name, _, _ in PARTS if name in d.parts
     )
@@ -142,10 +198,22 @@ def _line(day: date, d: _Day, ongoing: bool) -> str:
     rest = ranked[TOP_APPS:]
     if rest:
         named += f", 그 외 {len(rest)}개 {_duration(sum(s for _, s in rest))}"
-    head = f"{_date(day)} {start}~{end}"
-    if ongoing:
-        head += " (지금까지)"
+    head = _head(day, d.first, d.last, ongoing)
     return f"{head}, 모두 {_duration(sum(d.apps.values()))} [{parts}] — {named}"
+
+
+def _web_line(day: date, d: _WebDay, ongoing: bool) -> str:
+    devices = " · ".join(f"{name} {n}" for name, n in d.devices.most_common())
+    parts = " · ".join(f"{name} {d.parts[name]}" for name, _, _ in PARTS if d.parts[name])
+    line = f"{_head(day, d.first, d.last, ongoing)}, {d.pages}곳({devices}) [{parts}]"
+    tails = []
+    if d.hosts:
+        ranked = sorted(d.hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_HOSTS]
+        tails.append("많이 간 곳 " + ", ".join(f"{host} {n}" for host, n in ranked))
+    if d.searches:
+        recent = ", ".join(f"'{term}'" for term in d.searches[-LAST_SEARCHES:])
+        tails.append(f"검색 {len(d.searches)}번: {recent}")
+    return line + (" — " + " · ".join(tails) if tails else "")
 
 
 def _duration(seconds: int) -> str:

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from src.core.traces import TraceKind
-from src.sectors.interest.digest import app_days
+from src.sectors.interest.digest import app_days, web_days
 
 WEB_VISIT = TraceKind(
     kind="web_visit",
@@ -27,6 +27,9 @@ WEB_VISIT = TraceKind(
     # 검색 기록은 본인도 자비스가 언급 안 했으면 하는 게 섞인다. 모으는 건
     # 다 모으되, 프롬프트에 넣을지는 따로 정한다.
     sensitive=True,
+    # 회고는 낱줄로 훑는다(reflect). 반응·대화의 맥락에는 하루 요약으로 — 민감한 것까지 넣을지는
+    # 조립하는 곳(app/main.py)이 정한다.
+    digest=web_days,
 )
 
 # 무엇을 알아보는지(웹)와 함께 무엇을 하며 시간을 보내는지(앱)도 관심의 한 면이다.
