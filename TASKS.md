@@ -122,8 +122,22 @@
   약속을 시험으로 묶는다, 주소 없는 줄은 세되 경고, 민감 스위치가 "요약이 있는 모든 민감 종류"에 걸린다고 적고
   BACKLOG 4단계가 그 스위치를 가리킨다, 회고는 요약이 있어도 낱줄(시험), 떨어진 중복·순서 시험, 문서 둘
 
+**재리뷰: PASS — Medium 1, Low 2.** 되살리기 규칙이 옛 규칙과 1,224 대 1,224 같고, 되살린 방문만 접은 결과가
+전체를 새 규칙으로 접어 고른 것과 683줄 대 683줄 같다(키·방문 수 어긋남 0).
+
+- **Medium — 되살리기가 레포 밖(세션 scratchpad)에만 있는데 가이드는 "되살렸다"고 적었다.** 8월분 403건은 날마다
+  크롬 보존 기간 밖으로 빠진다 → 스크립트를 `collectors/revive_search_pages.py` 로 넣고 시험 일곱, 가이드는
+  "되살린다"(한 뒤에 결과와 함께 과거형으로)
+- Low — 손으로 옮기는 커서 값의 틈(옛 코드가 그 사이 한 번 더 돌면 빠짐) → 옛 chrome 작업을 먼저 내리고, 스크립트가
+  상태를 직접 읽고, 작업이 올라가 있으면 거부한다
+- Low — 남는 잡음: GitHub 알림·로그인·설정 화면을 `NOT_PAGES` 에, 구글 `/url?q=<목적지>` 가 "검색: https://…"로
+  적히던 것은 이동용 주소(`REDIRECTS`)를 검색어보다 먼저 봐서 고쳤다
+
+**배포 절차(맥)**: `launchctl bootout gui/$(id -u)/ai.jarvis.chrome` → `/usr/bin/python3 -m collectors.revive_search_pages
+--dry-run` → 실제 → `sh collectors/install.sh`. 서버는 main 을 받고 재시작.
+
 ### Final Gate
 
 - [x] `python scripts/harness.py all --gc` 통과
-- [x] Reviewer PASS 선언 (1차)
-- [x] Medium 이상 findings 를 위 칸이나 BACKLOG 에 기록 — 고치고, 되살리기는 배포 때
+- [x] Reviewer PASS 선언 (1차, 재리뷰)
+- [x] Medium 이상 findings 를 위 칸이나 BACKLOG 에 기록 — 둘 다 고침(되살리기는 배포 때 실행)

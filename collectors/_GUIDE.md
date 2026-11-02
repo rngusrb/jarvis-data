@@ -57,13 +57,15 @@ from src.core.models import Trace     # ❌ 서버 코드는 3.11 문법과 pyda
 ### ❌ 검색 사이트라고 페이지를 통째로 버리지 않는다
 ```python
 # ❌ 금지 — 검색어가 없으면 그 호스트의 방문은 전부 None
-# ✅ 대신 — 검색어가 있으면 검색, NOT_PAGES(첫 화면·결과 화면·광고·이동용 주소)면 버림, 나머지는 보통 페이지
+# ✅ 대신 — 이동용 주소(REDIRECTS)면 버림, 검색어가 있으면 검색, NOT_PAGES(첫 화면·결과·둘러보기)면 버림,
+#           나머지는 보통 페이지
 ```
 **이유**: 검색 사이트 목록에 유튜브와 GitHub 이 있다. 거기서 검색어 없는 방문은 대부분 영상과 저장소다.
 **사고 이력**: 2026-08-27 첫 수집기부터 2026-11-02 까지 검색어 없는 방문을 다 버렸다(주석의 의도는
 "검색어 없는 구글 홈"뿐이었다). 90일 방문 26,990건 중 1,397건 — GitHub 1,045, 유튜브 영상 179, 채널
-페이지 — 이 흔적이 되지 못했다. JAR-020 리뷰에서 나왔고, 고친 날 크롬에 남은 90일치에서 옛 규칙이
-버린 방문만 골라 되살렸다. `describe` 에는 시험이 하나도 없었다.
+페이지 — 이 흔적이 되지 못했다. JAR-020 리뷰에서 나왔다. `describe` 에는 시험이 하나도 없었다.
+고친 날 크롬에 남은 90일치에서 옛 규칙이 버린 방문만 골라 되살린다 — `revive_search_pages.py`
+(절차는 그 파일 맨 위). 크롬은 약 90일만 남기므로 늦을수록 오래된 것부터 잃는다.
 
 ### ❌ 크롬 기록을 시각으로 이어 읽지 않는다
 ```python
@@ -123,6 +125,7 @@ from src.core.models import Trace     # ❌ 서버 코드는 3.11 문법과 pyda
 tests:
   - tests/unit/test_collectors_common.py
   - tests/unit/test_chrome_history.py
+  - tests/unit/test_revive_search_pages.py
   - tests/unit/test_mac_apps.py
   - tests/unit/test_forward.py
   - tests/integration/test_ingest_traces.py
@@ -139,7 +142,8 @@ python scripts/harness.py collectors/
 | 파일 | 책임 |
 |------|------|
 | `common.py` | 상태 폴더, 토큰, 보낼 상자(`outbox_file`, 찢긴 앞 줄을 살피는 `append_lines`), 서버로 보내기. 실패를 `Retry`(나중에 다시)와 `Rejected`(내용이 틀림)로 나누고, 거절된 것은 `set_aside` 로 따로 둔다 |
-| `chrome_history.py` | 크롬 기록 → `web_visit`. id 커서 + 먼저 보낸 번호, 시계 칸으로 접기, 안 닫힌 칸은 미룸, 기록 재생성 감지. 검색 사이트는 검색어·`NOT_PAGES`·보통 페이지로 가른다 |
+| `chrome_history.py` | 크롬 기록 → `web_visit`. id 커서 + 먼저 보낸 번호, 시계 칸으로 접기, 안 닫힌 칸은 미룸, 기록 재생성 감지. 검색 사이트는 이동용 주소·검색어·`NOT_PAGES`·보통 페이지로 가른다 |
+| `revive_search_pages.py` | 일회성. 옛 규칙이 버린 검색 사이트 페이지를 되살린다(옛 수집기가 처리한 번호만, 옛 chrome 작업이 내려가 있어야 돈다) |
 | `mac_apps.py` | 앞 앱 표본 → 사용 구간 → 보낼 상자. 자리 비움·잠듦·정시에서 끊는다 |
 | `forward.py` | iCloud 받은 편지함과 보낼 상자의 줄 → 서버. 깨진 줄·거절된 줄은 뒤를 막지 않게 따로 두고 `--replay` 로 되살린다. 끝의 못 읽는 줄은 하루 기다린 뒤 따로 둔다. 폴더 하나를 못 열어도 나머지는 보낸다 |
 | `install.sh` | 사본(app/)을 받아 최신으로 맞추고 launchd 에 셋을 올리고 내린다. 업데이트도 이것 |

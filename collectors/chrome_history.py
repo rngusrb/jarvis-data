@@ -113,19 +113,29 @@ SEARCH_HOSTS = {
     "github.com": "q",
 }
 
+# 검색 사이트의 이동용 주소(경로 첫 마디) — 광고 클릭, 결과에서 목적지로 넘기는 주소. 목적지
+# 방문이 따로 남으므로 버린다. 검색어보다 먼저 본다: 구글 `/url?q=<목적지>` 가
+# "검색: https://…"로 적혔다(리뷰).
+REDIRECTS = {
+    "www.google.com": {"url", "aclk"},
+    "google.com": {"url", "aclk"},
+    "search.naver.com": {"p"},
+    "m.search.naver.com": {"p"},
+}
+
 # 검색 사이트에서 보통 페이지가 **아닌** 경로(첫 마디). 첫 화면, 검색어 없는 결과 화면,
-# 광고·이동용 주소다 — 이동용 주소는 목적지 방문이 따로 남는다. 그 밖은 보통 페이지다(유튜브
-# 영상, GitHub 저장소, 구글 지도). 2026-11-02 까지는 검색어가 없으면 다 버려서, 90일 방문
-# 26,990건 중 1,397건(GitHub 1,045, 유튜브 영상 179 …)이 흔적이 되지 못했다(JAR-020 리뷰).
+# 알림·로그인 같은 둘러보기 화면. 그 밖은 보통 페이지다(유튜브 영상, GitHub 저장소, 구글 지도).
+# 2026-11-02 까지는 검색어가 없으면 다 버려서, 90일 방문 26,990건 중 1,397건(GitHub 1,045,
+# 유튜브 영상 179 …)이 흔적이 되지 못했다(JAR-020 리뷰).
 NOT_PAGES = {
-    "www.google.com": {"", "search", "webhp", "imghp", "url", "aclk", "a"},
-    "google.com": {"", "search", "webhp", "imghp", "url", "aclk", "a"},
+    "www.google.com": {"", "search", "webhp", "imghp", "a"},
+    "google.com": {"", "search", "webhp", "imghp", "a"},
     "www.bing.com": {"", "search"},
-    "search.naver.com": {"", "search.naver", "p"},
-    "m.search.naver.com": {"", "search.naver", "p"},
+    "search.naver.com": {"", "search.naver"},
+    "m.search.naver.com": {"", "search.naver"},
     "duckduckgo.com": {""},
     "www.youtube.com": {"", "results"},
-    "github.com": {"", "search"},
+    "github.com": {"", "search", "notifications", "login", "sessions", "settings", "account"},
 }
 
 # 흔적으로서 가치가 없는 것들. 저장은 다 하자는 방침이지만 이건 데이터가
@@ -150,11 +160,14 @@ def describe(url: str, title: str) -> Optional[str]:
 
     param = SEARCH_HOSTS.get(host)
     if param:
+        first = parsed.path.strip("/").split("/")[0]
+        if first in REDIRECTS.get(host, ()):
+            return None
         values = parse_qs(parsed.query).get(param)
         if values and values[0].strip():
             return f"검색: {unquote(values[0]).strip()}"
-        if parsed.path.strip("/").split("/")[0] in NOT_PAGES[host]:
-            # 검색어 없는 첫 화면·결과 화면, 광고·이동용 주소는 흔적이 아니다.
+        if first in NOT_PAGES[host]:
+            # 검색어 없는 첫 화면·결과 화면, 둘러보기 화면은 흔적이 아니다.
             return None
         # 그 밖은 보통 페이지다. 아래로 내려가 제목으로 적는다.
 

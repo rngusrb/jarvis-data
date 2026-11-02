@@ -346,12 +346,22 @@ def test_첫_화면과_이동용_주소는_흔적이_아니다() -> None:
         "https://www.youtube.com/",
         "https://www.youtube.com/results",
         "https://github.com/",
+        "https://github.com/notifications?query=reason%3Aassign",
+        "https://github.com/login?return_to=x",
     ):
         assert describe(url, "목적지 제목") is None, url
 
 
+def test_이동용_주소는_검색어가_있어도_검색이_아니다() -> None:
+    # 구글 /url?q=<목적지> 가 "검색: https://…"로 적혔다(JAR-020 재리뷰).
+    from collectors.chrome_history import describe
+
+    assert describe("https://www.google.com/url?q=https://example.com&sa=U", "Example") is None
+
+
 def test_검색_사이트마다_보통_페이지가_아닌_경로를_적어_둔다() -> None:
     # 한쪽에만 호스트를 더하면 describe 가 KeyError 로 수집기 전체를 멈춘다.
-    from collectors.chrome_history import NOT_PAGES, SEARCH_HOSTS
+    from collectors.chrome_history import NOT_PAGES, REDIRECTS, SEARCH_HOSTS
 
     assert set(NOT_PAGES) == set(SEARCH_HOSTS)
+    assert set(REDIRECTS) <= set(SEARCH_HOSTS)
