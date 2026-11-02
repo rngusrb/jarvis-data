@@ -114,6 +114,13 @@ def test_믿음이_프롬프트에_들어간다(tmp_path: Path) -> None:
     assert "관심사:채용준비" in reasoner.prompts[-1]
 
 
+def test_대화에도_지금을_알려준다(tmp_path: Path) -> None:
+    # "어제 맥 뭐 했지?"에 답하려면 지금이 언제인지 알아야 한다. 01:00 UTC 는 한국 10:00 이다.
+    reasoner = CountingReasoner()
+    _ask(_build(tmp_path, reasoner), "어제 뭐 했지?")
+    assert "[지금] 2026-10-02(금) 10:00" in reasoner.prompts[-1]
+
+
 def test_빈_응답을_그대로_돌려주지_않는다(tmp_path: Path) -> None:
     """빈 문자열을 보내면 사용자는 아무 일도 안 일어난 걸로 본다."""
     answer = _ask(_build(tmp_path, CountingReasoner(answer="   ")), "뭐해?")

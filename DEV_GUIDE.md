@@ -63,7 +63,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
         ↓
    triggers              평소 대비 편차 감지 → Insight
         ↓
-   brain/gate            severity · 쿨다운 (싼 필터)
+   brain/gate            severity · 같은 신호는 한 번 · 쿨다운 (싼 필터)
         ↓
    brain/agent           맥락 조립 → vLLM → 발화 결정
         ↓

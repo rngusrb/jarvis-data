@@ -149,3 +149,38 @@ def test_한국_시각으로_물어도_같은_순간부터_돌려준다(tmp_path
     since = log.since(datetime(2026, 10, 30, 10, 30, tzinfo=timezone(timedelta(hours=9))))
 
     assert [r.text for r in since] == ["나중"]
+
+
+def test_무엇에_대한_판단인지도_재시작을_넘긴다(tmp_path: Path) -> None:
+    db = tmp_path / "jarvis.db"
+    night = datetime(2026, 8, 27, tzinfo=timezone(timedelta(hours=9)))
+    SQLiteSpeechLog(db).record("sleep_drop", NOW, "말 안 걸기로 함", spoken=False, about=night)
+
+    last = SQLiteSpeechLog(db).last("sleep_drop")
+    assert last is not None and last.about == night
+    insight = Insight(trigger="sleep_drop", summary="짧게 잠", severity=Severity.NOTABLE, at=night)
+    assert not Gate(log=SQLiteSpeechLog(db)).allows(insight, NOW + timedelta(hours=7))
+
+
+def test_about_칸이_없는_DB도_옮겨진다(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "jarvis.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE speech (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL, "
+        "at TEXT NOT NULL, text TEXT NOT NULL, spoken INTEGER NOT NULL DEFAULT 1);"
+    )
+    conn.execute(
+        "INSERT INTO speech (trigger, at, text, spoken) VALUES (?, ?, ?, 0)",
+        ("sleep_drop", NOW.isoformat(), "옛 판단"),
+    )
+    conn.commit()
+    conn.close()
+
+    log = SQLiteSpeechLog(db)
+    old = log.last("sleep_drop")
+    assert old is not None and old.about is None
+    log.record("sleep_drop", NOW + timedelta(hours=1), "새 판단", spoken=False, about=NOW)
+    new = log.last("sleep_drop")
+    assert new is not None and new.about == NOW

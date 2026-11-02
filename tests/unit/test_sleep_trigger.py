@@ -125,6 +125,15 @@ def test_이탈_없는_지난_밤은_남기지_않는다(caplog: pytest.LogCaptu
     assert "넘긴다" not in caplog.text
 
 
+def test_UTC_로_들어온_아침도_오늘_아침이다() -> None:
+    # 운영 루프는 지금 시각을 UTC 로 넘긴다. 한국 07:30 은 UTC 로 전날 22:30 이라, 날짜를 한국
+    # 시간으로 바꾸지 않으면 밤이 보통 들어오는 00~09시에 오늘 밤을 넘긴다(JAR-018 리뷰 돌연변이).
+    nights = _nights([7.5, 7.5, 7.5, 7.5, 3.0])
+    morning = (NOW - timedelta(hours=1, minutes=30)).astimezone(timezone.utc)
+    assert morning.date() != NOW.date()
+    assert SleepDropTrigger().check(nights, morning) is not None
+
+
 def test_URGENT는_절반_이하일_때다() -> None:
     trigger = SleepDropTrigger()
     insight = trigger.check(_nights([10.0, 10.0, 10.0, 10.0, 4.9]), NOW)

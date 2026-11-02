@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from src.core.clock import KST, local
+from src.core.clock import KST, WEEKDAYS, local
 from src.core.models import Trace
 
 logger = logging.getLogger(__name__)
@@ -27,13 +27,13 @@ DAY_STARTS = time(5)
 # 이름으로 적는 앱 수. 나머지는 "그 외 n개"로 묶는다.
 TOP_APPS = 5
 # 시간대. 하루가 시작하는 순서대로. 수집기가 구간을 정각마다 끊어서 시작 시각으로 나누면 정확하다.
+# 새벽은 하루가 바뀌는 시각까지다 — 5시를 따로 들고 있으면 한쪽만 바뀌어 순서가 조용히 어긋난다.
 PARTS: Tuple[Tuple[str, int, int], ...] = (
-    ("오전", 5, 12),
+    ("오전", DAY_STARTS.hour, 12),
     ("오후", 12, 18),
     ("저녁", 18, 24),
-    ("새벽", 0, 5),
+    ("새벽", 0, DAY_STARTS.hour),
 )
-WEEKDAYS = "월화수목금토일"
 
 
 @dataclass
@@ -52,7 +52,12 @@ class _Day:
 
 
 def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
-    """`mac_app` 흔적을 하루 한 줄로. 창 앞에서 잘린 날은 빼고, until 이 든 날은 "지금까지"."""
+    """`mac_app` 흔적을 하루 한 줄로. 창 앞에서 잘린 날은 빼고, until 이 든 날은 "지금까지".
+
+    창 안에 흔적이 하나라도 있으면 흔적 없는 날도 "기록 없음"으로 적는다. 빼 버리면 맥을 안 쓴
+    날인지 수집이 멈춘 날인지 모른 채 그날이 없었던 것처럼 읽힌다. 창 전체가 비면 빈 목록이다 —
+    그건 수집 감시가 말할 일이다.
+    """
     days: Dict[date, _Day] = {}
     unreadable = 0
     for trace in traces:
@@ -69,13 +74,20 @@ def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
         # 수집기가 바뀌어 메타 모양이 달라지면 요약이 조용히 줄어든다. 줄 수를 남긴다.
         logger.warning("앱 사용 %d줄은 앱 이름이나 쓴 시간이 없어 하루 요약에서 뺐다", unreadable)
 
+    if not days:
+        return []
     ongoing = _day_of(local(until))
+    day = _day_of(local(since))
+    if _day_start(day) < since:
+        # 창 앞에서 잘린 날이다. 넣으면 몇 시간만 센 날이 "덜 쓴 날"로 읽힌다.
+        day += timedelta(days=1)
     lines: List[str] = []
-    for day in sorted(days):
-        if _day_start(day) < since:
-            # 창 앞에서 잘린 날이다. 넣으면 몇 시간만 센 날이 "덜 쓴 날"로 읽힌다.
-            continue
-        lines.append(_line(day, days[day], ongoing=day == ongoing))
+    while day <= max(ongoing, max(days)):
+        if day in days:
+            lines.append(_line(day, days[day], ongoing=day == ongoing))
+        else:
+            lines.append(f"{_date(day)} 기록 없음" + (" (지금까지)" if day == ongoing else ""))
+        day += timedelta(days=1)
     return lines
 
 
@@ -108,8 +120,20 @@ def _part(hour: int) -> str:
     raise ValueError(f"시간대에 없는 시각: {hour}")
 
 
+def _date(day: date) -> str:
+    return f"{day:%m-%d}({WEEKDAYS[day.weekday()]})"
+
+
+def _clock(when: datetime, day: date) -> str:
+    """그 하루 안의 시각. 자정을 넘겼으면 "다음 날"을 붙인다 — 자정 뒤에만 쓴 날의 시작 시각이
+    빠지면 "월요일 01시"로 읽혀 하루가 어긋난다(JAR-019 리뷰 재현)."""
+    return f"다음 날 {when:%H:%M}" if when.date() > day else f"{when:%H:%M}"
+
+
 def _line(day: date, d: _Day, ongoing: bool) -> str:
-    end = f"다음 날 {d.last:%H:%M}" if d.last.date() > day else f"{d.last:%H:%M}"
+    start = _clock(d.first, day)
+    # 시작부터 자정을 넘겼으면 "다음 날"은 앞에 한 번만 붙인다.
+    end = f"{d.last:%H:%M}" if d.first.date() > day else _clock(d.last, day)
     parts = " · ".join(
         f"{name} {_duration(d.parts[name])}" for name, _, _ in PARTS if name in d.parts
     )
@@ -118,14 +142,15 @@ def _line(day: date, d: _Day, ongoing: bool) -> str:
     rest = ranked[TOP_APPS:]
     if rest:
         named += f", 그 외 {len(rest)}개 {_duration(sum(s for _, s in rest))}"
-    head = f"{day:%m-%d}({WEEKDAYS[day.weekday()]}) {d.first:%H:%M}~{end}"
+    head = f"{_date(day)} {start}~{end}"
     if ongoing:
         head += " (지금까지)"
     return f"{head}, 모두 {_duration(sum(d.apps.values()))} [{parts}] — {named}"
 
 
 def _duration(seconds: int) -> str:
-    minutes = round(seconds / 60)
+    # 사사오입. round() 는 짝수 쪽으로 반올림해 90초가 2분, 270초가 4분이 됐다(리뷰).
+    minutes = int(seconds / 60 + 0.5)
     if minutes < 1:
         return "1분 미만"
     hours, minutes = divmod(minutes, 60)

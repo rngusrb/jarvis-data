@@ -57,3 +57,28 @@ def test_오버라이드가_없는_트리거는_기본값을_쓴다() -> None:
     insight = _insight(Severity.URGENT, "sleep_drop")
     gate.log.record(insight.trigger, NOW, "어젯밤 잘 못 잤네")
     assert gate.allows(insight, NOW + timedelta(hours=7)) is True
+
+
+def test_같은_신호는_쿨다운이_지나도_다시_묻지_않는다() -> None:
+    # 같은 밤은 시간이 지나도 같은 밤이다. 쿨다운만 보면 아침에 들어온 밤을 6시간마다 세 번
+    # 물었다(JAR-018 리뷰 재현).
+    gate = Gate()
+    insight = _insight(Severity.NOTABLE)
+    gate.log.record(insight.trigger, NOW, "말 안 걸기로 함", spoken=False, about=insight.at)
+    assert gate.allows(insight, NOW + timedelta(hours=7)) is False
+    assert gate.allows(insight, NOW + timedelta(days=3)) is False
+
+
+def test_다른_밤이면_쿨다운만_본다() -> None:
+    gate = Gate()
+    gate.log.record("sleep_drop", NOW, "어젯밤 잘 못 잤네", about=NOW - timedelta(days=1))
+    tonight = _insight(Severity.NOTABLE)
+    assert gate.allows(tonight, NOW + timedelta(hours=1)) is False
+    assert gate.allows(tonight, NOW + timedelta(hours=7)) is True
+
+
+def test_무엇에_대한_판단인지_모르는_옛_기록은_쿨다운만_본다() -> None:
+    gate = Gate()
+    insight = _insight(Severity.NOTABLE)
+    gate.log.record(insight.trigger, NOW, "어젯밤 잘 못 잤네")
+    assert gate.allows(insight, NOW + timedelta(hours=7)) is True

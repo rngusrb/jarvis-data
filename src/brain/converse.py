@@ -26,7 +26,7 @@ from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
 from src.channels.base import Incoming
 from src.core.beliefs import Status
-from src.core.clock import local
+from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
 from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.conversation import SQLiteConversation
@@ -146,7 +146,7 @@ class Conversationalist:
                 + "\n".join(f"  {'나' if m.from_user else '자비스'}: {m.text}" for m in past)
             )
 
-        parts.append(f"[지금 질문]\n{text}")
+        parts.append(f"[지금] {shown(now)}\n\n[지금 질문]\n{text}")
         prompt = "\n\n".join(parts)
 
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)

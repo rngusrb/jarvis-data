@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS speech (
     text    TEXT NOT NULL,
     -- 0 이면 "판단했지만 말 안 걸기로 했다". 게이트는 둘 다 보고,
     -- 맥락 제공자는 1 만 본다.
-    spoken  INTEGER NOT NULL DEFAULT 1
+    spoken  INTEGER NOT NULL DEFAULT 1,
+    -- 무엇에 대한 판단이었나(신호의 at). 게이트가 같은 밤을 두 번 묻지 않으려고 본다.
+    about   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_speech_trigger_at ON speech (trigger, at);
 """
@@ -39,11 +41,12 @@ class SQLiteSpeechLog:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
-            # 이미 만들어진 DB에는 spoken 이 없다. 조용히 빼먹으면 게이트가
+            # 이미 만들어진 DB에는 spoken·about 이 없다. 조용히 빼먹으면 게이트가
             # 다시 새므로 여기서 메꾼다.
             columns = {row[1] for row in conn.execute("PRAGMA table_info(speech)")}
-            if "spoken" not in columns:
-                conn.execute("ALTER TABLE speech ADD COLUMN spoken INTEGER NOT NULL DEFAULT 1")
+            for column in ("spoken INTEGER NOT NULL DEFAULT 1", "about TEXT"):
+                if column.split()[0] not in columns:
+                    conn.execute(f"ALTER TABLE speech ADD COLUMN {column}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -54,17 +57,24 @@ class SQLiteSpeechLog:
         finally:
             conn.close()
 
-    def record(self, trigger: str, at: datetime, text: str, spoken: bool = True) -> None:
+    def record(
+        self,
+        trigger: str,
+        at: datetime,
+        text: str,
+        spoken: bool = True,
+        about: Optional[datetime] = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO speech (trigger, at, text, spoken) VALUES (?, ?, ?, ?)",
-                (trigger, stamp(at), text, 1 if spoken else 0),
+                "INSERT INTO speech (trigger, at, text, spoken, about) VALUES (?, ?, ?, ?, ?)",
+                (trigger, stamp(at), text, 1 if spoken else 0, stamp(about) if about else None),
             )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT trigger, at, text, spoken FROM speech "
+                "SELECT trigger, at, text, spoken, about FROM speech "
                 "WHERE trigger = ? ORDER BY at DESC LIMIT 1",
                 (trigger,),
             ).fetchone()
@@ -75,7 +85,7 @@ class SQLiteSpeechLog:
         했다고 착각한다."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT trigger, at, text, spoken FROM speech "
+                "SELECT trigger, at, text, spoken, about FROM speech "
                 "WHERE at >= ? AND spoken = 1 ORDER BY at",
                 (stamp(moment),),
             ).fetchall()
@@ -90,4 +100,5 @@ def _to_record(row: Sequence[object]) -> SpeechRecord:
         at=datetime.fromisoformat(str(row[1])),
         text=str(row[2]),
         spoken=bool(row[3]) if len(row) > 3 else True,
+        about=datetime.fromisoformat(str(row[4])) if len(row) > 4 and row[4] else None,
     )

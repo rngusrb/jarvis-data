@@ -89,8 +89,38 @@ def test_앱은_상위_다섯과_그_외로() -> None:
 
 
 def test_짧은_사용도_빠뜨리지_않는다() -> None:
-    line = app_days([_span("Finder", 2, "10:00", 0.5)], SINCE, UNTIL)[0]
+    line = app_days([_span("Finder", 2, "10:00", 20 / 60)], SINCE, UNTIL)[0]
     assert "Finder 1분 미만" in line
+
+
+def test_분은_사사오입한다() -> None:
+    # round() 는 짝수 쪽으로 반올림해 90초가 2분인데 270초는 4분이 됐다(리뷰).
+    spans = [_span(app, 2, f"{h}:00", 1.5) for app, h in (("가", 10), ("나", 11), ("다", 13))]
+    line = app_days(spans, SINCE, UNTIL)[0]
+    assert "모두 5분" in line and "가 2분, 나 2분, 다 2분" in line
+
+
+def test_자정_뒤에만_쓴_날은_시작에도_다음_날을_붙인다() -> None:
+    # 월요일 하루의 사용이 화요일 01~03시뿐이면 "월요일 01시부터"로 읽혔다(리뷰 재현).
+    line = app_days([_span("Code", 3, "01:00", 120)], SINCE, UNTIL)[0]
+    assert line.startswith("11-02(월) 다음 날 01:00~03:00,")
+
+
+def test_기록이_없는_날도_적는다() -> None:
+    # 빼면 맥을 안 쓴 날인지 수집이 멈춘 날인지 모른 채 그날이 없던 것처럼 읽힌다.
+    until = datetime(2026, 11, 4, 12, 0, tzinfo=KST)
+    lines = app_days([_span("Code", 2, "10:00", 30), _span("Code", 4, "09:00", 30)], SINCE, until)
+    assert [line.split(",")[0] for line in lines] == [
+        "11-02(월) 10:00~10:30",
+        "11-03(화) 기록 없음",
+        "11-04(수) 09:00~09:30 (지금까지)",
+    ]
+
+
+def test_시간대_경계는_하루가_바뀌는_시각을_따른다() -> None:
+    from src.sectors.interest.digest import DAY_STARTS, PARTS
+
+    assert PARTS[0][1] == DAY_STARTS.hour and PARTS[-1][2] == DAY_STARTS.hour
 
 
 def test_시각은_한국_시간으로_보여준다() -> None:

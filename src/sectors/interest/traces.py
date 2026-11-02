@@ -41,6 +41,9 @@ MAC_APP = TraceKind(
     # 회고(7일)와 자비스의 맥락(어제·오늘)이 같은 요약을 읽는다.
     reflect=False,
     digest=app_days,
+    # 민감하지 않다고 봤다 — 앱 이름과 쓴 시간뿐이다. 요약이 반응·대화의 맥락에 들어가 텔레그램
+    # 답에 앱 이름이 나올 수 있다는 걸 알고 정했다(JAR-019). 싫으면 True 로 — 맥락에서 빠진다.
+    sensitive=False,
 )
 
 TRACES = [WEB_VISIT, MAC_APP]

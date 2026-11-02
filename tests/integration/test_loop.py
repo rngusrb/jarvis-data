@@ -5,11 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 
+import pytest
+
 from src.brain.agent import JarvisAgent
 from src.brain.gate import Gate
 from src.core.models import Event, Insight, Observation, Severity
 from src.runtime.loop import JarvisLoop
-from src.sectors.health.triggers import SleepDropTrigger
+from src.sectors.health.triggers import LateSleepTrigger, SleepDropTrigger
 
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 KST = timezone(timedelta(hours=9))
@@ -302,20 +304,28 @@ def test_gate_block_does_not_slide_the_cooldown() -> None:
 
 
 def test_cooldown_actually_expires() -> None:
-    """쿨다운이 지나면 다시 판단해야 한다. 밀리기 시작하면 이게 깨진다."""
+    """쿨다운이 지나면 다시 판단해야 한다. 밀리기 시작하면 이게 깨진다.
+
+    신호의 `at` 은 판단 시각이다(수집 감시처럼 상태가 이어지는 신호). 같은 `at` 의 신호는
+    쿨다운이 지나도 다시 묻지 않는다 — 같은 밤은 같은 밤이다(JAR-018).
+    """
     reasoner = SkippingReasoner()
     agent = JarvisAgent(reasoner=reasoner, gate=Gate(cooldown=timedelta(hours=6)))
-    insight = Insight(trigger="sleep_drop", summary="테스트", severity=Severity.URGENT, at=BASE)
 
-    assert asyncio.run(agent.consider(insight, BASE)) is None
+    def ongoing(now: datetime) -> Insight:
+        return Insight(trigger="collection", summary="테스트", severity=Severity.URGENT, at=now)
+
+    assert asyncio.run(agent.consider(ongoing(BASE), BASE)) is None
     assert reasoner.calls == 1
 
     # 쿨다운 안 — 게이트가 막고 LLM은 안 불린다.
-    assert asyncio.run(agent.consider(insight, BASE + timedelta(hours=1))) is None
+    later = BASE + timedelta(hours=1)
+    assert asyncio.run(agent.consider(ongoing(later), later)) is None
     assert reasoner.calls == 1
 
     # 쿨다운 밖 — 다시 판단한다.
-    assert asyncio.run(agent.consider(insight, BASE + timedelta(hours=7))) is None
+    after = BASE + timedelta(hours=7)
+    assert asyncio.run(agent.consider(ongoing(after), after)) is None
     assert reasoner.calls == 2
 
 
@@ -445,3 +455,74 @@ def test_트리거_하나가_터져도_뒤의_트리거와_감시는_돈다() ->
 
     assert asyncio.run(loop.run_once()) >= 1
     assert watch.seen  # 감시까지 갔다
+
+
+@dataclass
+class CountingSkip:
+    """매번 말 안 걸기로 하는 두뇌. 몇 번 불렸는지만 센다."""
+
+    calls: int = 0
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.calls += 1
+        return '{"speak": false}'
+
+
+def _short_night(day: int) -> Observation:
+    wake = datetime(2026, 11, 3, tzinfo=KST) + timedelta(days=day)
+    return Observation(
+        source="apple_health",
+        kind="sleep_hours",
+        value=3.0,
+        at=wake,
+        meta={"segments": 15, "onset": (wake + timedelta(hours=4)).isoformat()},
+    )
+
+
+def _usual_nights() -> List[Observation]:
+    out = []
+    for day in range(-7, 0):
+        wake = datetime(2026, 11, 3, tzinfo=KST) + timedelta(days=day)
+        out.append(
+            Observation(
+                source="apple_health",
+                kind="sleep_hours",
+                value=7.5,
+                at=wake,
+                meta={"segments": 15, "onset": (wake - timedelta(hours=1)).isoformat()},
+            )
+        )
+    return out
+
+
+@pytest.mark.parametrize("arrivals", [(7.5, 7.5, 7.5), (23.0, 6.5, 6.5), (15.0, 7.0, 3.5)])
+def test_같은_밤은_한_번만_묻고_다음_밤은_들어오자마자_묻는다(arrivals: tuple) -> None:
+    """사흘 연속 짧고 늦은 밤. 30분마다 판단하고, 두뇌는 매번 말 안 걸기로 한다.
+
+    쿨다운만으로 막을 땐 아침에 들어온 밤을 6시간마다 세 번 물었고, 16시간이면 그날 밤 한 번 더
+    물으면서 다음 날 새 밤이 오후로 밀렸다(JAR-018 리뷰 재현).
+    """
+    first = datetime(2026, 11, 3, tzinfo=KST)
+    for trigger in (SleepDropTrigger(), LateSleepTrigger()):
+        reasoner = CountingSkip()
+        agent = JarvisAgent(reasoner=reasoner, gate=Gate())
+        judged: dict = {}
+        now = first
+        while now < first + timedelta(days=3):
+            window = _usual_nights() + [
+                _short_night(d)
+                for d in range(3)
+                if now >= first + timedelta(days=d, hours=arrivals[d])
+            ]
+            insight = trigger.check(window, now.astimezone(timezone.utc))
+            if insight is not None:
+                before = reasoner.calls
+                asyncio.run(agent.consider(insight, now.astimezone(timezone.utc)))
+                if reasoner.calls > before:
+                    judged.setdefault(insight.at, []).append(now)
+            now += timedelta(minutes=30)
+
+        assert [len(v) for v in judged.values()] == [1, 1, 1], (trigger.name, judged)
+        for day, times in enumerate(judged.values()):
+            arrived = first + timedelta(days=day, hours=arrivals[day])
+            assert times[0] - arrived < timedelta(minutes=30), (trigger.name, day, times)

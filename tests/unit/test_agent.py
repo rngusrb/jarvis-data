@@ -104,3 +104,5 @@ def test_맥락이_프롬프트에_실린다() -> None:
     assert "심박이 좀 높네" in prompt
     # 발화 기록은 UTC 로 남는다. 07:00 UTC 는 한국 16:00 이다.
     assert "08/19 16:00 (heart_rate_spike)" in prompt
+    # 지금이 언제인지 알아야 "어젯밤"·"(지금까지)"를 읽는다. 09:00 UTC 는 한국 18:00 이다.
+    assert "지금: 2026-08-19(수) 18:00" in prompt

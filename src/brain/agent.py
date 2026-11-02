@@ -48,7 +48,7 @@ class JarvisAgent:
             return None
 
         blocks = assemble(self.providers, insight, now)
-        prompt = build_prompt(insight, blocks)
+        prompt = build_prompt(insight, blocks, now)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
         decision = parse_decision(reply)
         if decision is None:
@@ -70,7 +70,7 @@ class JarvisAgent:
         실패한 발송까지 기억에 남기면, 사용자는 메시지를 못 받았는데
         자비스는 "아까 말했지" 하고 쿨다운 내내 침묵한다.
         """
-        self.gate.log.record(insight.trigger, now, text, spoken=True)
+        self.gate.log.record(insight.trigger, now, text, spoken=True, about=insight.at)
 
     def confirm_silence(self, insight: Insight, now: datetime, reason: str) -> None:
         """**말 안 걸기로 판정했을 때** 부른다.
@@ -83,4 +83,4 @@ class JarvisAgent:
         남아서 30분 뒤 똑같이 물어봤다. "싼 게이트 먼저, 비싼 LLM 나중"이
         여기서 새고 있었다.
         """
-        self.gate.log.record(insight.trigger, now, reason, spoken=False)
+        self.gate.log.record(insight.trigger, now, reason, spoken=False, about=insight.at)

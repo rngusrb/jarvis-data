@@ -33,6 +33,11 @@ class Gate:
         if insight.severity < self.min_severity:
             return False
         last = self.log.last(insight.trigger)
-        if last is not None and now - last.at < self.cooldown_for(insight.trigger):
+        if last is None:
+            return True
+        if last.about is not None and last.about == insight.at:
+            # 이미 판단한 신호다 — 말했든 안 했든, 시간이 지나도 같은 밤은 같은 밤이다.
+            # 쿨다운만으로 막을 땐 아침에 들어온 밤을 6시간마다 세 번 물었고, 16시간으로 늘리자
+            # 그날 밤 한 번 더 물으면서 다음 날 아침의 새 밤까지 오후로 밀렸다(JAR-018 리뷰 재현).
             return False
-        return True
+        return now - last.at >= self.cooldown_for(insight.trigger)
