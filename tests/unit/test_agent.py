@@ -106,3 +106,17 @@ def test_맥락이_프롬프트에_실린다() -> None:
     assert "08/19 16:00 (heart_rate_spike)" in prompt
     # 지금이 언제인지 알아야 "어젯밤"·"(지금까지)"를 읽는다. 09:00 UTC 는 한국 18:00 이다.
     assert "지금: 2026-08-19(수) 18:00" in prompt
+
+
+def test_말한_신호도_다시_묻지_않는다() -> None:
+    # 말 안 걸기로 한 판단만 시험하면 말한 경로의 about 이 빠져도 모른다(재리뷰 돌연변이).
+    gate = Gate()
+    agent = JarvisAgent(reasoner=FakeReasoner(), gate=gate)
+    insight = _insight()
+    message = asyncio.run(agent.consider(insight, NOW))
+    assert message is not None
+    agent.confirm_spoken(insight, NOW, message)
+
+    last = gate.log.last(insight.trigger)
+    assert last is not None and last.about == insight.at
+    assert gate.allows(insight, NOW + timedelta(hours=7)) is False

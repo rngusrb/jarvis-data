@@ -54,9 +54,10 @@ class _Day:
 def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
     """`mac_app` 흔적을 하루 한 줄로. 창 앞에서 잘린 날은 빼고, until 이 든 날은 "지금까지".
 
-    창 안에 흔적이 하나라도 있으면 흔적 없는 날도 "기록 없음"으로 적는다. 빼 버리면 맥을 안 쓴
-    날인지 수집이 멈춘 날인지 모른 채 그날이 없었던 것처럼 읽힌다. 창 전체가 비면 빈 목록이다 —
-    그건 수집 감시가 말할 일이다.
+    기록이 있는 첫 날부터 지금까지, 흔적 없는 날은 "기록 없음"으로 적는다. 빼 버리면 맥을 안 쓴
+    날인지 수집이 멈춘 날인지 모른 채 그날이 없었던 것처럼 읽힌다. 첫 기록 앞은 적지 않는다 —
+    수집기가 생기기 전 날까지 "기록 없음"이면 "요즘 맥을 쓰기 시작했다"로 읽힌다(재리뷰). 보일 날에
+    기록이 하나도 없으면 빈 목록이다 — 그건 수집 감시가 말할 일이다.
     """
     days: Dict[date, _Day] = {}
     unreadable = 0
@@ -74,15 +75,14 @@ def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
         # 수집기가 바뀌어 메타 모양이 달라지면 요약이 조용히 줄어든다. 줄 수를 남긴다.
         logger.warning("앱 사용 %d줄은 앱 이름이나 쓴 시간이 없어 하루 요약에서 뺐다", unreadable)
 
-    if not days:
+    # 창 앞에서 잘린 날은 뺀다. 넣으면 몇 시간만 센 날이 "덜 쓴 날"로 읽힌다.
+    shown = [d for d in days if _day_start(d) >= since]
+    if not shown:
         return []
     ongoing = _day_of(local(until))
-    day = _day_of(local(since))
-    if _day_start(day) < since:
-        # 창 앞에서 잘린 날이다. 넣으면 몇 시간만 센 날이 "덜 쓴 날"로 읽힌다.
-        day += timedelta(days=1)
+    day = min(shown)
     lines: List[str] = []
-    while day <= max(ongoing, max(days)):
+    while day <= max(ongoing, max(shown)):
         if day in days:
             lines.append(_line(day, days[day], ongoing=day == ongoing))
         else:

@@ -99,6 +99,10 @@ class Insight:
     trigger: str
     summary: str
     severity: Severity
+    # 이 신호가 **무엇에 대한 것인가** — 그 밤, 그 아침의 첫 사건. 게이트는 같은 `at` 의
+    # 신호를 한 번만 판단한다(JAR-018). 상태가 이어지는 신호(수집 감시)는 판단 시각(now)을
+    # 넣어야 쿨다운마다 다시 묻는다. 고정값("끊긴 시작 시각" 같은)을 넣으면 한 번 말 안 걸기로
+    # 한 뒤 다시는 안 묻고 로그도 안 남는다.
     at: datetime
     observations: Tuple[Observation, ...] = ()
 

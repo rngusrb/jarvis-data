@@ -152,3 +152,19 @@ def test_카드가_요약을_들고_나간다() -> None:
     # 낱줄로는 회고에 안 넣고(reflect=False), 회고와 맥락은 이 요약을 읽는다.
     assert MAC_APP.reflect is False
     assert MAC_APP.digest is app_days
+
+
+def test_기록이_있는_첫_날_앞은_적지_않는다() -> None:
+    # 수집기가 생기기 전 날까지 "기록 없음"이면 "요즘 맥을 쓰기 시작했다"로 읽힌다(재리뷰).
+    since = datetime(2026, 10, 27, 12, 0, tzinfo=KST)
+    lines = app_days([_span("Code", 2, "10:00", 30)], since, UNTIL)
+    assert [line.split(",")[0] for line in lines] == [
+        "11-02(월) 10:00~10:30",
+        "11-03(화) 기록 없음 (지금까지)",
+    ]
+
+
+def test_잘린_날에만_흔적이_있으면_빈_목록() -> None:
+    # 보일 날이 전부 "기록 없음"이면 회고가 아무것도 없는 줄로 LLM 을 부른다(재리뷰 재현).
+    since = datetime(2026, 11, 2, 9, 0, tzinfo=KST)
+    assert app_days([_span("Code", 2, "10:00", 30)], since, UNTIL) == []
