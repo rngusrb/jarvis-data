@@ -82,6 +82,8 @@ class Event:
     lat: Optional[float] = None
     lon: Optional[float] = None
     meta: Dict[str, Any] = field(default_factory=dict)
+    # 붙은 장소 번호(`places` 표). 좌표가 있는 사건만 붙고, 붙기 전엔 None.
+    place_id: Optional[int] = None
 
 
 @dataclass(frozen=True)

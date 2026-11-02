@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS events (
     lat    REAL,
     lon    REAL,
     meta   TEXT NOT NULL DEFAULT '{}',
+    place_id INTEGER,
     UNIQUE (source, kind, at, label)
 );
 CREATE INDEX IF NOT EXISTS idx_events_kind_at ON events (kind, at);
@@ -43,6 +44,10 @@ class SQLiteEventStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            # 장소 번호 열은 표가 생긴 뒤에 붙었다(JAR-016). 먼저 만든 표에는 더한다.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+            if "place_id" not in columns:
+                conn.execute("ALTER TABLE events ADD COLUMN place_id INTEGER")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -81,7 +86,7 @@ class SQLiteEventStore:
     def recent(self, kind: str, since: datetime) -> List[Event]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT source, kind, at, label, lat, lon, meta FROM events "
+                "SELECT source, kind, at, label, lat, lon, meta, place_id FROM events "
                 "WHERE kind = ? AND at >= ? ORDER BY at, id",
                 (kind, stamp(since)),
             ).fetchall()
@@ -106,4 +111,5 @@ def _to_event(row: Sequence[Any]) -> Event:
         lat=row[4],
         lon=row[5],
         meta=json.loads(row[6]) if row[6] else {},
+        place_id=row[7],
     )

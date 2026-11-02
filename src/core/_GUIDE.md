@@ -73,6 +73,7 @@ message: "silent failure 금지 — 조용한 성공보다 시끄러운 실패"
 
 ```
 tests:
+  - tests/unit/test_places.py
   - tests/unit/test_events.py
   - tests/unit/test_metric_registry.py
   - tests/unit/test_folding.py
@@ -148,3 +149,4 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `clock.py` | 시각 규칙 두 가지 — 저장·비교용 UTC 표기(`stamp`), 보여줄 한국 시간(`KST`, `local`) |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
 | `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다) |
+| `places.py` | 장소 계산 — 거리, 반경 안 가장 가까운 곳, 중심 옮기기. 번호가 바뀌지 않게 하나씩 붙인다 |

@@ -133,3 +133,16 @@ def test_상태_창구는_흔적의_시각을_보여주지_않는다(tmp_path: P
     kinds = client.get("/health").json()["kinds"]
 
     assert "location" in kinds and "mac_app" not in kinds
+
+
+def test_들어온_위치는_장소에_붙는다(tmp_path: Path) -> None:
+    from src.storage.places import SQLitePlaceStore
+
+    client = _with_events(tmp_path)
+    client.app.state.places = SQLitePlaceStore(tmp_path / "t.db")  # type: ignore[attr-defined]
+    client.post("/ingest/samples", json=LOCATION, headers=AUTH)
+
+    events = SQLiteEventStore(tmp_path / "t.db").recent(
+        "location", datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    assert events[0].place_id == SQLitePlaceStore(tmp_path / "t.db").all()[0].id
