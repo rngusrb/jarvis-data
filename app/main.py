@@ -162,6 +162,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 만성 신호는 상태가 계속 유지된다. 기본 6시간으로 두면
             # "요즘 잠이 부족하네요"를 하루 네 번 듣는다.
             "chronic_short_sleep": timedelta(days=7),
+            # 오늘 밤 하나를 두고 하루에 한 번. 6시간이면 그날 자정까지 세 번 물었다
+            # (JAR-017 재리뷰). 다음 날 아침 일찍 들어온 밤을 막지 않게 하루보다 짧게.
+            "late_sleep": timedelta(hours=16),
         },
     )
     agent = JarvisAgent(

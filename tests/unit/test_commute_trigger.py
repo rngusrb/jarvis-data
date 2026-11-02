@@ -145,3 +145,15 @@ def test_GPS가_튀어_생긴_다른_장소는_다른_곳이_아니다() -> None
 
     assert UnusualBoardingTrigger().check(usual + jump, _now(6)) is None
     assert UnusualBoardingTrigger().check(usual + far, _now(6)) is not None
+
+
+def test_늦게_들어온_아침도_받은_직후에는_판단한다() -> None:
+    # 폰이 직접 못 보낸 날은 맥을 거쳐 몇 시간 늦게 들어온다. 일어난 때로 재면 조용히 빠졌다.
+    from dataclasses import replace
+
+    now = _day(6) + timedelta(hours=12)  # 출발 07:45 에서 4시간 넘게 지났다
+    late = [replace(e, received_at=now - timedelta(minutes=5)) for e in _morning(6, 7.75)]
+    stale = [replace(e, received_at=now - timedelta(hours=4)) for e in _morning(6, 7.75)]
+
+    assert LateDepartureTrigger().check(_usual() + late, now) is not None
+    assert LateDepartureTrigger().check(_usual() + stale, now) is None

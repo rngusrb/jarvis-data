@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import pytest
+
 from src.core.models import Observation, Severity
 from src.sectors.health.triggers import SleepDropTrigger
 
@@ -189,3 +191,18 @@ def test_잠든_시각이_깨져_있으면_그_밤만_뺀다() -> None:
     )
     summary = _late_sleep(usual[:3] + [broken] + usual[4:] + [_onset_night(7, "04:20")])
     assert summary is not None
+
+
+def test_넘긴_늦은_밤은_한_번만_남긴다(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from src.sectors.health.triggers import LateSleepTrigger
+
+    caplog.set_level(logging.INFO)
+    nights = [_onset_night(d, "01:50") for d in range(7)] + [_onset_night(7, "04:20")]
+    trigger = LateSleepTrigger()
+    next_day = nights[-1].at + timedelta(days=1, hours=1)
+
+    assert trigger.check(nights, next_day) is None
+    assert trigger.check(nights, next_day + timedelta(minutes=30)) is None
+    assert caplog.text.count("오늘 밤이 아니라 넘긴다") == 1

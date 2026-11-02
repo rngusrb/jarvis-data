@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean, median
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Set
 
 from src.core.clock import local
 from src.core.models import Insight, Observation, Severity
@@ -219,6 +219,8 @@ class LateSleepTrigger:
     baseline_days: int = 7
     late_hours: float = 1.5
     min_segments: int = MIN_SEGMENTS
+    # 넘긴 밤을 한 번만 남기려는 기억. 판단에는 쓰지 않는다.
+    _skipped: Set[datetime] = field(default_factory=set, repr=False, compare=False)
 
     def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
         nights = sorted(
@@ -228,12 +230,17 @@ class LateSleepTrigger:
         if len(nights) < 4:
             return None
         latest = nights[-1]
-        if local(latest.at).date() != local(now).date():
-            return None
         baseline = nights[-(self.baseline_days + 1) : -1]
         usual = median(_after_noon(_onset(o) or latest.at) for o in baseline)
         slept = _after_noon(_onset(latest) or latest.at)
         if slept - usual < self.late_hours:
+            return None
+        if local(latest.at).date() != local(now).date():
+            # 늦은 밤이지만 오늘 아침 끝난 밤이 아니다 — 자정을 넘겨 들어왔거나 새 밤이 없다.
+            # 말하지 않되 한 번은 남긴다. 안 남기면 "이탈 없음"과 구별되지 않는다(재리뷰).
+            if latest.at not in self._skipped:
+                self._skipped.add(latest.at)
+                logger.info("늦게 잠든 밤이지만 오늘 밤이 아니라 넘긴다: %s", latest.at.date())
             return None
         return Insight(
             trigger=self.name,

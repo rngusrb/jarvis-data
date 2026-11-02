@@ -67,10 +67,16 @@ def _past(by_day: Dict[date, Event], today: date, keep: int) -> List[Event]:
     return [by_day[d] for d in sorted(by_day) if d < today][-keep:]
 
 
-# 이만큼 지난 일은 다시 꺼내지 않는다. 오늘 시작이 있으면 자정까지 매 주기 같은 신호가 나가
-# 6시간 쿨다운마다 LLM 이 다시 불렸다 — 늦게 나선 날 같은 얘기가 세 통(2026-11-02 JAR-017
-# 리뷰). 수집 직후 주기가 바로 판단하므로 세 시간이면 넉넉하다.
+# 서버가 받은 지 이만큼 지난 사건은 다시 판단하지 않는다. 오늘 시작이 있으면 자정까지 매 주기
+# 같은 신호가 나가 6시간 쿨다운마다 LLM 이 다시 불렸다 — 늦게 나선 날 같은 얘기가 세 통
+# (2026-11-02 JAR-017 리뷰). 수집 직후 주기가 바로 판단하므로 세 시간이면 넉넉하다.
+# **받은 때**로 잰다. 일어난 때로 재면 맥을 거쳐 늦게 들어온 아침이 아무 기록 없이 빠졌다(재리뷰).
 FRESH_FOR = timedelta(hours=3)
+
+
+def _just_arrived(event: Event, now: datetime, fresh_for: timedelta) -> bool:
+    return now - (event.received_at or event.at) <= fresh_for
+
 
 # 평소 타는 곳에서 이보다 가까우면 같은 곳이다. 단축어가 정확도를 안 보내 튄 점을 못 거르는데,
 # 150m 넘게 튀면 새 장소가 되어 "다른 곳에서 탔다"가 나간다(리뷰 합성). 다른 역은 보통 훨씬 멀다.
@@ -94,8 +100,8 @@ class LateDepartureTrigger:
     def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
         starts = morning_starts(events)
         today = local(now).date()
-        if today not in starts or now - starts[today].at > self.fresh_for:
-            # 오늘, 방금 나선 기록이 있어야 판단한다. 지난 일을 다시 꺼내 말하지 않는다.
+        if today not in starts or not _just_arrived(starts[today], now, self.fresh_for):
+            # 오늘 나선 기록이 방금 들어왔을 때만 판단한다. 판단한 일을 다시 꺼내지 않는다.
             return None
         past = _past(starts, today, self.baseline_days)
         if len(past) < self.min_days:
@@ -133,7 +139,7 @@ class UnusualBoardingTrigger:
     def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
         boards = first_boardings(events)
         today = local(now).date()
-        if today not in boards or now - boards[today].at > self.fresh_for:
+        if today not in boards or not _just_arrived(boards[today], now, self.fresh_for):
             return None
         past = _past(boards, today, self.baseline_days)
         if len(past) < self.min_days:
