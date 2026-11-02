@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Mapping, Optional, Protocol, Sequence
 
-from src.core.models import Insight, Observation
+from src.core.models import Event, Insight, Observation
 
 
 class Trigger(Protocol):
@@ -27,6 +27,20 @@ class Trigger(Protocol):
         말할 거리가 없으면 None. 이게 정상이고 대부분의 호출은 None이다.
         """
         ...
+
+
+class EventTrigger(Protocol):
+    """사건(위치 등)의 최근 구간을 보고 판단하는 트리거.
+
+    관측치 트리거와 받는 재료가 다르다. "오늘 평소와 다른 곳에서 탔다"는 숫자의 추이가
+    아니라 그날의 사건 순서와 장소로 판단한다. 순수 함수라는 계약은 같다.
+    """
+
+    name: str
+    kind: str
+    lookback: timedelta
+
+    def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]: ...
 
 
 class Watch(Protocol):

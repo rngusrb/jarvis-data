@@ -7,7 +7,7 @@ from typing import List, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
 from src.brain.gate import Gate
-from src.core.models import Insight, Observation, Severity
+from src.core.models import Event, Insight, Observation, Severity
 from src.runtime.loop import JarvisLoop
 from src.sectors.health.triggers import SleepDropTrigger
 
@@ -359,3 +359,61 @@ def test_마지막_수신_시각을_못_읽어도_다른_신호는_말한다() -
     )
     assert asyncio.run(loop.run_once()) == 1
     assert len(channel.sent) == 1
+
+
+@dataclass
+class SeenEvents:
+    """받은 사건 창을 기록하고 늘 같은 신호를 내는 사건 트리거."""
+
+    name: str = "unusual_boarding"
+    kind: str = "location"
+    lookback: timedelta = timedelta(days=42)
+    seen: List[int] = field(default_factory=list)
+
+    def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
+        self.seen.append(len(events))
+        return Insight(
+            trigger=self.name, summary="다른 곳에서 탔다", severity=Severity.NOTABLE, at=now
+        )
+
+
+class FakeEvents:
+    def __init__(self, events: List[Event]) -> None:
+        self.events = events
+        self.asked: List[str] = []
+
+    def recent(self, kind: str, since: datetime) -> List[Event]:
+        self.asked.append(kind)
+        return [e for e in self.events if e.kind == kind and e.at >= since]
+
+
+def test_사건_트리거가_사건_창을_받아_말한다() -> None:
+    now = datetime.now(timezone.utc)
+    events = FakeEvents([Event(source="s", kind="location", at=now - timedelta(hours=1))])
+    trigger = SeenEvents()
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[],
+        agent=JarvisAgent(reasoner=FakeReasoner()),
+        channel=channel,
+        event_triggers=[trigger],
+        events=events,
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert trigger.seen == [1] and events.asked == ["location"]
+
+
+def test_사건_트리거만_있고_사건_저장소가_없으면_시작하지_않는다() -> None:
+    import pytest
+
+    # 조용히 건너뛰면 트리거가 등록돼 있는데 영영 안 울린다.
+    with pytest.raises(ValueError):
+        JarvisLoop(
+            source=_source_with_drop(),
+            triggers=[],
+            agent=JarvisAgent(reasoner=FakeReasoner()),
+            channel=RecordingChannel(),
+            event_triggers=[SeenEvents()],
+        )

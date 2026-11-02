@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from statistics import mean
 from typing import List, Optional, Sequence
 
+from src.core.clock import local
 from src.core.models import Insight, Observation, Severity
 
 # 워치는 정상 수면을 Core/Deep/REM 단계로 쪼개 10~20조각을 남긴다.
@@ -161,4 +162,57 @@ class ChronicShortSleepTrigger:
 
 
 # 섹터가 자기 트리거를 들고 나간다. app/main.py 는 이 목록을 그대로 받는다.
-TRIGGERS = [SleepDropTrigger(), ChronicShortSleepTrigger()]
+def _after_six(at: datetime) -> float:
+    """잠든 시각을 저녁 6시부터 잰 시간으로. 23:00 → 5.0, 01:30 → 7.5 — 자정을 넘어도 이어진다."""
+    when = local(at)
+    return (when.hour + when.minute / 60 - 18) % 24
+
+
+def _clock_after_six(hours: float) -> str:
+    total = round((hours + 18) * 60) % (24 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+@dataclass
+class LateSleepTrigger:
+    """평소보다 유난히 늦게 잠들었는지 — 리듬이 무너진 신호.
+
+    수면 시간과는 다른 신호다. 일곱 시간을 자도 새벽 네 시에 잠들었다면 리듬이 밀린 것이다.
+    기준은 본인의 최근 기록 일곱 개다(절대 기준 "자정 넘으면 늦음"을 대면 새벽 두 시가 평소인
+    사람에게 매일 울린다 — 이 사용자의 export 82밤 중 잠든 시각이 1~3시인 밤이 72밤이다).
+    잠든 시각은 수면 집계가 남기는 `meta.onset` 이다(JAR-013).
+    """
+
+    name: str = "late_sleep"
+    kind: str = "sleep_hours"
+    lookback: timedelta = timedelta(days=21)
+    baseline_days: int = 7
+    late_hours: float = 1.5
+    min_segments: int = MIN_SEGMENTS
+
+    def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
+        nights = sorted(
+            (o for o in window if is_measured(o, self.min_segments) and o.meta.get("onset")),
+            key=lambda o: o.at,
+        )
+        if len(nights) < 4:
+            return None
+        latest = nights[-1]
+        baseline = nights[-(self.baseline_days + 1) : -1]
+        usual = mean(_after_six(datetime.fromisoformat(o.meta["onset"])) for o in baseline)
+        slept = _after_six(datetime.fromisoformat(latest.meta["onset"]))
+        if slept - usual < self.late_hours:
+            return None
+        return Insight(
+            trigger=self.name,
+            summary=(
+                f"어젯밤 {_clock_after_six(slept)}에 잠들었다. 최근 {len(baseline)}일 평소"
+                f"({_clock_after_six(usual)})보다 {slept - usual:.1f}시간 늦음."
+            ),
+            severity=Severity.NOTABLE,
+            at=latest.at,
+            observations=tuple(nights),
+        )
+
+
+TRIGGERS = [SleepDropTrigger(), ChronicShortSleepTrigger(), LateSleepTrigger()]

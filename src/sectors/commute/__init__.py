@@ -1,9 +1,9 @@
 from src.sectors.commute.events import EVENTS
 from src.sectors.commute.metrics import METRICS
-from src.sectors.commute.triggers import TRIGGERS
+from src.sectors.commute.triggers import EVENT_TRIGGERS, TRIGGERS
 
 # 아직 텍스트 흔적을 안 모은다. 섹터마다 모양이 같아야 app/main.py 가
 # 특별 취급 없이 순회할 수 있다.
 TRACES: list = []
 
-__all__ = ["EVENTS", "METRICS", "TRACES", "TRIGGERS"]
+__all__ = ["EVENTS", "EVENT_TRIGGERS", "METRICS", "TRACES", "TRIGGERS"]

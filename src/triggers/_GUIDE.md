@@ -104,5 +104,5 @@ python scripts/harness.py src/triggers/
 
 | 파일 | 책임 |
 |------|------|
-| `base.py` | `Trigger`(지표 하나의 최근 구간을 봄)와 `Watch`(종류별 마지막 수신 시각을 봄) 계약 |
+| `base.py` | `Trigger`(지표 하나의 최근 구간), `EventTrigger`(사건 종류 하나의 최근 구간), `Watch`(종류별 마지막 수신 시각) 계약 |
 | `collection.py` | 수집 감시. 끊긴 것을 기기별로 모아 원인과 함께 하나의 신호로 |

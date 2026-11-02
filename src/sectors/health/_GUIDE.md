@@ -117,6 +117,6 @@ python scripts/harness.py src/sectors/health/
 | 파일 | 책임 |
 |------|------|
 | `metrics.py` | 지표 카드 4장 (수면·걸음수·휴식기 심박 + 접은 원본 심박). 수면·휴식기 심박은 끊김 기준 42시간(밤 단위, 진짜 끊김은 다음 날 18:00) |
-| `triggers.py` | 수면 트리거 둘 — 급변(baseline) + 만성(절대 기준·추세) |
+| `triggers.py` | 수면 트리거 셋 — 급변(baseline) + 만성(절대 기준·추세) + 늦게 잠듦(잠든 시각의 baseline, 자정을 넘어도 이어 잰다) |
 | `parser.py` | 애플 XML 스트리밍 파싱. 레코드 → 관측치 |
 | `backfill.py` | export.xml 일회성 주입 CLI |

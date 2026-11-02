@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from src.core.models import Observation, Severity
 from src.sectors.health.triggers import SleepDropTrigger
@@ -102,3 +103,57 @@ def test_절반보다_많이_잤으면_NOTABLE이다() -> None:
     trigger = SleepDropTrigger()
     insight = trigger.check(_nights([10.0, 10.0, 10.0, 10.0, 5.1]), NOW)
     assert insight is not None and insight.severity is Severity.NOTABLE
+
+
+def _onset_night(day: int, onset: str, hours: float = 7.0, segments: int = 12) -> Observation:
+    """day 번째 밤. onset 은 한국 시각 "HH:MM" — 18시 전이면 자정을 넘긴 시각이다."""
+    kst = timezone(timedelta(hours=9))
+    night = datetime(2026, 9, 1, tzinfo=kst) + timedelta(days=day)
+    h, m = map(int, onset.split(":"))
+    slept = night + timedelta(hours=h, minutes=m) - (timedelta(days=1) if h >= 18 else timedelta(0))
+    return Observation(
+        source="apple_health",
+        kind="sleep_hours",
+        value=hours,
+        at=night,
+        meta={"segments": segments, "onset": slept.isoformat()},
+    )
+
+
+def _late_sleep(nights: list) -> Optional[str]:
+    from src.sectors.health.triggers import LateSleepTrigger
+
+    now = nights[-1].at + timedelta(hours=10)
+    insight = LateSleepTrigger().check(nights, now)
+    return insight.summary if insight else None
+
+
+def test_평소처럼_잠들면_조용하다() -> None:
+    usual = [_onset_night(d, "01:50") for d in range(7)]
+    assert _late_sleep(usual + [_onset_night(7, "02:30")]) is None
+
+
+def test_평소보다_유난히_늦게_잠들면_말할_거리다() -> None:
+    usual = [_onset_night(d, "01:50") for d in range(7)]
+    summary = _late_sleep(usual + [_onset_night(7, "04:20")])
+    assert summary is not None and "04:20" in summary and "01:50" in summary
+
+
+def test_자정을_넘어도_이어서_잰다() -> None:
+    # 평소 23:30, 어젯밤 02:00 — 시계 숫자로는 작아졌지만 2.5시간 늦다.
+    usual = [_onset_night(d, "23:30") for d in range(7)]
+    summary = _late_sleep(usual + [_onset_night(7, "02:00")])
+    assert summary is not None and "2.5시간" in summary
+
+
+def test_측정이_실패한_밤은_기준에도_판단에도_넣지_않는다() -> None:
+    usual = [_onset_night(d, "01:50") for d in range(7)]
+    broken = _onset_night(7, "06:00", segments=1)
+    assert _late_sleep(usual + [broken]) is None
+
+
+def test_기록이_넷이_안_되면_판단하지_않는다() -> None:
+    assert (
+        _late_sleep([_onset_night(0, "01:50"), _onset_night(1, "01:50"), _onset_night(2, "05:00")])
+        is None
+    )
