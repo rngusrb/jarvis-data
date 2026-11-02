@@ -83,7 +83,7 @@ async def replay(reflector: Reflector, start: date, end: date, verbose: bool) ->
                 f"{day:%m-%d} 흔적 {result.considered:4d}줄 → 변경 {len(result.applied):2d} · "
                 f"메모 {result.notes:2d} · 기각 {len(result.rejected):2d}"
                 f" · 접음 {len(result.retired)}"
-                f"  ({time.monotonic() - began:.0f}초)"
+                f"  ({result.prompt_chars:,}자, {time.monotonic() - began:.0f}초)"
             )
             report(result, verbose)
         day += timedelta(days=1)

@@ -98,6 +98,8 @@ class Reflection:
     considered: int = 0
     # 낱줄 대신 넣은 하루 요약 줄 수(앱 사용처럼 낱줄로 안 훑는 종류).
     digested: int = 0
+    # 프롬프트 글자 수. 나무와 메모가 자라면 모델 한도(위 per_kind_limit 설명)에 다가간다.
+    prompt_chars: int = 0
     # 적용한 변경, 사람이 읽는 한 줄씩.
     applied: List[str] = field(default_factory=list)
     notes: int = 0
@@ -122,9 +124,11 @@ class Reflector:
     # 1,000줄(약 3.4만 + 번호)이 들어간다. 회고 종류가 늘면 합이 넘으니 다시 잰다 — 넘으면 회고가
     # 400 으로 죽는다(조용히 잘리지는 않는다). 하루 요약에는 이 상한을 걸지 않는다.
     per_kind_limit: int = 1000
-    # 주제마다 보여줄 근거 예와 메모 수.
+    # 주제마다 보여줄 근거 예와 메모 수. 메모는 모델이 매 회고 새로 적으므로 최근 것 하나면
+    # 지금 생각이고, 주제가 쉰 개를 넘으면 메모 둘이 프롬프트의 큰 몫이 된다
+    # (되감기 시험에서 메모 한 개가 150~250자).
     samples: int = 3
-    notes_per_topic: int = 2
+    notes_per_topic: int = 1
 
     async def run_once(self, now: datetime) -> Reflection:
         result = Reflection()
@@ -163,6 +167,7 @@ class Reflector:
         board = standings(tree, grounds, now)
         notes = self.topics.latest_notes(self.notes_per_topic)
         prompt, offered = self._build_prompt(board, notes, harvest, digests, now)
+        result.prompt_chars = len(prompt)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
 
         ops = _parse(reply)
@@ -185,9 +190,10 @@ class Reflector:
             "ok",
         )
         logger.info(
-            "회고 — 흔적 %d줄, 하루 요약 %d줄, 변경 %d건, 메모 %d건, 기각 %d건, 접음 %d건",
+            "회고 — 흔적 %d줄, 요약 %d줄, 프롬프트 %d자, 변경 %d, 메모 %d, 기각 %d, 접음 %d",
             result.considered,
             result.digested,
+            result.prompt_chars,
             len(result.applied),
             result.notes,
             len(result.rejected),
