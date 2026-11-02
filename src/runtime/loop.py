@@ -64,15 +64,25 @@ class JarvisLoop:
         sent = 0
 
         for trigger in self.triggers:
-            window = self.source.recent(trigger.kind, since=now - trigger.lookback)
-            insight = trigger.check(window, now)
+            try:
+                window = self.source.recent(trigger.kind, since=now - trigger.lookback)
+                insight = trigger.check(window, now)
+            except Exception:
+                # 트리거 하나가 터졌다고 뒤의 트리거와 수집 감시까지 그 주기를 건너뛰면 안 된다.
+                # 2026-11-02 리뷰: 잠든 시각 한 줄이 깨져 있으면 주기 전체가 멈췄다.
+                logger.exception("트리거 실패 — 건너뛴다: %s", trigger.name)
+                continue
             if insight is not None:
                 sent += await self._speak(insight, now)
 
         if self.events is not None:
             for event_trigger in self.event_triggers:
-                happened = self.events.recent(event_trigger.kind, now - event_trigger.lookback)
-                insight = event_trigger.check(happened, now)
+                try:
+                    happened = self.events.recent(event_trigger.kind, now - event_trigger.lookback)
+                    insight = event_trigger.check(happened, now)
+                except Exception:
+                    logger.exception("사건 트리거 실패 — 건너뛴다: %s", event_trigger.name)
+                    continue
                 if insight is not None:
                     sent += await self._speak(insight, now)
 

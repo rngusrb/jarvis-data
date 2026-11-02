@@ -110,7 +110,8 @@ def _onset_night(day: int, onset: str, hours: float = 7.0, segments: int = 12) -
     kst = timezone(timedelta(hours=9))
     night = datetime(2026, 9, 1, tzinfo=kst) + timedelta(days=day)
     h, m = map(int, onset.split(":"))
-    slept = night + timedelta(hours=h, minutes=m) - (timedelta(days=1) if h >= 18 else timedelta(0))
+    # 정오 이후 시각은 전날(밤이 시작된 날)의 시각이다 — 수면 집계의 경계와 같다.
+    slept = night + timedelta(hours=h, minutes=m) - (timedelta(days=1) if h >= 12 else timedelta(0))
     return Observation(
         source="apple_health",
         kind="sleep_hours",
@@ -157,3 +158,34 @@ def test_기록이_넷이_안_되면_판단하지_않는다() -> None:
         _late_sleep([_onset_night(0, "01:50"), _onset_night(1, "01:50"), _onset_night(2, "05:00")])
         is None
     )
+
+
+def test_오늘_아침_끝난_밤이_아니면_말하지_않는다() -> None:
+    # 새 밤이 안 들어오면 지난 밤을 며칠씩 "어젯밤"으로 다시 말했다(JAR-017 리뷰).
+    from src.sectors.health.triggers import LateSleepTrigger
+
+    nights = [_onset_night(d, "01:50") for d in range(7)] + [_onset_night(7, "04:20")]
+    later = nights[-1].at + timedelta(days=2, hours=10)
+    assert LateSleepTrigger().check(nights, later) is None
+
+
+def test_저녁에_일찍_잠든_밤은_늦게_잠든_게_아니다() -> None:
+    # 17:00 에 시작한 잠은 다음 밤에 배정된다. 저녁 6시로 재면 "15시간 늦음"이었다.
+    usual = [_onset_night(d, "01:50") for d in range(7)]
+    assert _late_sleep(usual + [_onset_night(7, "17:00")]) is None
+    # 그 밤이 기준에 섞여도 다음 날 진짜 늦은 밤을 놓치지 않는다(중앙값).
+    mixed = usual[:6] + [_onset_night(6, "17:00")]
+    assert _late_sleep(mixed + [_onset_night(7, "04:20")]) is not None
+
+
+def test_잠든_시각이_깨져_있으면_그_밤만_뺀다() -> None:
+    usual = [_onset_night(d, "01:50") for d in range(7)]
+    broken = Observation(
+        source="apple_health",
+        kind="sleep_hours",
+        value=7.0,
+        at=usual[3].at,
+        meta={"segments": 12, "onset": "01:30"},
+    )
+    summary = _late_sleep(usual[:3] + [broken] + usual[4:] + [_onset_night(7, "04:20")])
+    assert summary is not None

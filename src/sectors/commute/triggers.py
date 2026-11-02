@@ -13,11 +13,12 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from statistics import mean
+from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from src.core.clock import local
 from src.core.models import Event, Insight, Severity
+from src.core.places import meters_between
 from src.sectors.commute.places import MORNING, WALLET, roles
 
 
@@ -66,6 +67,16 @@ def _past(by_day: Dict[date, Event], today: date, keep: int) -> List[Event]:
     return [by_day[d] for d in sorted(by_day) if d < today][-keep:]
 
 
+# 이만큼 지난 일은 다시 꺼내지 않는다. 오늘 시작이 있으면 자정까지 매 주기 같은 신호가 나가
+# 6시간 쿨다운마다 LLM 이 다시 불렸다 — 늦게 나선 날 같은 얘기가 세 통(2026-11-02 JAR-017
+# 리뷰). 수집 직후 주기가 바로 판단하므로 세 시간이면 넉넉하다.
+FRESH_FOR = timedelta(hours=3)
+
+# 평소 타는 곳에서 이보다 가까우면 같은 곳이다. 단축어가 정확도를 안 보내 튄 점을 못 거르는데,
+# 150m 넘게 튀면 새 장소가 되어 "다른 곳에서 탔다"가 나간다(리뷰 합성). 다른 역은 보통 훨씬 멀다.
+SAME_STOP_METERS = 300.0
+
+
 @dataclass
 class LateDepartureTrigger:
     """평일 아침, 평소보다 늦게 나섰는지."""
@@ -78,17 +89,20 @@ class LateDepartureTrigger:
     # 나흘은 모여야 "평소"다. 그보다 적으면 그 평소가 우연이다.
     min_days: int = 4
     late_hours: float = 0.5
+    fresh_for: timedelta = FRESH_FOR
 
     def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
         starts = morning_starts(events)
         today = local(now).date()
-        if today not in starts:
-            # 오늘 나선 기록이 있어야 판단한다. 지난날을 다시 꺼내 말하지 않는다.
+        if today not in starts or now - starts[today].at > self.fresh_for:
+            # 오늘, 방금 나선 기록이 있어야 판단한다. 지난 일을 다시 꺼내 말하지 않는다.
             return None
         past = _past(starts, today, self.baseline_days)
         if len(past) < self.min_days:
             return None
-        usual = mean(_hours(e) for e in past)
+        # 평균이 아니라 중앙값이다. 재택일 10:30 외출 하루가 평균을 끌어올리면 다음 날 진짜
+        # 40분 늦음이 안 잡혔다(리뷰 재현).
+        usual = median(_hours(e) for e in past)
         left = _hours(starts[today])
         if left - usual < self.late_hours:
             return None
@@ -114,11 +128,12 @@ class UnusualBoardingTrigger:
     min_days: int = 4
     # 최근 평일의 이만큼은 같은 곳에서 타야 "평소 타는 곳"이 있다고 본다.
     min_share: float = 0.6
+    fresh_for: timedelta = FRESH_FOR
 
     def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
         boards = first_boardings(events)
         today = local(now).date()
-        if today not in boards:
+        if today not in boards or now - boards[today].at > self.fresh_for:
             return None
         past = _past(boards, today, self.baseline_days)
         if len(past) < self.min_days:
@@ -126,6 +141,8 @@ class UnusualBoardingTrigger:
         usual, days = Counter(e.place_id for e in past).most_common(1)[0]
         here = boards[today].place_id
         if usual is None or here is None or here == usual or days / len(past) < self.min_share:
+            return None
+        if _close_to(boards[today], [e for e in past if e.place_id == usual]):
             return None
         named = {r.place_id: r.name for r in roles(events)}
         return Insight(
@@ -138,6 +155,15 @@ class UnusualBoardingTrigger:
             severity=Severity.NOTABLE,
             at=boards[today].at,
         )
+
+
+def _close_to(event: Event, usual: Sequence[Event]) -> bool:
+    """평소 타는 곳의 점들 평균에서 SAME_STOP_METERS 안이면 같은 곳으로 본다."""
+    points = [(e.lat, e.lon) for e in usual if e.lat is not None and e.lon is not None]
+    if event.lat is None or event.lon is None or not points:
+        return False
+    center = (sum(p[0] for p in points) / len(points), sum(p[1] for p in points) / len(points))
+    return meters_between(center, (event.lat, event.lon)) < SAME_STOP_METERS
 
 
 def _as(role: Optional[str]) -> str:

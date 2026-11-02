@@ -107,3 +107,41 @@ def test_평소_타는_곳이_뚜렷하지_않으면_판단하지_않는다() ->
 def test_시각_표기() -> None:
     assert _clock(7.5) == "07:30"
     assert _clock(7.999) == "08:00"
+
+
+def test_지난_일은_다시_꺼내지_않는다() -> None:
+    # 늦게 나선 날, 자정까지 6시간마다 같은 얘기가 다시 판단됐다(JAR-017 리뷰).
+    events = _usual() + _morning(6, 7.75)
+    assert LateDepartureTrigger().check(events, _day(6) + timedelta(hours=8, minutes=45))
+    assert LateDepartureTrigger().check(events, _day(6) + timedelta(hours=11)) is None
+
+
+def test_튀는_하루가_평소를_끌고_가지_않는다() -> None:
+    # 재택일 10:30 외출 하루가 섞여도 평소는 07:00 이다. 평균이면 40분 늦음이 안 잡혔다.
+    usual = _usual(days=9) + _morning(9, 10.5)
+    summary = _late(usual + _morning(10, 7.75), 10)
+    assert summary is not None and "45분" in summary
+
+
+def _boarding_at(n: int, lat: float, place: int) -> List[Event]:
+    start = _day(n) + timedelta(hours=7)
+    return [
+        Event(
+            source="s",
+            kind="location",
+            at=start,
+            label="wallet",
+            lat=lat,
+            lon=127.0,
+            place_id=place,
+        )
+    ]
+
+
+def test_GPS가_튀어_생긴_다른_장소는_다른_곳이_아니다() -> None:
+    usual = [e for n in range(6) for e in _boarding_at(n, 37.5, STATION)]
+    jump = _boarding_at(6, 37.5 + 160 / 110_540, OTHER)  # 160m 옆 — 새 장소가 됐지만 같은 정류장
+    far = _boarding_at(6, 37.52, OTHER)  # 2km 넘게 — 정말 다른 곳
+
+    assert UnusualBoardingTrigger().check(usual + jump, _now(6)) is None
+    assert UnusualBoardingTrigger().check(usual + far, _now(6)) is not None

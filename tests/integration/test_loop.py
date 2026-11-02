@@ -417,3 +417,28 @@ def test_사건_트리거만_있고_사건_저장소가_없으면_시작하지_�
             channel=RecordingChannel(),
             event_triggers=[SeenEvents()],
         )
+
+
+class Exploding:
+    name = "broken"
+    kind = "sleep_hours"
+    lookback = timedelta(days=1)
+
+    def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
+        raise ValueError("잠든 시각이 깨졌다")
+
+
+def test_트리거_하나가_터져도_뒤의_트리거와_감시는_돈다() -> None:
+    watch = OnceWatch()
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=_source_with_drop(),
+        triggers=[Exploding(), AlwaysFires("sleep_drop")],
+        agent=JarvisAgent(reasoner=FakeReasoner()),
+        channel=channel,
+        watches=[watch],
+        snapshot=lambda: {"location": BASE},
+    )
+
+    assert asyncio.run(loop.run_once()) >= 1
+    assert watch.seen  # 감시까지 갔다
