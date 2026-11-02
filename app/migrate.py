@@ -23,6 +23,7 @@ from src.core.clock import stamp
 from src.core.config import load_settings
 from src.core.events import event_from_point
 from src.storage.events import SQLiteEventStore
+from src.storage.places import SQLitePlaceStore
 from src.storage.sqlite import SQLiteStore
 
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -64,6 +65,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not args.apply:
         print("\n시험 실행이다. 옮기려면 --apply")
+        return 0
+    # 옮긴 사건도 장소에 붙인다. 새로 들어오는 사건은 수신구가 붙인다.
+    print(f"장소에 붙임 {SQLitePlaceStore(settings.db_path).assign_new()}건")
     return 0
 
 

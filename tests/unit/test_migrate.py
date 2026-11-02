@@ -82,6 +82,8 @@ def test_옮기고_관측치는_지운다(db: Path) -> None:
 
     events = SQLiteEventStore(db).recent("location", EPOCH)
     assert [(e.label, e.lat) for e in events] == [("leave_home", 37.4), ("wallet", 37.5)]
+    # 옮긴 사건도 장소에 붙는다.
+    assert all(e.place_id is not None for e in events)
     assert store.recent("location", EPOCH) == []
     # 다른 지표는 건드리지 않는다.
     assert [o.value for o in store.recent("sleep_hours", EPOCH)] == [6.5]

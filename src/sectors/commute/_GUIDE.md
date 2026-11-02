@@ -90,6 +90,7 @@ message: "절대 시각으로 판정하지 않는다 — 본인 패턴 대비 �
 
 ```
 tests:
+  - tests/unit/test_commute_roles.py
   - tests/unit/test_commute_trigger.py
   - tests/unit/test_commute_inspect.py
 ```
@@ -106,5 +107,6 @@ python scripts/harness.py src/sectors/commute/
 |------|------|
 | `metrics.py` | 퇴근/출근 시각 카드 (수집기 없음) |
 | `events.py` | 위치 사건 카드. 2026-11 관측치에서 옮겼다 — 값이 없는 것을 숫자 칸에 담고 있었다 |
+| `places.py` | 장소의 역할 후보(집·아침에 타는 곳·내리는 곳·저녁에 타는 곳). 평일, 한국 시각, 사흘 이상 |
 | `triggers.py` | 평소보다 늦은 퇴근 감지. **꺼져 있다** — `work_departure` 수집기가 없다 |
 | `inspect.py` | 쌓인 위치 사건을 훑어보는 도구. 패턴이 있는지부터 확인 (시간대는 한국 시각) |

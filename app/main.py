@@ -46,6 +46,7 @@ from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
 from src.storage.events import SQLiteEventStore
+from src.storage.places import SQLitePlaceStore
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 흔적·사건은 관측치와 같은 DB 파일에 산다 — 백업 경로를 하나로 두려는 것.
     traces = SQLiteTraceStore(settings.db_path)
     events = SQLiteEventStore(settings.db_path)
+    places = SQLitePlaceStore(settings.db_path)
     catalog = MergedCatalog(store, traces, events)
     # 지표·흔적·사건 카드를 한 줄로. 수집 경로 현황과 /status 가 같이 본다.
     cards: List[Collected] = [*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
@@ -181,6 +183,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.traces = traces
     app.state.events = events
     app.state.catalog = catalog
+    app.state.places = places
 
     jarvis = JarvisLoop(
         source=store,

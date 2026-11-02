@@ -84,6 +84,7 @@ message: "silent failure 금지 — 저장 실패가 조용히 넘어가면 데�
 
 ```
 tests:
+  - tests/unit/test_place_store.py
   - tests/unit/test_event_store.py
   - tests/unit/test_catalog.py
   - tests/unit/test_storage.py
@@ -111,3 +112,4 @@ python scripts/harness.py src/storage/
 | `beliefs.py` | 믿음 저장소. kind가 기본키 — 쌓이지 않고 **갱신**된다 |
 | `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC |
 | `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면(옮기는 중) 늦은 쪽을 쓰고 경고를 남긴다 |
+| `places.py` | 장소 저장소. 장소 없는 좌표 사건을 붙인다(`assign_new`, 쓰기 잠금 먼저) |

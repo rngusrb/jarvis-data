@@ -48,6 +48,7 @@ from src.core.metrics import Fold, Metric, MetricRegistry
 from src.core.models import Observation, Trace
 from src.core.traces import TraceKind, TraceRegistry
 from src.storage.events import SQLiteEventStore
+from src.storage.places import SQLitePlaceStore
 from src.storage.sqlite import SQLiteStore
 from src.storage.traces import SQLiteTraceStore
 
@@ -291,6 +292,10 @@ def _store_events(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     store: SQLiteEventStore = request.app.state.events
     written = store.write(events)
+    # 좌표가 있는 사건은 들어온 김에 장소에 붙인다. 루틴 판단이 바로 다음 주기에 쓴다.
+    places: Optional[SQLitePlaceStore] = getattr(request.app.state, "places", None)
+    if places is not None and written:
+        places.assign_new()
     labels = sorted({e.label or "(없음)" for e in events})
     logger.info("사건 수집 — %s %d개 → 새로 %d개 (%s)", card.label, len(events), written, labels)
     _wake_jarvis(request, background, written)

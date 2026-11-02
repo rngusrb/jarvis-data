@@ -70,6 +70,10 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
+        # 수신구는 이것들을 getattr 로 찾는다(테스트용 구성 때문). 배선이 빠지면 장소가
+        # 조용히 안 붙고, 장소를 보는 트리거가 영영 안 울린다(JAR-016 리뷰).
+        for name in ("events", "places", "catalog", "event_kinds"):
+            assert getattr(client.app.state, name, None) is not None, name
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:
