@@ -25,8 +25,11 @@ def test_합친다() -> None:
     assert set(merged.last_seen()) == {"sleep_hours", "location"}
 
 
-def test_같은_이름이_두_곳에_있으면_멈춘다() -> None:
-    # 위치를 옮기다 만 상태 — 관측치에도 사건에도 있다. 어느 쪽 시각인지 모른다.
-    merged = MergedCatalog(Fake({"location": AT}), Fake({"location": AT}))
-    with pytest.raises(ValueError):
-        merged.last_seen()
+def test_같은_이름이_두_곳에_있으면_늦은_쪽을_쓰고_남긴다(caplog: pytest.LogCaptureFixture) -> None:
+    # 위치를 옮기다 만 상태 — 관측치에도 사건에도 있다. 멈추면 그동안 수집 경고가 전부
+    # 꺼진다(JAR-015 리뷰). 늦은 쪽이 실제로 마지막으로 들어온 것이다.
+    earlier = AT.replace(day=1)
+    merged = MergedCatalog(Fake({"location": earlier}), Fake({"location": AT}))
+
+    assert merged.last_seen() == {"location": AT}
+    assert "두 저장소" in caplog.text

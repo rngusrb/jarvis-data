@@ -28,9 +28,16 @@ def test_단축어가_보낸_점을_사건으로_가른다() -> None:
     assert event.meta == {"extra": 1}
 
 
-def test_정확도는_값이_있을_때만_남긴다() -> None:
-    event = event_from_point("shortcuts", "location", AT, 35.0, {"lat": 1, "lon": 2})
+def test_값의_이름은_카드가_정한다() -> None:
+    event = event_from_point("shortcuts", "location", AT, 35.0, {"lat": 1, "lon": 2}, "accuracy")
     assert event.meta == {"accuracy": 35.0}
+    # 카드가 정하지 않으면 정확도라고 우기지 않는다.
+    assert event_from_point("s", "other", AT, 3.0, {}).meta == {"value": 3.0}
+
+
+def test_좌표가_숫자가_아니면_멈춘다() -> None:
+    with pytest.raises(ValueError, match="lat"):
+        event_from_point("s", "location", AT, 0, {"lat": "", "lon": 127.0})
 
 
 def test_좌표나_이유가_없어도_사건이다() -> None:

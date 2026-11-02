@@ -39,7 +39,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for card in (card for sector in SECTORS for card in sector.EVENTS):
         rows = store.recent(card.kind, EPOCH)
-        moved = [event_from_point(o.source, card.kind, o.at, o.value, o.meta) for o in rows]
+        try:
+            moved = [
+                event_from_point(o.source, card.kind, o.at, o.value, o.meta, card.value_as)
+                for o in rows
+            ]
+        except ValueError as exc:
+            print(f"  옮길 수 없는 줄이 있다 — 아무것도 바꾸지 않는다: {exc}", file=sys.stderr)
+            return 1
         labels = sorted({e.label or "(없음)" for e in moved})
         print(f"{card.label}({card.kind}): 관측치 {len(rows)}건 → 사건  이유 {labels}")
         if not args.apply or not rows:
@@ -51,7 +58,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if missing:
             print(f"  사건 표에 {len(missing)}건이 없다 — 관측치를 지우지 않는다", file=sys.stderr)
             return 1
-        removed = store.remove_kind(card.kind)
+        removed = store.remove(rows)
         already = len(moved) - written
         print(f"  사건 새로 {written}건 (이미 있던 것 {already}건), 관측치 {removed}건 지움")
 

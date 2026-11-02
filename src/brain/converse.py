@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
@@ -50,6 +50,8 @@ class Conversationalist:
     source: ObservationSource
     history: SQLiteConversation
     providers: Sequence[ContextProvider] = ()
+    # 종류별 끊김 기준(카드의 stale_after). 모르는 종류는 36시간으로 본다.
+    stale_after: Mapping[str, timedelta] = field(default_factory=dict)
     # 대화 맥락으로 끌어올 과거 메시지 수. 길면 프롬프트가 잡음으로 찬다.
     recall: int = 12
     commands: Dict[str, Callable[[datetime], str]] = field(default_factory=dict)
@@ -93,7 +95,8 @@ class Conversationalist:
         lines = []
         for kind, at in sorted(seen.items()):
             hours = (now - at).total_seconds() / 3600
-            mark = "✅" if hours < 36 else "⚠️"
+            limit = self.stale_after.get(kind, timedelta(hours=36))
+            mark = "✅" if now - at < limit else "⚠️"
             when = f"{hours:.0f}시간 전" if hours < 48 else f"{hours / 24:.0f}일 전"
             lines.append(f"{mark} {kind} — {when}")
         return "\n".join(lines)

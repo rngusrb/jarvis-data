@@ -4,10 +4,11 @@
 
   POST /ingest         이미 숫자 하나로 정리된 지표 (걸음수 합계, 심박 평균)
   POST /ingest/spans   구간 원본을 그대로 받아 서버가 집계 (수면)
-  POST /ingest/samples 표본 원본 (위치처럼 하루 여러 점)
+  POST /ingest/samples 표본 원본 (심박처럼 하루 여러 점). 사건 카드가 있는 종류(위치)는
+                       같은 모양으로 와도 사건 표에 담긴다 — 폰 단축어를 고치지 않으려고
   POST /ingest/traces  **숫자가 아닌 흔적** (검색어, 파일명, 앱 실행)
 
-앞의 셋은 관측치(숫자)로, 마지막 하나는 흔적(텍스트)으로 떨어진다.
+앞의 셋은 관측치(숫자)로(위치는 사건으로), 마지막 하나는 흔적(텍스트)으로 떨어진다.
 
 수면이 후자인 이유는 **조각 수가 측정 품질 신호**이기 때문이다. 아이폰이 합산해서
 "4.71시간"만 보내면 그 정보가 사라지고, 측정 실패한 밤을 걸러낼 수 없게 된다.
@@ -272,16 +273,22 @@ def _store_events(
     폰 단축어는 위치를 `/ingest/samples` 로 보낸다. 사건 표로 옮기면서 폰을 고치지
     않으려고, 문은 그대로 두고 카드가 사건이면 여기서 갈라 담는다.
     """
-    events = [
-        event_from_point(
-            payload.source,
-            card.kind,
-            item.at,
-            item.value,
-            {**item.meta, **({"device": item.source} if item.source else {})},
-        )
-        for item in payload.samples
-    ]
+    try:
+        events = [
+            event_from_point(
+                payload.source,
+                card.kind,
+                item.at,
+                item.value,
+                {**item.meta, **({"device": item.source} if item.source else {})},
+                card.value_as,
+            )
+            for item in payload.samples
+        ]
+    except ValueError as exc:
+        # 내용이 틀린 것이다. 500 이면 맥 배달부가 다시 보낼 줄로 보고 뒤를 전부 막는다.
+        # 이름(HTTP_422_…)은 Starlette 판마다 달라서 숫자로 쓴다.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     store: SQLiteEventStore = request.app.state.events
     written = store.write(events)
     labels = sorted({e.label or "(없음)" for e in events})
@@ -486,11 +493,17 @@ def ingest_traces(payload: TraceIngestRequest, request: Request) -> TraceIngestR
 
 @router.get("/health")
 def health(request: Request) -> Dict[str, Any]:
-    """수집이 살아 있는지 눈으로 확인하는 곳."""
+    """수집이 살아 있는지 눈으로 확인하는 곳.
+
+    마지막 수신은 관측치·흔적·사건을 합친 것이다. 관측치만 보면 사건 표로 옮긴 위치가
+    여기서 사라진다 — 폰 데이터가 다시 들어오는지 사람이 확인하는 창구다.
+    """
     store: SQLiteStore = request.app.state.store
+    catalog = getattr(request.app.state, "catalog", None) or store
+    seen = catalog.last_seen()
     return {
         "ok": True,
         "observations": store.count(),
-        "kinds": store.kinds(),
-        "last_seen": {kind: at.isoformat() for kind, at in store.last_seen().items()},
+        "kinds": sorted(seen),
+        "last_seen": {kind: at.isoformat() for kind, at in sorted(seen.items())},
     }

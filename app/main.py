@@ -14,7 +14,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import AsyncIterator
+from typing import AsyncIterator, List
 
 from fastapi import FastAPI
 
@@ -23,6 +23,7 @@ from src.brain.client import VLLMClient
 from src.brain.converse import Conversationalist
 from src.brain.gate import Gate
 from src.brain.providers import (
+    Collected,
     CollectionStatusProvider,
     ObservationTrendProvider,
     RecentValuesProvider,
@@ -125,6 +126,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     traces = SQLiteTraceStore(settings.db_path)
     events = SQLiteEventStore(settings.db_path)
     catalog = MergedCatalog(store, traces, events)
+    # 지표·흔적·사건 카드를 한 줄로. 수집 경로 현황과 /status 가 같이 본다.
+    cards: List[Collected] = [*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
 
     collection = CollectionWatch(
         sources=[
@@ -166,9 +169,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             SpeechHistoryProvider(log=gate.log),
             # 자기 수집 구조를 모르면 "배터리 최적화를 확인하라" 같은,
             # 이 시스템에 존재하지도 않는 조언을 지어낸다.
-            CollectionStatusProvider(
-                catalog=catalog, cards=[*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
-            ),
+            CollectionStatusProvider(catalog=catalog, cards=cards),
             # 수집 "현황"만 알고 "값"을 모르면 자비스가 자기 데이터를 두고도
             # 판단을 못 한다. 실제로 그랬다.
             RecentValuesProvider(source=store, metrics=metrics.all()),
@@ -179,6 +180,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.store = store
     app.state.traces = traces
     app.state.events = events
+    app.state.catalog = catalog
 
     jarvis = JarvisLoop(
         source=store,
@@ -209,10 +211,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             responder=Conversationalist(
                 reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
                 beliefs=SQLiteBeliefStore(settings.db_path),
-                catalog=store,
+                catalog=catalog,
                 source=store,
                 history=conversation,
                 providers=agent.providers,
+                stale_after={c.kind: c.stale_after for c in cards},
             ),
             speaker=channel,
             log=conversation,

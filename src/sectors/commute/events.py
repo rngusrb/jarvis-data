@@ -19,6 +19,8 @@ LOCATION = EventKind(
     collector=SHORTCUT,
     via="아이폰",
     stale_after=STALE_AFTER,
+    # 단축어가 값 칸에 넣는 것은 GPS 정확도(m)다. 지금은 0 을 보낸다.
+    value_as="accuracy",
 )
 
 EVENTS = [LOCATION]
