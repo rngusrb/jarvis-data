@@ -73,6 +73,8 @@ class Reflection:
     """한 번의 회고 결과. 로그가 아니라 **되돌아볼 수 있는 기록**이다."""
 
     considered: int = 0
+    # 낱줄 대신 넣은 하루 요약 줄 수(앱 사용처럼 낱줄로 안 훑는 종류).
+    digested: int = 0
     learned: List[Belief] = field(default_factory=list)
     forgotten: List[str] = field(default_factory=list)
     skipped: List[str] = field(default_factory=list)
@@ -91,6 +93,7 @@ class Reflector:
     # 2026-10-30 실측: 웹 기록 일주일 947줄이 32,455 토큰(줄당 약 34). 120줄이면 일주일의
     # 13%만 봤다. 지금 회고 종류는 웹 하나라 1,000줄(약 3.4만)이 들어간다. 회고 종류가
     # 늘면 합이 넘으니 다시 잰다 — 넘으면 회고가 400 으로 죽는다(조용히 잘리지는 않는다).
+    # 하루 요약(앱 사용)은 하루 한 줄이라 일주일에 몇백 토큰이다. 요약에는 이 상한을 걸지 않는다.
     per_kind_limit: int = 1000
 
     async def run_once(self, now: datetime) -> Reflection:
@@ -101,12 +104,14 @@ class Reflector:
         result.forgotten = self.beliefs.forget_stale(now)
 
         harvest = self._gather(now)
+        digests = self._digest(now)
         result.considered = sum(len(v) for v in harvest.values())
-        if not harvest:
+        result.digested = sum(len(v) for v in digests.values())
+        if not harvest and not digests:
             logger.info("회고 — 훑을 흔적이 없다")
             return result
 
-        prompt = self._build_prompt(harvest, now)
+        prompt = self._build_prompt(harvest, digests, now)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
 
         for item in _merge_by_kind(_parse(reply)):
@@ -115,8 +120,9 @@ class Reflector:
                 result.learned.append(self.beliefs.observe(belief, now))
 
         logger.info(
-            "회고 — 흔적 %d개, 믿음 %d건 갱신, %d건 망각, %d건 기각",
+            "회고 — 흔적 %d개, 하루 요약 %d줄, 믿음 %d건 갱신, %d건 망각, %d건 기각",
             result.considered,
+            result.digested,
             len(result.learned),
             len(result.forgotten),
             len(result.skipped),
@@ -134,11 +140,35 @@ class Reflector:
                 found[card] = traces
         return found
 
-    def _build_prompt(self, harvest: Dict[TraceKind, List[Trace]], now: datetime) -> str:
+    def _digest(self, now: datetime) -> Dict[TraceKind, List[str]]:
+        """낱줄로 안 훑는 종류는 하루 요약으로 넣는다(요약 방법은 카드가 들고 온다).
+
+        요약은 창 안의 흔적을 **전부** 봐야 맞다. 상한으로 자르면 앞쪽 날의 사용 시간이 아무
+        표시 없이 줄어든다.
+        """
+        since = now - self.lookback
+        found: Dict[TraceKind, List[str]] = {}
+        for card in self.kinds:
+            if not card.active or card.reflect or card.digest is None:
+                continue
+            lines = card.digest(self.traces.recent(card.kind, since), since, now)
+            if lines:
+                found[card] = lines
+        return found
+
+    def _build_prompt(
+        self,
+        harvest: Dict[TraceKind, List[Trace]],
+        digests: Dict[TraceKind, List[str]],
+        now: datetime,
+    ) -> str:
         parts: List[str] = []
         for card, traces in harvest.items():
             lines = "\n".join(f"  {local(t.at):%m-%d %H:%M}  {t.text}" for t in traces)
             parts.append(f"[{card.label}] {len(traces)}건\n{lines}")
+        for card, days in digests.items():
+            lines = "\n".join(f"  {day}" for day in days)
+            parts.append(f"[{card.label} — 하루 요약] {len(days)}일\n{lines}")
 
         # 이름 난장판을 막는 자리. 기존 목록을 보여주지 않으면 같은 걸
         # 매번 새 이름으로 만든다.

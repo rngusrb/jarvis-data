@@ -14,7 +14,8 @@ from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
 from src.core.clock import local
 from src.core.metrics import Metric
-from src.core.models import Insight, ObservationCatalog, ObservationSource
+from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
+from src.core.traces import TraceKind
 
 
 @dataclass
@@ -169,3 +170,41 @@ class RecentValuesProvider:
         if not chunks:
             return None
         return ContextBlock(label=f"최근 {self.window.days}일 값", body="\n".join(chunks))
+
+
+class RecentTraces(Protocol):
+    def recent(
+        self, kind: str, since: datetime, limit: Optional[int] = None
+    ) -> Sequence[Trace]: ...
+
+
+@dataclass
+class TraceDigestProvider:
+    """하루 요약이 있는 흔적 종류(앱 사용)를 어제·오늘치로 보여준다.
+
+    흔적은 낱줄로는 맥락에 안 들어간다 — 하루 수백 줄이다. 카드가 들고 온 요약으로 접어서
+    넣는다. "어젯밤 늦게 잠들었다"는 신호 옆에 "새벽 두 시까지 맥을 썼다"가 있어야 말이 된다.
+
+    민감한 종류는 요약이 있어도 넣지 않는다. 반응·대화의 말은 텔레그램으로 나가는데, 거기서
+    민감한 걸 거르는 장치는 아직 없다(4단계).
+    """
+
+    source: RecentTraces
+    kinds: Sequence[TraceKind]
+    name: str = "trace_digest"
+    # 어제 하루와 오늘 지금까지. 요약이 창 앞에서 잘린 날을 빼서 두 줄 남짓이 된다.
+    window: timedelta = timedelta(days=2)
+
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        since = now - self.window
+        chunks: List[str] = []
+        for card in self.kinds:
+            if card.digest is None or not card.active or card.sensitive:
+                continue
+            days = card.digest(self.source.recent(card.kind, since), since, now)
+            if days:
+                chunks.append(f"- {card.label}:\n" + "\n".join(f"  {day}" for day in days))
+
+        if not chunks:
+            return None
+        return ContextBlock(label="최근 하루 요약", body="\n".join(chunks))

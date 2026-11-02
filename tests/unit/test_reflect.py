@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from src.brain.reflect import Reflector, _parse
 from src.core.beliefs import FORGET_AFTER, Belief, Status
@@ -98,6 +98,67 @@ def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
     assert isinstance(reasoner, ScriptedReasoner)
     assert "전세자금대출" in reasoner.prompts[-1]
     assert "Cursor" not in reasoner.prompts[-1]
+
+
+def test_folds_kinds_kept_out_of_reflection_into_day_digests(tmp_path: Path) -> None:
+    """앱 사용은 낱줄 대신 하루 요약으로 들어간다. 요약은 창 안의 흔적을 상한 없이 전부 본다."""
+    reflector = _build(tmp_path, GOOD)
+    reflector.per_kind_limit = 1
+    reflector.traces.write(
+        [
+            Trace(
+                source="mac_apps",
+                kind="mac_app",
+                text=f"Cursor {i}분",
+                at=NOW - timedelta(hours=i + 1),
+            )
+            for i in range(3)
+        ]
+    )
+    seen: List[tuple] = []
+
+    def digest(traces: Sequence[Trace], since: datetime, until: datetime) -> List[str]:
+        seen.append((len(traces), since, until))
+        return ["08-26(수) 09:00~23:00, 모두 3시간 — Cursor 3시간"]
+
+    app = TraceKind(
+        kind="mac_app", label="맥 앱 사용", collector="mac_apps", reflect=False, digest=digest
+    )
+    reflector.kinds = [WEB, app]
+
+    result = asyncio.run(reflector.run_once(NOW))
+
+    reasoner = reflector.reasoner
+    assert isinstance(reasoner, ScriptedReasoner)
+    assert "[맥 앱 사용 — 하루 요약] 1일" in reasoner.prompts[-1]
+    assert "Cursor 3시간" in reasoner.prompts[-1]
+    assert "Cursor 0분" not in reasoner.prompts[-1]
+    # 상한(1)에 잘리면 요약이 아무 표시 없이 줄어든다.
+    assert seen == [(3, NOW - timedelta(days=7), NOW)]
+    assert result.digested == 1
+
+
+def test_reflects_on_digests_alone(tmp_path: Path) -> None:
+    """웹 기록이 없는 주에도 앱 사용 요약만으로 회고가 돈다."""
+    db = tmp_path / "t.db"
+    traces = SQLiteTraceStore(db)
+    traces.write([Trace(source="mac_apps", kind="mac_app", text="Cursor 42분", at=NOW)])
+    app = TraceKind(
+        kind="mac_app",
+        label="맥 앱 사용",
+        collector="mac_apps",
+        reflect=False,
+        digest=lambda found, since, until: [f"{len(found)}줄"],
+    )
+    reasoner = ScriptedReasoner("[]")
+    reflector = Reflector(
+        reasoner=reasoner, traces=traces, beliefs=SQLiteBeliefStore(db), kinds=[WEB, app]
+    )
+
+    result = asyncio.run(reflector.run_once(NOW + timedelta(minutes=1)))
+
+    assert len(reasoner.prompts) == 1 and "1줄" in reasoner.prompts[0]
+    assert result.considered == 0 and result.digested == 1
 
 
 def test_shows_times_in_korean_time(tmp_path: Path) -> None:

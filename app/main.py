@@ -28,6 +28,7 @@ from src.brain.providers import (
     ObservationTrendProvider,
     RecentValuesProvider,
     SpeechHistoryProvider,
+    TraceDigestProvider,
 )
 from src.brain.reflect import Reflector
 from src.channels.base import Channel
@@ -180,6 +181,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 수집 "현황"만 알고 "값"을 모르면 자비스가 자기 데이터를 두고도
             # 판단을 못 한다. 실제로 그랬다.
             RecentValuesProvider(source=store, metrics=metrics.all()),
+            # 흔적은 낱줄로 못 넣는다. 하루 요약이 있는 종류(앱 사용)만 어제·오늘치로.
+            TraceDigestProvider(source=traces, kinds=trace_kinds.all()),
         ),
     )
 

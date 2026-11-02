@@ -7,14 +7,20 @@
 카드가 지표보다 얇다. 접기(Fold)도, 충돌 정책도 없다. 흔적은 평균 내지
 않고, 같은 흔적이 두 번 오면 그냥 무시하면 되기 때문이다.
 
-대신 지표에 없는 게 둘 있다 — `sensitive` 와 `reflect`.
+대신 지표에 없는 게 셋 있다 — `sensitive`, `reflect`, `digest`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import Dict, Iterable, List, Optional
+from datetime import datetime, timedelta
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
+
+from src.core.models import Trace
+
+# 창(since~until) 안의 흔적을 하루 한 줄로. 창 앞에서 잘린 날은 빼고(덜 쓴 날로 읽힌다),
+# until 이 든 날은 아직 끝나지 않은 날로 적는다. 하루가 언제 바뀌는지는 섹터가 정한다.
+Digest = Callable[[Sequence[Trace], datetime, datetime], List[str]]
 
 
 @dataclass(frozen=True)
@@ -37,8 +43,14 @@ class TraceKind:
     via: Optional[str] = None
     # 회고가 낱줄로 훑는가. 회고는 종류별 최근 줄을 프롬프트에 그대로 넣는데, 앱 사용
     # 구간처럼 하루 수백 줄인 흔적은 관심사가 아니라 잡음이 되고 토큰만 먹는다. 그런 건
-    # 하루 요약으로 접어서 따로 넣는다(계획 2단계).
+    # 아래 하루 요약으로 넣는다.
     reflect: bool = True
+    # 낱줄 대신 보여줄 하루 요약. 회고는 낱줄로 안 훑는 종류(reflect=False)에 이걸 넣고,
+    # 자비스의 맥락(반응·대화)은 이게 있는 종류를 어제·오늘치로 본다.
+    #
+    # **저장하지 않는다.** 볼 때마다 흔적에서 다시 접는다 — 흔적은 쌓이고 요약은 보는 방법이다.
+    # 섹터가 만든다. 플랫폼은 흔적의 메타 키(앱 이름, 쓴 시간)를 모른다.
+    digest: Optional[Digest] = None
 
     @property
     def active(self) -> bool:
