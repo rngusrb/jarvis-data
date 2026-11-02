@@ -113,6 +113,21 @@ SEARCH_HOSTS = {
     "github.com": "q",
 }
 
+# 검색 사이트에서 보통 페이지가 **아닌** 경로(첫 마디). 첫 화면, 검색어 없는 결과 화면,
+# 광고·이동용 주소다 — 이동용 주소는 목적지 방문이 따로 남는다. 그 밖은 보통 페이지다(유튜브
+# 영상, GitHub 저장소, 구글 지도). 2026-11-02 까지는 검색어가 없으면 다 버려서, 90일 방문
+# 26,990건 중 1,397건(GitHub 1,045, 유튜브 영상 179 …)이 흔적이 되지 못했다(JAR-020 리뷰).
+NOT_PAGES = {
+    "www.google.com": {"", "search", "webhp", "imghp", "url", "aclk", "a"},
+    "google.com": {"", "search", "webhp", "imghp", "url", "aclk", "a"},
+    "www.bing.com": {"", "search"},
+    "search.naver.com": {"", "search.naver", "p"},
+    "m.search.naver.com": {"", "search.naver", "p"},
+    "duckduckgo.com": {""},
+    "www.youtube.com": {"", "results"},
+    "github.com": {"", "search"},
+}
+
 # 흔적으로서 가치가 없는 것들. 저장은 다 하자는 방침이지만 이건 데이터가
 # 아니라 잡음이다 — 자기 서버 대시보드를 200번 새로고침한 기록 같은 것.
 SKIP_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "100.98.90.38", "100.65.255.109"}
@@ -138,8 +153,10 @@ def describe(url: str, title: str) -> Optional[str]:
         values = parse_qs(parsed.query).get(param)
         if values and values[0].strip():
             return f"검색: {unquote(values[0]).strip()}"
-        # 검색어 없는 구글 방문(그냥 홈)은 흔적이 아니다.
-        return None
+        if parsed.path.strip("/").split("/")[0] in NOT_PAGES[host]:
+            # 검색어 없는 첫 화면·결과 화면, 광고·이동용 주소는 흔적이 아니다.
+            return None
+        # 그 밖은 보통 페이지다. 아래로 내려가 제목으로 적는다.
 
     clean = title.strip()
     if not clean:

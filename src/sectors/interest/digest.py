@@ -27,10 +27,14 @@ logger = logging.getLogger(__name__)
 DAY_STARTS = time(5)
 # 이름으로 적는 앱 수. 나머지는 "그 외 n개"로 묶는다.
 TOP_APPS = 5
-# 웹: 많이 간 곳 몇 개, 최근 검색어 몇 개.
+# 웹: 많이 간 곳 몇 개, 최근 검색어 몇 개, 검색어 하나의 길이. 오류 메시지를 통째로 붙여 검색하면
+# 한 줄이 500자를 넘었다(리뷰 재현) — 맥락은 판단과 대화마다 붙는다.
 TOP_HOSTS = 5
 LAST_SEARCHES = 5
-SEARCH = "검색: "  # 크롬 수집기가 검색 흔적 앞에 붙이는 말
+SEARCH_CHARS = 40
+# 크롬 수집기(`collectors/chrome_history.py` 의 describe)가 검색 흔적 앞에 붙이는 말. 둘이 어긋나면
+# 검색이 조용히 보통 페이지로 세어진다 — 시험이 둘을 묶는다.
+SEARCH = "검색: "
 # 시간대. 하루가 시작하는 순서대로. 수집기가 구간을 정각마다 끊어서 시작 시각으로 나누면 정확하다.
 # 새벽은 하루가 바뀌는 시각까지다 — 5시를 따로 들고 있으면 한쪽만 바뀌어 순서가 조용히 어긋난다.
 PARTS: Tuple[Tuple[str, int, int], ...] = (
@@ -84,7 +88,9 @@ def app_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
 class _WebDay:
     first: datetime
     last: datetime
-    pages: int = 0
+    # 방문 수. 수집기가 같은 30분 칸의 같은 페이지를 한 줄로 접고 몇 번 봤는지 meta.visits 에 남긴다
+    # — 관심의 강도라 줄 수가 아니라 방문 수로 센다(리뷰: 스무 번 새로고침한 곳이 1 로 세어졌다).
+    visits: int = 0
     devices: Counter = field(default_factory=Counter)
     parts: Counter = field(default_factory=Counter)
     hosts: Counter = field(default_factory=Counter)
@@ -98,23 +104,42 @@ def web_days(traces: Sequence[Trace], since: datetime, until: datetime) -> List[
     보인다. 검색어까지 넣는다 — 민감하지만 실험 단계라 자비스가 보게 한다(2026-11-02 사용자 결정).
     """
     days: Dict[date, _WebDay] = {}
+    hostless = 0
     for trace in sorted(traces, key=lambda t: t.at):
         when = local(trace.at)
         day = _day_of(when)
         if day not in days:
             days[day] = _WebDay(first=when, last=when)
         d = days[day]
+        seen = _visits(trace)
         d.last = max(d.last, when)
-        d.pages += 1
-        d.devices[str(trace.meta.get("device") or "기기 모름")] += 1
-        d.parts[_part(when.hour)] += 1
+        d.visits += seen
+        d.devices[str(trace.meta.get("device") or "기기 모름")] += seen
+        d.parts[_part(when.hour)] += seen
         if trace.text.startswith(SEARCH):
-            term = trace.text[len(SEARCH) :].strip()
+            term = _short(trace.text[len(SEARCH) :])
             if term and (not d.searches or d.searches[-1] != term):
                 d.searches.append(term)
         elif trace.meta.get("host"):
-            d.hosts[str(trace.meta["host"])] += 1
+            d.hosts[str(trace.meta["host"])] += seen
+        else:
+            hostless += 1
+    if hostless:
+        logger.warning("웹 방문 %d줄은 주소가 없어 많이 간 곳에서 뺐다", hostless)
     return _render(days, since, until, _web_line)
+
+
+def _visits(trace: Trace) -> int:
+    try:
+        return max(1, int(trace.meta.get("visits", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _short(term: str) -> str:
+    """검색어 한 줄. 공백(줄바꿈 포함)을 하나로 접고 SEARCH_CHARS 자에서 자른다."""
+    folded = " ".join(term.split())
+    return folded if len(folded) <= SEARCH_CHARS else folded[: SEARCH_CHARS - 1] + "…"
 
 
 def _render(
@@ -205,7 +230,7 @@ def _line(day: date, d: _Day, ongoing: bool) -> str:
 def _web_line(day: date, d: _WebDay, ongoing: bool) -> str:
     devices = " · ".join(f"{name} {n}" for name, n in d.devices.most_common())
     parts = " · ".join(f"{name} {d.parts[name]}" for name, _, _ in PARTS if d.parts[name])
-    line = f"{_head(day, d.first, d.last, ongoing)}, {d.pages}곳({devices}) [{parts}]"
+    line = f"{_head(day, d.first, d.last, ongoing)}, 방문 {d.visits}번({devices}) [{parts}]"
     tails = []
     if d.hosts:
         ranked = sorted(d.hosts.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_HOSTS]
