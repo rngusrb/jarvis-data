@@ -106,6 +106,7 @@ tests:
   - tests/integration/test_ingest.py
   - tests/integration/test_ingest_spans.py
   - tests/integration/test_ingest_samples.py
+  - tests/unit/test_daily_loop.py
 ```
 
 ```bash
@@ -118,5 +119,6 @@ python scripts/harness.py src/runtime/
 
 | 파일 | 책임 |
 |------|------|
+| `daily.py` | 하루 한 번 도는 일(회고). 정한 시각(한국 시간), 꺼져 있어 놓쳤으면 켜진 뒤 따라잡기, 실패는 30분 뒤 다시(회차당 세 번). "돌았나"는 일이 남긴 기록(성공만)으로 본다 |
 | `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금. 관측치 트리거 → 사건 트리거 → 감시 순서, 트리거 하나가 터져도 나머지는 돈다 |
 | `ingest.py` | 수신구(`/ingest`, `/ingest/spans`, `/ingest/samples`, `/ingest/traces`) + `/health`. 사건 카드가 있는 종류는 표본 문으로 와도 사건 표에 담고, 좌표가 있으면 장소에 붙인다 |

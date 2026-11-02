@@ -1,7 +1,7 @@
 """회고 엔진.
 
-LLM 응답은 가짜로 두고 **그 주변의 규율**만 본다 — 근거 강제, 이름 난장판
-방지, 시든 믿음을 프롬프트에서 빼는 것.
+LLM 응답은 가짜로 두고 **그 주변의 규율**만 본다 — 근거는 보여준 번호로만, 이름 난장판
+방지(나무를 다 보여준다), 오래 잠잠한 주제를 프롬프트 전에 접는 것, 못 읽은 응답은 시끄럽게.
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from src.brain.reflect import Reflector, _parse
-from src.core.beliefs import FORGET_AFTER, Belief, Status
+import pytest
+
+from src.brain.reflect import ReflectionFailed, Reflector, _parse
 from src.core.models import Trace
+from src.core.topics import RETIRE_AFTER, Op, plan
 from src.core.traces import TraceKind
-from src.storage.beliefs import SQLiteBeliefStore
+from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
@@ -33,54 +35,96 @@ class ScriptedReasoner:
         return self.reply
 
 
+def _web(text: str, at: datetime) -> Trace:
+    return Trace(source="mac_chrome", kind="web_visit", text=text, at=at)
+
+
 def _build(tmp_path: Path, reply: str) -> Reflector:
+    """새 DB 라 흔적 번호는 1, 2 다."""
     db = tmp_path / "t.db"
     traces = SQLiteTraceStore(db)
     traces.write(
         [
-            Trace(source="mac_chrome", kind="web_visit", text=t, at=NOW - timedelta(hours=i))
+            _web(t, NOW - timedelta(hours=2 - i))
             for i, t in enumerate(["검색: 전세자금대출 금리", "검색: 버팀목 자격"])
         ]
     )
     return Reflector(
         reasoner=ScriptedReasoner(reply),
         traces=traces,
-        beliefs=SQLiteBeliefStore(db),
+        topics=SQLiteTopicStore(db),
         kinds=[WEB],
     )
 
 
-GOOD = """[
-  {"kind": "관심사:주거", "value": "전세자금대출을 알아보는 중",
-   "confidence": 0.8,
-   "evidence": ["검색: 전세자금대출 금리", "검색: 버팀목 자격"]}
-]"""
-
-
-def test_learns_a_belief_from_traces(tmp_path: Path) -> None:
-    result = asyncio.run(_build(tmp_path, GOOD).run_once(NOW))
-    assert result.considered == 2
-    assert [b.kind for b in result.learned] == ["관심사:주거"]
-
-
-def test_rejects_a_belief_without_enough_evidence(tmp_path: Path) -> None:
-    """근거를 실제보다 세게 말하는 게 이 방식의 주된 실패 모양이다."""
-    thin = '[{"kind": "관심사:주거", "value": "이사 준비 중", "confidence": 0.9, "evidence": []}]'
-    result = asyncio.run(_build(tmp_path, thin).run_once(NOW))
-    assert result.learned == []
-    assert "근거가 0개" in result.skipped[0]
-
-
-def test_shows_existing_kinds_to_prevent_name_sprawl(tmp_path: Path) -> None:
-    """기존 목록을 안 보여주면 같은 걸 매번 새 이름으로 만든다."""
-    reflector = _build(tmp_path, GOOD)
-    asyncio.run(reflector.run_once(NOW))
-    asyncio.run(reflector.run_once(NOW + timedelta(days=1)))
-
+def _prompt(reflector: Reflector) -> str:
     reasoner = reflector.reasoner
     assert isinstance(reasoner, ScriptedReasoner)
-    assert "관심사:주거" in reasoner.prompts[-1]
-    assert "위 kind를 그대로 써라" in reasoner.prompts[-1]
+    return reasoner.prompts[-1]
+
+
+GOOD = """{"ops": [
+  {"op": "create", "ref": "새1", "name": "주거", "evidence": [1, 2], "reason": "전세 대출"},
+  {"op": "note", "topic": "새1", "text": "전세자금대출 조건을 알아보는 중"}
+]}"""
+
+
+def test_grows_a_topic_from_traces(tmp_path: Path) -> None:
+    reflector = _build(tmp_path, GOOD)
+    result = asyncio.run(reflector.run_once(NOW))
+
+    assert result.considered == 2 and result.notes == 1
+    assert result.applied == ["새 주제 #1 주거 (근거 2) — 전세 대출"]
+    assert "#1 " in _prompt(reflector) and "#2 " in _prompt(reflector)
+    assert reflector.topics.last_run() == NOW
+
+
+def test_a_thin_topic_is_rejected_and_reported(tmp_path: Path) -> None:
+    """근거를 실제보다 세게 말하는 게 이 방식의 주된 실패 모양이다."""
+    thin = '{"ops": [{"op": "create", "name": "주거", "evidence": [1]}]}'
+    result = asyncio.run(_build(tmp_path, thin).run_once(NOW))
+    assert result.applied == []
+    assert "근거가 1개뿐" in result.rejected[0]
+
+
+def test_evidence_must_be_a_trace_in_the_prompt(tmp_path: Path) -> None:
+    """창 밖 흔적(번호 3)은 실제로 있어도 이번에 보여주지 않았다 — 근거가 될 수 없다."""
+    reflector = _build(tmp_path, '{"ops": [{"op": "create", "name": "주거", "evidence": [1, 3]}]}')
+    reflector.traces.write([_web("검색: 오래된 것", NOW - timedelta(days=30))])
+    result = asyncio.run(reflector.run_once(NOW))
+    assert result.applied == [] and "보여주지 않은 흔적 번호 1개" in result.notices[0]
+
+
+def test_shows_the_tree_to_prevent_name_sprawl(tmp_path: Path) -> None:
+    """나무를 안 보여주면 같은 걸 매번 새 이름으로 만든다."""
+    reflector = _build(tmp_path, GOOD)
+    asyncio.run(reflector.run_once(NOW))
+    reflector.traces.write([_web("검색: 전세 계약", NOW + timedelta(hours=20))])
+    asyncio.run(reflector.run_once(NOW + timedelta(days=1)))
+
+    prompt = _prompt(reflector)
+    assert "#1 주거 — 처음 보임 · 근거 2개(1일)" in prompt
+    assert "메모 08-27: 전세자금대출 조건을 알아보는 중" in prompt
+    assert "근거 #2 08-27 20:00 검색: 버팀목 자격" in prompt
+
+
+def test_attached_traces_are_not_offered_again(tmp_path: Path) -> None:
+    """주제에 붙은 흔적은 나무 쪽(근거 예)에만 나온다. 매일 다시 보여주면 토큰만 먹는다."""
+    reflector = _build(tmp_path, GOOD)
+    asyncio.run(reflector.run_once(NOW))
+    reflector.traces.write([_web("검색: 전세 계약", NOW + timedelta(hours=20))])
+    result = asyncio.run(reflector.run_once(NOW + timedelta(days=1)))
+
+    assert result.considered == 1
+    assert "[웹 방문 — 아직 주제에 안 붙은 것] 1건" in _prompt(reflector)
+
+
+def test_does_not_see_traces_after_now(tmp_path: Path) -> None:
+    """되감기가 그날 아침에 아직 없던 흔적을 보면 안 된다."""
+    reflector = _build(tmp_path, '{"ops": []}')
+    reflector.traces.write([_web("검색: 내일 것", NOW + timedelta(hours=1))])
+    result = asyncio.run(reflector.run_once(NOW))
+    assert result.considered == 2 and "내일 것" not in _prompt(reflector)
 
 
 def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
@@ -94,10 +138,8 @@ def test_does_not_read_kinds_kept_out_of_reflection(tmp_path: Path) -> None:
 
     asyncio.run(reflector.run_once(NOW))
 
-    reasoner = reflector.reasoner
-    assert isinstance(reasoner, ScriptedReasoner)
-    assert "전세자금대출" in reasoner.prompts[-1]
-    assert "Cursor" not in reasoner.prompts[-1]
+    assert "전세자금대출" in _prompt(reflector)
+    assert "Cursor" not in _prompt(reflector)
 
 
 def test_folds_kinds_kept_out_of_reflection_into_day_digests(tmp_path: Path) -> None:
@@ -128,14 +170,14 @@ def test_folds_kinds_kept_out_of_reflection_into_day_digests(tmp_path: Path) -> 
 
     result = asyncio.run(reflector.run_once(NOW))
 
-    reasoner = reflector.reasoner
-    assert isinstance(reasoner, ScriptedReasoner)
-    assert "[맥 앱 사용 — 하루 요약] 1일" in reasoner.prompts[-1]
-    assert "Cursor 3시간" in reasoner.prompts[-1]
-    assert "Cursor 0분" not in reasoner.prompts[-1]
+    assert "[맥 앱 사용 — 하루 요약] 1일" in _prompt(reflector)
+    assert "Cursor 3시간" in _prompt(reflector)
+    assert "Cursor 0분" not in _prompt(reflector)
     # 상한(1)에 잘리면 요약이 아무 표시 없이 줄어든다.
     assert seen == [(3, NOW - timedelta(days=7), NOW)]
     assert result.digested == 1
+    # 낱줄 상한은 최신 것부터 채운다.
+    assert result.considered == 1 and "버팀목" in _prompt(reflector)
 
 
 def test_kinds_read_line_by_line_ignore_their_digest(tmp_path: Path) -> None:
@@ -152,9 +194,7 @@ def test_kinds_read_line_by_line_ignore_their_digest(tmp_path: Path) -> None:
     ]
     asyncio.run(reflector.run_once(NOW))
 
-    reasoner = reflector.reasoner
-    assert isinstance(reasoner, ScriptedReasoner)
-    assert "전세자금대출" in reasoner.prompts[-1] and "요약 한 줄" not in reasoner.prompts[-1]
+    assert "전세자금대출" in _prompt(reflector) and "요약 한 줄" not in _prompt(reflector)
     assert called == []
 
 
@@ -170,9 +210,9 @@ def test_reflects_on_digests_alone(tmp_path: Path) -> None:
         reflect=False,
         digest=lambda found, since, until: [f"{len(found)}줄"],
     )
-    reasoner = ScriptedReasoner("[]")
+    reasoner = ScriptedReasoner('{"ops": []}')
     reflector = Reflector(
-        reasoner=reasoner, traces=traces, beliefs=SQLiteBeliefStore(db), kinds=[WEB, app]
+        reasoner=reasoner, traces=traces, topics=SQLiteTopicStore(db), kinds=[WEB, app]
     )
 
     result = asyncio.run(reflector.run_once(NOW + timedelta(minutes=1)))
@@ -181,105 +221,79 @@ def test_reflects_on_digests_alone(tmp_path: Path) -> None:
     assert result.considered == 0 and result.digested == 1
 
 
+def test_nothing_to_read_is_still_a_run(tmp_path: Path) -> None:
+    """훑을 게 없는 날도 "돌았다" — 매일 루프가 그날 다시 돌지 않게."""
+    db = tmp_path / "t.db"
+    reasoner = ScriptedReasoner('{"ops": []}')
+    reflector = Reflector(
+        reasoner=reasoner, traces=SQLiteTraceStore(db), topics=SQLiteTopicStore(db), kinds=[WEB]
+    )
+    asyncio.run(reflector.run_once(NOW))
+    assert reasoner.prompts == [] and reflector.topics.last_run() == NOW
+
+
 def test_shows_times_in_korean_time(tmp_path: Path) -> None:
     """UTC 그대로 보여주면 낮 방문이 새벽 방문으로 읽힌다."""
     reflector = _build(tmp_path, GOOD)
     reflector.traces.write(
-        [
-            Trace(
-                source="mac_chrome",
-                kind="web_visit",
-                text="점심에 본 페이지",
-                at=datetime(2026, 8, 27, 3, 56, tzinfo=timezone.utc),
-            )
-        ]
+        [_web("점심에 본 페이지", datetime(2026, 8, 27, 3, 56, tzinfo=timezone.utc))]
     )
 
     asyncio.run(reflector.run_once(datetime(2026, 8, 27, 15, 30, tzinfo=timezone.utc)))
 
-    reasoner = reflector.reasoner
-    assert isinstance(reasoner, ScriptedReasoner)
-    assert "08-27 12:56  점심에 본 페이지" in reasoner.prompts[-1]
+    assert "08-27 12:56  점심에 본 페이지" in _prompt(reflector)
     # UTC 로는 아직 27일이지만 한국은 28일 새벽이다.
-    assert "오늘은 2026-08-28 이다" in reasoner.prompts[-1]
+    assert "지금: 2026-08-28(금) 00:30" in _prompt(reflector)
 
 
-def test_forgets_before_it_prompts(tmp_path: Path) -> None:
-    """시든 믿음이 프롬프트에 남으면 모델이 그걸 근거로 스스로 되살린다."""
-    reflector = _build(tmp_path, "[]")
-    reflector.beliefs.observe(
-        Belief(
-            kind="관심사:죽은것",
-            value="옛날 관심사",
-            confidence=0.9,
-            first_seen=NOW,
-            last_seen=NOW,
-            evidence=("옛날 검색",),
+def test_retires_long_quiet_topics_before_it_prompts(tmp_path: Path) -> None:
+    """오래 조용한 주제를 그대로 보여주면 모델이 거기에 아무거나 붙여 되살린다."""
+    reflector = _build(tmp_path, '{"ops": []}')
+    reflector.topics.apply(
+        plan(
+            reflector.topics.load(), [Op("create", name="옛 관심사", evidence=(1, 2))], {1, 2}, NOW
         ),
         NOW,
     )
-    much_later = NOW + FORGET_AFTER + timedelta(days=1)
-    # 그때도 볼 흔적이 있어야 프롬프트가 만들어진다. 흔적이 없으면 회고는
-    # 모델을 부르지도 않는데, 그건 이 테스트가 보려는 게 아니다.
-    reflector.traces.write(
-        [Trace(source="mac_chrome", kind="web_visit", text="검색: 요즘 것", at=much_later)]
-    )
-    result = asyncio.run(reflector.run_once(much_later))
+    later = NOW + RETIRE_AFTER + timedelta(days=1)
+    reflector.traces.write([_web("검색: 요즘 것", later - timedelta(hours=1))])
 
-    assert result.forgotten == ["관심사:죽은것"]
-    reasoner = reflector.reasoner
-    assert isinstance(reasoner, ScriptedReasoner)
-    assert "관심사:죽은것" not in reasoner.prompts[-1]
+    result = asyncio.run(reflector.run_once(later))
+
+    assert result.retired == [f"#1 옛 관심사 접음 — {RETIRE_AFTER.days}일 동안 근거가 없다"]
+    assert "옛 관심사" not in _prompt(reflector)
+
+
+def test_quiet_topics_are_listed_so_a_return_is_not_a_new_topic(tmp_path: Path) -> None:
+    reflector = _build(tmp_path, '{"ops": []}')
+    reflector.topics.apply(
+        plan(reflector.topics.load(), [Op("create", name="야구", evidence=(1, 2))], {1, 2}, NOW),
+        NOW,
+    )
+    later = NOW + timedelta(days=40)
+    reflector.traces.write([_web("검색: 한국시리즈", later - timedelta(hours=1))])
+
+    asyncio.run(reflector.run_once(later))
+
+    assert "[잠잠한 주제]" in _prompt(reflector) and "#1 야구 (마지막 08-27)" in _prompt(reflector)
+
+
+def test_an_unreadable_reply_fails_loudly_and_is_recorded(tmp_path: Path) -> None:
+    """못 읽은 응답을 "바꿀 것 없음"으로 치면 그날 회고가 조용히 사라진다."""
+    reflector = _build(tmp_path, "생각해보니 잘 모르겠다")
+    with pytest.raises(ReflectionFailed):
+        asyncio.run(reflector.run_once(NOW))
+    assert reflector.topics.last_run() is None
 
 
 def test_parse_tolerates_fences_and_chatter() -> None:
     """완벽한 형식을 요구하는 것보다 관대하게 읽는 쪽이 실제로 잘 돈다."""
-    messy = '알겠습니다.\n```json\n[{"kind": "a", "value": "b"}]\n```\n이상입니다.'
-    assert _parse(messy) == [{"kind": "a", "value": "b"}]
-    assert _parse("설명만 하고 배열이 없음") == []
-    assert _parse("") == []
-
-
-SPLIT = """[
-  {"kind": "관심사:개발", "value": "RAG 공부",
-   "evidence": ["검색: bm25 vs bge m3", "임베딩 방식 - Claude"]},
-  {"kind": "관심사:개발", "value": "코딩 도구 비교",
-   "evidence": ["Claude Code 문서"]}
-]"""
-
-
-def test_same_kind_in_one_reply_is_merged(tmp_path: Path) -> None:
-    """실제 사고의 재현.
-
-    모델이 "관심사:개발"을 네 조각으로 내놨다. 저장소는 kind가 기본키라
-    서로 덮어썼고, 값은 마지막 것이 남고 근거는 전부 합쳐져 **짝이
-    어긋났다** — "코딩 어시스턴트 비교"에 농수산물 가격이 근거로 붙었다.
-    """
-    result = asyncio.run(_build(tmp_path, SPLIT).run_once(NOW))
-
-    assert len(result.learned) == 1
-    learned = result.learned[0]
-    # 값은 근거가 두꺼운 쪽을 따른다.
-    assert learned.value == "RAG 공부"
-    assert learned.evidence == ("검색: bm25 vs bge m3", "임베딩 방식 - Claude", "Claude Code 문서")
-
-
-def test_one_run_cannot_confirm_itself(tmp_path: Path) -> None:
-    """후보→확정은 "나중에 또 나왔다"는 뜻이어야 한다."""
-    result = asyncio.run(_build(tmp_path, SPLIT).run_once(NOW))
-    assert result.learned[0].status is Status.CANDIDATE
-
-
-def test_repeated_evidence_counts_once(tmp_path: Path) -> None:
-    """같은 검색을 네 번 했다고 근거가 네 개가 되면 확신이 부풀려진다.
-
-    반복 자체는 신호지만(못 알아냈다는 뜻이다) 그건 value 가 말할 일이다.
-    """
-    repeated = """[{"kind": "관심사:일상", "value": "애플워치 워키토키를 못 알아냄",
-      "evidence": ["검색: 애플워치 워키토키 사용법", "검색: 애플워치 워키토키 사용법",
-                   "검색: 애플워치 워키토키 사용법", "검색: 애플워치 워키토키 켜기"]}]"""
-    result = asyncio.run(_build(tmp_path, repeated).run_once(NOW))
-    assert result.learned[0].evidence == (
-        "검색: 애플워치 워키토키 사용법",
-        "검색: 애플워치 워키토키 켜기",
+    messy = (
+        '알겠습니다.\n```json\n{"ops": [{"op": "attach", "topic": "#3", "evidence": ["12", 13]}]}'
+        "\n```"
     )
+    assert _parse(messy) == [Op("attach", topic=3, evidence=(12, 13))]
+    assert _parse('[{"op": "note", "topic": null, "text": "a"}]') == [Op("note", text="a")]
+    assert _parse('{"ops": []}') == []
+    assert _parse("설명만 하고 JSON 이 없음") is None
+    assert _parse("") is None

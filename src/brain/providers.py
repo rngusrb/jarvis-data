@@ -1,6 +1,6 @@
 """실제 맥락 제공자들.
 
-지금은 이미 손에 있는 정보(관측치 추이, 최근 발화)만 쓴다. 캘린더 파서와
+지금은 이미 손에 있는 정보(관측치 추이, 최근 발화, 흔적 요약, 주제 나무)만 쓴다. 캘린더 파서와
 저장소가 생기면 ScheduleProvider, ProfileProvider 같은 게 여기 늘어난다.
 """
 
@@ -8,14 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Optional, Protocol, Sequence
+from typing import Dict, List, Optional, Protocol, Sequence
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
 from src.core.clock import local
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
+from src.core.topics import RECENT_DAYS, Ground, Tree, Trend, standings
 from src.core.traces import TraceKind
+from src.storage.topics import Note
 
 
 @dataclass
@@ -212,3 +214,47 @@ class TraceDigestProvider:
         if not chunks:
             return None
         return ContextBlock(label="최근 하루 요약", body="\n".join(chunks))
+
+
+class TopicSource(Protocol):
+    def load(self) -> Tree: ...
+
+    def grounds(self) -> List[Ground]: ...
+
+    def latest_notes(self, per_topic: int) -> Dict[Optional[int], List[Note]]: ...
+
+
+# 맥락에 넣는 주제. 처음 보인 것(근거가 하루뿐)은 옛 "후보"다 — 한 번 검색해본 것까지 "이 사람의
+# 관심사"라고 넣으면 자비스는 스쳐간 호기심을 붙들고 늘어지는 비서가 된다. 시드는 것도 뺀다.
+AWAKE = (Trend.RISING, Trend.STEADY)
+
+
+@dataclass
+class TopicProvider:
+    """요즘 관심사 — 주제 나무에서 뜨는 중이거나 꾸준한 주제를, 경로와 최근 메모로.
+
+    회고가 매일 가꾸는 나무를 반응·대화가 읽는 자리다. 옛 믿음은 대화만 읽었고 먼저 말 거는 쪽은
+    안 읽었다. "어젯밤 늦게 잠들었다" 옆에 "요즘 자소서를 쓴다"가 있어야 말이 사람 얘기가 된다.
+    """
+
+    topics: TopicSource
+    name: str = "topics"
+
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        board = [
+            s for s in standings(self.topics.load(), self.topics.grounds(), now) if s.trend in AWAKE
+        ]
+        if not board:
+            return None
+        notes = self.topics.latest_notes(1)
+        lines: List[str] = []
+        for s in board:
+            line = (
+                f"- {' › '.join(s.path)} — {s.trend.value}"
+                f"(최근 {RECENT_DAYS}일 중 {s.recent_days}일)"
+            )
+            latest = notes.get(s.node.id)
+            if latest:
+                line += f": {latest[0].text}"
+            lines.append(line)
+        return ContextBlock(label="요즘 관심사(주제 나무)", body="\n".join(lines))

@@ -6,7 +6,7 @@
 
 대신 싼 길과 비싼 길을 가른다.
 
-    /status  /beliefs  /sleep     DB 조회만. LLM 을 안 부른다
+    /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
     그 밖의 말                     맥락 조립 → LLM
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
@@ -25,11 +25,11 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence
 from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
 from src.channels.base import Incoming
-from src.core.beliefs import Status
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
-from src.storage.beliefs import SQLiteBeliefStore
+from src.core.topics import Trend, standings
 from src.storage.conversation import SQLiteConversation
+from src.storage.topics import SQLiteTopicStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,19 @@ SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 사용자가 너에게 
 - 숫자를 나열하지 말고 그래서 어떻다는 것을 말한다.
 - 사용자가 네 판단을 부정하면 받아들인다. 우기지 않는다."""
 
+MARKS = {
+    Trend.RISING: "▲",
+    Trend.STEADY: "●",
+    Trend.NEW: "○",
+    Trend.FADING: "▽",
+    Trend.QUIET: "·",
+}
+
 
 @dataclass
 class Conversationalist:
     reasoner: Reasoner
-    beliefs: SQLiteBeliefStore
+    topics: SQLiteTopicStore
     catalog: ObservationCatalog
     source: ObservationSource
     history: SQLiteConversation
@@ -59,7 +67,9 @@ class Conversationalist:
     def __post_init__(self) -> None:
         self.commands = {
             "/status": self._status,
-            "/beliefs": self._beliefs,
+            "/topics": self._topics,
+            # 주제 나무 전에는 믿음이었다. 손에 익은 명령을 버리지 않는다.
+            "/beliefs": self._topics,
             "/sleep": self._sleep,
             "/help": self._help,
             "/start": self._help,
@@ -85,7 +95,7 @@ class Conversationalist:
             "뭐든 물어봐. 명령어도 있어.\n"
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
-            "/beliefs 내가 너에 대해 아는 것"
+            "/topics  내가 너에 대해 아는 것(주제 나무)"
         )
 
     def _status(self, now: datetime) -> str:
@@ -111,15 +121,17 @@ class Conversationalist:
         body = "\n".join(f"{local(o.at):%m-%d}  {o.value:.1f}시간" for o in recent)
         return f"최근 {len(recent)}번 평균 {avg:.1f}시간.\n{body}"
 
-    def _beliefs(self, now: datetime) -> str:
-        known = self.beliefs.all()
-        if not known:
+    def _topics(self, now: datetime) -> str:
+        board = standings(self.topics.load(), self.topics.grounds(), now)
+        if not board:
             return "아직 아는 게 없어. 흔적이 더 쌓여야 해."
         lines = []
-        for b in known:
-            days = (now - b.first_seen).days
-            mark = {Status.CONFIRMED: "●", Status.CANDIDATE: "○", Status.FADING: "·"}[b.aged(now)]
-            lines.append(f"{mark} {b.kind} ({days}일째)\n   {b.value}")
+        for s in board:
+            pad = "  " * s.depth
+            lines.append(
+                f"{pad}{MARKS[s.trend]} {s.node.name} — {s.trend.value}"
+                f" (근거 {s.count} · {s.days}일)"
+            )
         return "\n".join(lines)
 
     # ── 비싼 길 ──────────────────────────────────────
@@ -127,10 +139,7 @@ class Conversationalist:
     async def _think(self, text: str, now: datetime) -> str:
         parts: List[str] = []
 
-        known = self.beliefs.active(now)
-        if known:
-            parts.append("[내가 아는 것]\n" + "\n".join(f"  {b.kind} = {b.value}" for b in known))
-
+        # 요즘 관심사(주제 나무)는 맥락 제공자가 넣는다 — 먼저 말 거는 쪽과 같은 것을 본다.
         # 신호 없이 맥락을 조립한다. 가짜 Insight 를 만들어 넘기던 때가
         # 있었는데, 그 가짜는 observations 가 비어서 추이 제공자가 침묵했고
         # 자비스가 "데이터 값이 없어"라고 답했다. 타입을 속이면 거짓말이

@@ -76,10 +76,22 @@ class SQLiteTraceStore:
             )
             return conn.total_changes - before
 
-    def recent(self, kind: str, since: datetime, limit: Optional[int] = None) -> Sequence[Trace]:
-        """`limit` 은 최신 것부터 자른다 — 오래된 걸 남기고 새 걸 버리면 안 된다."""
-        sql = "SELECT source, kind, at, text, meta FROM traces WHERE kind = ? AND at >= ?"
+    def recent(
+        self,
+        kind: str,
+        since: datetime,
+        limit: Optional[int] = None,
+        until: Optional[datetime] = None,
+    ) -> Sequence[Trace]:
+        """`limit` 은 최신 것부터 자른다 — 오래된 걸 남기고 새 걸 버리면 안 된다.
+
+        `until` 은 그 순간까지(포함). 회고 되감기가 그날 아침에 아직 없던 흔적을 보면 안 된다.
+        """
+        sql = "SELECT source, kind, at, text, meta, id FROM traces WHERE kind = ? AND at >= ?"
         params: List[Any] = [kind, stamp(since)]
+        if until is not None:
+            sql += " AND at <= ?"
+            params.append(stamp(until))
         if limit is not None:
             sql += " ORDER BY at DESC LIMIT ?"
             params.append(limit)
@@ -112,4 +124,5 @@ def _to_trace(row: Sequence[Any]) -> Trace:
         at=datetime.fromisoformat(str(row[2])),
         text=str(row[3]),
         meta=json.loads(row[4]) if row[4] else {},
+        id=int(row[5]),
     )
