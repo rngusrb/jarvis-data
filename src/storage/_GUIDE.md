@@ -110,6 +110,6 @@ python scripts/harness.py src/storage/
 | `traces.py` | 흔적 저장소. 중복은 조용히 무시(수집기가 겹쳐 읽는 게 정상) |
 | `conversation.py` | 대화 기록 + 폴링 커서. 삽입 순서로 정렬한다 |
 | `beliefs.py` | 믿음 저장소. kind가 기본키 — 쌓이지 않고 **갱신**된다 |
-| `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC |
+| `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC. 받은 때는 처음 받은 때(11-02 에 옮긴 옛 위치 74건은 모름 — 비어 있다) |
 | `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면(옮기는 중) 늦은 쪽을 쓰고 경고를 남긴다 |
 | `places.py` | 장소 저장소. 장소 없는 좌표 사건을 붙인다(`assign_new`, 쓰기 잠금 먼저) |
