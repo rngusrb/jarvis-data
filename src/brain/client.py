@@ -135,6 +135,18 @@ class VLLMClient:
             )
             return ""
 
+        if choice.get("finish_reason") == "length":
+            # 답을 쓰다가 max_tokens 에 걸렸다. 내용은 돌려주되(부르는 쪽이 온전한 앞부분을 건질
+            # 수 있다) 잘렸다는 건 남긴다. 안 남기면 부르는 쪽엔 "형식이 깨졌다"로만 보인다 —
+            # 회고 되감기 87일 중 3일이 "JSON 을 못 찾았다"로 실패했는데 원인은 이 한도였다(11-02).
+            usage = data.get("usage") or {}
+            logger.warning(
+                "모델 답이 max_tokens(%d)에서 잘렸다 — 받은 %d자, 답 토큰 %s",
+                self._max_tokens,
+                len(content),
+                usage.get("completion_tokens"),
+            )
+
         # reasoning-parser가 없는 서버를 대비한 안전망. 파서가 붙어 있으면 no-op이다.
         return strip_reasoning(content)
 

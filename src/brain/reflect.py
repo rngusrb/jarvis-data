@@ -104,6 +104,8 @@ class Reflection:
     # 프롬프트 글자 수와, 글자 상한 때문에 못 보여준 흔적 줄 수.
     prompt_chars: int = 0
     trimmed: int = 0
+    # 응답이 끝까지 안 와서(길이 한도) 온전한 앞부분 연산만 적용했나.
+    cut: bool = False
     # 적용한 변경, 사람이 읽는 한 줄씩.
     applied: List[str] = field(default_factory=list)
     notes: int = 0
@@ -122,19 +124,17 @@ class Reflector:
     # 한 번에 훑는 기간. 매일 돌지만 하루치만 보면 하루 한 번씩 사흘 나온 관심사를 못 알아본다 —
     # 주제에 안 붙은 흔적은 일주일 동안 다시 보여준다.
     lookback: timedelta = timedelta(days=7)
-    # 종류**별** 흔적 상한이다 — 프롬프트 전체가 아니다. vLLM 은 프롬프트와 응답 상한
-    # (8,192)의 합이 모델 한도 65,536 을 넘으면 거절하므로 프롬프트 몫은 약 5.7만 토큰이다.
-    # 2026-10-30 실측: 웹 기록 일주일 947줄이 32,455 토큰(줄당 약 34). 지금 회고 종류는 웹 하나라
-    # 1,000줄(약 3.4만 + 번호)이 들어간다. 회고 종류가 늘면 합이 넘으니 다시 잰다 — 넘으면 회고가
-    # 400 으로 죽는다(조용히 잘리지는 않는다). 하루 요약에는 이 상한을 걸지 않는다.
+    # 종류**별** 흔적 줄 상한. 프롬프트 전체는 아래 글자 상한이 맡는다. 하루 요약에는 걸지 않는다.
     per_kind_limit: int = 1000
     # 프롬프트 글자 상한. 나무(주제마다 메모·근거 예)는 주제 수만큼 자라므로, 흔적 줄은 나무를
-    # 넣고 남은 몫을 최신 것부터 채운다. 되감기 실측으로 줄당 약 60자, 0.6 토큰/자 안팎 —
-    # 5.7만 토큰 몫에 여유를 두고 8만 자. 줄을 덜 보여주면 경고로 남긴다(조용히 잘리지 않게).
+    # 넣고 남은 몫을 최신 것부터 채운다. 줄을 덜 보여주면 경고로 남긴다(조용히 잘리지 않게).
+    # vLLM 은 프롬프트와 응답 상한의 합이 모델 한도 65,536 을 넘으면 400 으로 거절한다. 실측
+    # (2026-11-04, vLLM /tokenize): 흔적 줄 0.62 토큰/자(줄당 약 38), 메모 0.56 토큰/자. 7.2만 자 ≈
+    # 4.5만 토큰 + 시스템 프롬프트 0.1만 + 응답 상한 16,384(app/main.py) = 약 6.3만.
     # 나무만으로 넘으면(깨어 있는 주제가 메모 400자로 110개쯤, 200자로 155개쯤 — 재리뷰 측정)
     # 흔적 0줄로 상한을 넘겨 나간다. 그때도 경고를 남긴다 — 넘친 프롬프트는 vLLM 이 시끄럽게
     # 거절한다.
-    budget_chars: int = 80_000
+    budget_chars: int = 72_000
     # 주제마다 보여줄 근거 예와 메모 수. 메모는 모델이 매 회고 새로 적으므로 최근 것 하나면
     # 지금 생각이다. 메모는 저장할 때 길이를 안 자르고(필요한 만큼) 보여줄 때만 자른다.
     samples: int = 3
@@ -203,7 +203,18 @@ class Reflector:
 
         ops = _parse(reply)
         if ops is None:
-            raise ReflectionFailed("회고 응답을 못 읽었다 — 모델의 연산은 하나도 적용하지 않았다")
+            # 길이 한도에서 잘린 응답이면 온전한 앞부분 연산만 건진다. 통째로 버리면 그날 흔적이
+            # 다음 날로 밀려 프롬프트가 더 커지고 또 잘린다
+            # (되감기: 09-22 실패 → 09-23 828줄 → 09-24 또 실패).
+            ops = _salvage(reply)
+            if ops is None:
+                raise ReflectionFailed(
+                    "회고 응답을 못 읽었다 — 모델의 연산은 하나도 적용하지 않았다"
+                )
+            result.cut = True
+            logger.warning(
+                "회고 응답이 끝까지 오지 않았다 — 온전한 앞부분 연산 %d개만 적용한다", len(ops)
+            )
 
         planned = plan(tree, ops, offered, now)
         ids = self.topics.apply(planned, now)
@@ -211,7 +222,7 @@ class Reflector:
         result.notes = len(planned.notes)
         result.rejected = planned.rejected
         result.notices = planned.notices
-        self._record(now, ran_at, result, "ok")
+        self._record(now, ran_at, result, "cut" if result.cut else "ok")
         logger.info(
             "회고 — 흔적 %d줄, 요약 %d줄, 프롬프트 %d자,"
             " 변경 %d, 메모 %d, 기각 %d, 고침 %d, 접음 %d",
@@ -390,6 +401,35 @@ def _parse(reply: str) -> Optional[List[Op]]:
     return [
         _op(item) if isinstance(item, dict) else Op(op=f"형식 아님 {item!r:.30}") for item in raw
     ]
+
+
+def _salvage(reply: str) -> Optional[List[Op]]:
+    """끝까지 안 온 응답에서 온전한 연산만 앞에서부터 건진다. 하나도 없으면 None.
+
+    `{"ops": [ {...}, {...}, {"op": "atta` 처럼 끊긴 응답이다. 연산은 차례대로 검사되므로
+    앞부분만으로도 성립한다(뒤 연산이 가리킬 ref 는 앞에서 지어진다). 끊긴 마지막 하나와 그 뒤는
+    버린다.
+    """
+    head = reply.find('"ops"')
+    start = reply.find("[", head if head >= 0 else 0)
+    if start < 0:
+        return None
+    decoder = json.JSONDecoder()
+    found: List[Any] = []
+    at = start + 1
+    while True:
+        while at < len(reply) and reply[at] in " \t\r\n,":
+            at += 1
+        if at >= len(reply) or reply[at] != "{":
+            break
+        try:
+            item, at = decoder.raw_decode(reply, at)
+        except json.JSONDecodeError:
+            break
+        found.append(item)
+    if not found:
+        return None
+    return [_op(item) if isinstance(item, dict) else Op(op="형식 아님") for item in found]
 
 
 def _json(text: str) -> Any:

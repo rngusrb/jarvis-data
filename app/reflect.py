@@ -89,7 +89,8 @@ async def replay(reflector: Reflector, start: date, end: date, verbose: bool) ->
                 f"{day:%m-%d} 흔적 {result.considered:4d}줄 → 변경 {len(result.applied):2d} · "
                 f"메모 {result.notes:2d} · 기각 {len(result.rejected):2d}"
                 f" · 고침 {len(result.notices):2d} · 접음 {len(result.retired)}"
-                f"  ({result.prompt_chars:,}자, {time.monotonic() - began:.0f}초)",
+                + (" · 응답 잘림" if result.cut else "")
+                + f"  ({result.prompt_chars:,}자, {time.monotonic() - began:.0f}초)",
                 flush=True,
             )
             report(result, verbose)

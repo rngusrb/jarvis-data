@@ -86,12 +86,14 @@ def build_reflector(settings: Settings) -> Reflector:
     for sector in SECTORS:
         trace_kinds.register(sector.TRACES)
     return Reflector(
-        # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
+        # 회고는 입력이 수만 토큰이라 판단보다 오래 걸린다. 되감기 실측 하루 20~120초.
+        # 응답 상한 16,384: 흔적이 많은 날은 연산 목록이 8,192 를 넘어 잘렸다(되감기 87일 중 3일).
+        # 프롬프트 몫과의 합은 Reflector.budget_chars 설명에.
         reasoner=VLLMClient(
             settings.brain_base_url,
             model=settings.brain_model or None,
-            max_tokens=8192,
-            timeout=300.0,
+            max_tokens=16384,
+            timeout=600.0,
         ),
         traces=SQLiteTraceStore(settings.db_path),
         topics=SQLiteTopicStore(settings.db_path),

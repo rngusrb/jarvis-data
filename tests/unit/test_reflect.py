@@ -16,7 +16,7 @@ from typing import List, Optional, Sequence
 
 import pytest
 
-from src.brain.reflect import ReflectionFailed, Reflector, _parse
+from src.brain.reflect import ReflectionFailed, Reflector, _parse, _salvage
 from src.core.models import Trace
 from src.core.topics import CODE, RETIRE_AFTER, Op, plan
 from src.core.traces import TraceKind
@@ -379,3 +379,34 @@ def test_parse_tolerates_fences_and_chatter() -> None:
     ]
     assert _parse("설명만 하고 JSON 이 없음") is None
     assert _parse("") is None
+
+
+CUT = (
+    '{"ops": [\n  {"op": "create", "ref": "새1", "name": "주거", "evidence": [1, 2]},\n'
+    '  {"op": "note", "topic": "새1", "text": "전세"},\n  {"op": "attach", "topic": "새1", "evid'
+)
+
+
+def test_a_cut_reply_applies_the_complete_ops_and_says_so(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """길이 한도에서 잘린 응답을 통째로 버리면 그날 흔적이 다음 날로 밀려 또 잘린다(되감기 재현)."""
+    reflector = _build(tmp_path, CUT)
+    with caplog.at_level(logging.WARNING, logger="src.brain.reflect"):
+        result = asyncio.run(reflector.run_once(NOW))
+
+    assert result.cut and result.applied == ["새 주제 #1 주거 (근거 2)"] and result.notes == 1
+    assert "끝까지 오지 않았다" in caplog.text
+    assert _outcomes(tmp_path) == ["cut"] and reflector.topics.last_run() == NOW
+
+
+def test_a_reply_cut_before_any_complete_op_is_a_failure(tmp_path: Path) -> None:
+    reflector = _build(tmp_path, '{"ops": [{"op": "create", "name": "주')
+    with pytest.raises(ReflectionFailed):
+        asyncio.run(reflector.run_once(NOW))
+    assert reflector.topics.last_run() is None
+
+
+def test_salvage_reads_fenced_and_bare_arrays() -> None:
+    assert _salvage('```json\n[{"op": "note", "text": "a"}, {"op": "no') == [Op("note", text="a")]
+    assert _salvage("아무것도 없다") is None
