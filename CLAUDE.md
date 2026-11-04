@@ -80,5 +80,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 2026-10-30 | [1단계: 버리는 것 멈추기](docs/sprints/2026-10-30-phase1-stop-discarding.md) |
 | 2026-11-02 | [2단계: 위치 사건, 장소, 루틴 이탈](docs/sprints/2026-11-02-phase2-patterns.md) |
 | 2026-11-02 | [2단계 둘째: 수면 판단 한 번만, 맥·웹 하루 요약](docs/sprints/2026-11-02-phase2-mac-day.md) |
+| 2026-11-04 | [3단계 첫째: 주제 나무, 매일 회고, 석 달 되감기](docs/sprints/2026-11-04-phase3-topic-tree.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
