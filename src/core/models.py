@@ -49,7 +49,7 @@ class Trace:
     안 접힌다. "전세자금대출 금리"를 일곱 개 모아 평균 낼 수는 없다.
 
     그래서 흔적에는 지표 카드의 `Fold` 에 해당하는 게 없다. 대신 쌓이고,
-    나중에 회고가 훑어서 `Belief`(믿음)로 요약한다.
+    나중에 회고가 훑어서 주제 나무(`core/topics.py`)의 근거로 번호를 잇는다.
 
     `text` 는 **사람이 읽는 것**이다. 검색어, 파일 이름, 앱 이름. URL 이나
     파일 경로처럼 기계가 쓰는 건 `meta` 로 간다. 프롬프트에 들어가는 게
@@ -61,6 +61,9 @@ class Trace:
     text: str
     at: datetime
     meta: Dict[str, Any] = field(default_factory=dict)
+    # 저장소가 붙인 번호. 주제 나무의 근거가 이걸로 흔적을 가리킨다 — 이름(글)이 아니라 번호로
+    # 잇는다. 같은 흔적인지는 내용으로 본다(번호는 저장된 뒤에야 생긴다).
+    id: Optional[int] = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

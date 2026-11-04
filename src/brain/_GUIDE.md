@@ -112,6 +112,16 @@ SKIP 52건이 0~9분 간격으로 쌓였고 마지막 발화 이후 이틀간 �
 
 기록은 어느 경우인지 아는 자리에서 해야 한다 — `consider()` 안이다.
 
+### ❌ 길이 한도에서 잘린 답을 "형식이 깨졌다"로만 남기지 않는다
+```python
+# ❌ 금지 — finish_reason 을 안 보고 content 를 그대로 넘긴다 → 부르는 쪽엔 "JSON 을 못 찾았다"
+# ✅ 대신 — finish_reason == "length" 면 경고(client.py), 회고는 온전한 앞부분 연산만 건진다(_salvage)
+```
+**사고 이력**: 2026-11-02 회고 되감기(서버 사본, 87일) 중 3일이 "회고 응답에서 JSON 을 못 찾았다"로 실패했다. 응답은
+`{"ops": [` 로 시작해 중간에 끊겨 있었다 — 연산 목록이 응답 상한 8,192 토큰을 넘은 것이다. 흔적이 많은 날(취업 시즌)
+이었고, 통째로 버리자 그날 흔적이 다음 날로 밀려 프롬프트가 828줄로 커지고 이튿날 또 잘렸다. 응답 상한을 16,384 로
+올리고(프롬프트 글자 상한은 실측 토큰 비율로 맞춰 7.2만 자), 잘리면 앞부분을 적용하고 `cut` 으로 기록한다.
+
 ### ❌ 모델 응답을 `str()` 로 감싸지 않는다
 ```python
 # ❌ 금지
@@ -174,6 +184,7 @@ tests:
   - tests/unit/test_reasoning_strip.py
   - tests/unit/test_reflect.py
   - tests/unit/test_trace_digest_provider.py
+  - tests/unit/test_topic_provider.py
 ```
 
 ```bash
@@ -187,10 +198,10 @@ python scripts/harness.py src/brain/
 | 파일 | 책임 |
 |------|------|
 | `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
-| `reflect.py` | 회고 루프. 흔적을 훑어 믿음을 만들고 시들게 한다. 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
+| `reflect.py` | 회고. 나무와 아직 안 붙은 흔적(번호와 함께)을 보여주고 연산을 받아 검사·적용한다. 오래 잠잠한 주제는 먼저 접고, 못 읽은 응답은 시끄럽게 실패(기록은 남긴다). 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
 | `gate.py` | 싼 필터. severity 임계값 + 같은 신호(`insight.at`)는 한 번 + 트리거별 쿨다운 |
 | `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지 |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |
-| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약) |
+| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약·요즘 관심사(주제 나무)) |
 | `prompts.py` | 프롬프트 템플릿 + SKIP 파싱 |

@@ -77,3 +77,17 @@ def test_시스템_프롬프트를_접지_않는다() -> None:
     asyncio.run(_client(reply, sent).ask("안녕", system="너는 비서다"))
     roles = [m["role"] for m in sent[0]["messages"]]
     assert roles == ["system", "user"]
+
+
+def test_길이_한도에서_잘린_답은_돌려주되_남긴다(caplog: Any) -> None:
+    """회고 되감기 87일 중 3일이 "JSON 을 못 찾았다"로 실패했다.
+
+    원인은 답 길이 한도였는데 로그엔 안 보였다.
+    """
+    reply = {
+        "choices": [{"finish_reason": "length", "message": {"content": '{"ops": [{"op": "no'}}],
+        "usage": {"completion_tokens": 8192},
+    }
+    with caplog.at_level("WARNING", logger="src.brain.client"):
+        assert asyncio.run(_client(reply).ask("나무")) == '{"ops": [{"op": "no'
+    assert "max_tokens" in caplog.text and "8192" in caplog.text

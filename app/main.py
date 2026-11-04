@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import time, timedelta
 from typing import AsyncIterator, List
 
 from fastapi import FastAPI
@@ -28,6 +28,7 @@ from src.brain.providers import (
     ObservationTrendProvider,
     RecentValuesProvider,
     SpeechHistoryProvider,
+    TopicProvider,
     TraceDigestProvider,
 )
 from src.brain.reflect import Reflector
@@ -39,17 +40,18 @@ from src.core.events import EventRegistry
 from src.core.logs import hide_in_logs
 from src.core.metrics import MetricRegistry
 from src.core.traces import TraceRegistry
+from src.runtime.daily import DailyLoop
 from src.runtime.ingest import router as ingest_router
 from src.runtime.listen import ListenLoop
 from src.runtime.loop import JarvisLoop
 from src.sectors import commute, health, interest
-from src.storage.beliefs import SQLiteBeliefStore
 from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
 from src.storage.events import SQLiteEventStore
 from src.storage.places import SQLitePlaceStore
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
+from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
 from src.triggers.collection import CollectionWatch, Watched
 
@@ -58,6 +60,11 @@ logger = logging.getLogger(__name__)
 
 # 켜져 있는 섹터. 각 섹터는 METRICS 와 TRIGGERS 를 내보낸다.
 SECTORS = [health, commute, interest]
+
+# 매일 회고가 도는 시각(한국 시간). 하루는 새벽 5시에 바뀐다(interest 의 하루 요약) — 그 뒤라
+# 어제가 다 들어와 있고, 아침에 일어나기 전이라 그날 자비스의 맥락에 새 나무가 들어간다.
+# 되감기도 이 시각을 쓴다.
+REFLECT_AT = time(5, 30)
 
 
 def build_channel(settings: Settings) -> Channel:
@@ -79,15 +86,17 @@ def build_reflector(settings: Settings) -> Reflector:
     for sector in SECTORS:
         trace_kinds.register(sector.TRACES)
     return Reflector(
-        # 회고는 입력이 3만 토큰대라 판단보다 오래 생각한다. 실측 44~56초, 한도는 넉넉히.
+        # 회고는 입력이 수만 토큰이라 판단보다 오래 걸린다. 되감기 실측 하루 20~120초.
+        # 응답 상한 16,384: 흔적이 많은 날은 연산 목록이 8,192 를 넘어 잘렸다(되감기 87일 중 3일).
+        # 프롬프트 몫과의 합은 Reflector.budget_chars 설명에.
         reasoner=VLLMClient(
             settings.brain_base_url,
             model=settings.brain_model or None,
-            max_tokens=8192,
-            timeout=300.0,
+            max_tokens=16384,
+            timeout=600.0,
         ),
         traces=SQLiteTraceStore(settings.db_path),
-        beliefs=SQLiteBeliefStore(settings.db_path),
+        topics=SQLiteTopicStore(settings.db_path),
         kinds=trace_kinds.all(),
     )
 
@@ -186,6 +195,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 요약이 있는 **모든** 민감 종류를 넣는다(지금은 웹 방문 — 검색어) — 실험 단계라 허들을
             # 낮춰 자비스가 보게 한다(2026-11-02 사용자 결정). 거르는 건 4단계(BACKLOG).
             TraceDigestProvider(source=traces, kinds=trace_kinds.all(), include_sensitive=True),
+            # 회고가 매일 가꾸는 주제 나무에서 뜨는 중·꾸준한 주제. 대화도 같은 것을 본다.
+            TopicProvider(topics=SQLiteTopicStore(settings.db_path)),
         ),
     )
 
@@ -213,9 +224,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # **회고**한다. 재료도 주기도 달라서 같은 루프에 넣을 수 없다 —
     # "어젯밤 2.7시간"은 30분 안에 말해야 하고, "요즘 이사를 알아보네"는
     # 일주일치가 모여야 보인다.
-    app.state.reflector = build_reflector(settings)
+    reflector = build_reflector(settings)
+    app.state.reflector = reflector
+    daily = DailyLoop(
+        job=reflector.run_once,
+        at=REFLECT_AT,
+        last_run=reflector.topics.last_run,
+        name="회고",
+    )
 
-    tasks = [asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec))]
+    tasks = [
+        asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec)),
+        asyncio.create_task(daily.run_forever()),
+    ]
 
     # 세 번째 루프. 앞의 둘은 시계가 돌리고 이건 사용자가 돌린다.
     # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
@@ -226,7 +247,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             source=channel,
             responder=Conversationalist(
                 reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
-                beliefs=SQLiteBeliefStore(settings.db_path),
+                topics=SQLiteTopicStore(settings.db_path),
                 catalog=catalog,
                 source=store,
                 history=conversation,

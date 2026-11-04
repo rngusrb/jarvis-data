@@ -56,6 +56,7 @@ message: "app/ 은 조립만 한다 — 판단·집계·발송 로직은 플랫�
 ```
 tests:
   - tests/unit/test_migrate.py
+  - tests/unit/test_replay.py
   - tests/integration/test_startup.py
   - tests/invariants/test_boundaries.py
 ```
@@ -89,6 +90,6 @@ python scripts/harness.py app/
 
 | 파일 | 책임 |
 |------|------|
-| `reflect.py` | 회고 CLI. 흔적을 훑어 믿음을 갱신한다 (수동 실행) |
+| `reflect.py` | 회고 CLI. 지금 한 번, 나무 보기(`--show`), 지난 날들을 하루씩 되감기(`--replay`, DB 사본에서), 사본의 나무 들이기(`--adopt`, 새 코드로 재시작하기 전에) |
 | `migrate.py` | 관측치로 담겼던 사건 종류를 사건 표로 옮기는 일회성 CLI. 옮긴 걸 확인한 뒤에 지운다 |
-| `main.py` | 섹터 등록 → 지표 레지스트리 → 트리거·에이전트·채널 조립 → FastAPI |
+| `main.py` | 섹터 등록 → 지표 레지스트리 → 트리거·에이전트·채널 조립 → FastAPI. 매일 회고 시각(`REFLECT_AT`) |

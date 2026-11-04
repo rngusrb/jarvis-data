@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.brain.converse import Conversationalist
+from src.brain.providers import TopicProvider
 from src.channels.base import Incoming
-from src.core.beliefs import Belief
-from src.core.models import Observation
-from src.storage.beliefs import SQLiteBeliefStore
+from src.core.models import Observation, Trace
+from src.core.topics import Op, plan
 from src.storage.conversation import SQLiteConversation
 from src.storage.sqlite import SQLiteStore
+from src.storage.topics import SQLiteTopicStore
+from src.storage.traces import SQLiteTraceStore
 
 NOW = datetime(2026, 10, 2, 1, 0, tzinfo=timezone.utc)
 
@@ -52,11 +54,30 @@ def _build(tmp_path: Path, reasoner: Optional[CountingReasoner] = None) -> Conve
     )
     return Conversationalist(
         reasoner=reasoner or CountingReasoner(),
-        beliefs=SQLiteBeliefStore(db),
+        topics=SQLiteTopicStore(db),
         catalog=store,
         source=store,
         history=SQLiteConversation(db),
+        providers=(TopicProvider(topics=SQLiteTopicStore(db)),),
     )
+
+
+def _grow(tmp_path: Path, c: Conversationalist) -> None:
+    """이틀에 걸쳐 근거가 붙은 주제 하나(뜨는 중)."""
+    traces = SQLiteTraceStore(tmp_path / "t.db")
+    traces.write(
+        [
+            Trace(source="mac_chrome", kind="web_visit", text=text, at=NOW - timedelta(days=d))
+            for d, text in ((2, "토스 채용"), (2, "KT 대졸신입"), (1, "자소서 항목"))
+        ]
+    )
+    ids = [t.id for t in traces.recent("web_visit", NOW - timedelta(days=3)) if t.id is not None]
+    tree = c.topics.load()
+    ops = [
+        Op("create", ref="a", name="채용준비", evidence=tuple(ids)),
+        Op("note", topic="a", text="AI 직무 지원 중"),
+    ]
+    c.topics.apply(plan(tree, ops, set(ids), NOW), NOW)
 
 
 def _ask(c: Conversationalist, text: str) -> Optional[str]:
@@ -66,7 +87,7 @@ def _ask(c: Conversationalist, text: str) -> Optional[str]:
 def test_명령어는_llm을_부르지_않는다(tmp_path: Path) -> None:
     reasoner = CountingReasoner()
     c = _build(tmp_path, reasoner)
-    for command in ("/status", "/sleep", "/beliefs", "/help"):
+    for command in ("/status", "/sleep", "/topics", "/beliefs", "/help"):
         assert _ask(c, command)
     assert reasoner.calls == 0
 
@@ -84,8 +105,17 @@ def test_status_는_끊긴_것을_표시한다(tmp_path: Path) -> None:
 
 
 def test_아는_게_없으면_없다고_한다(tmp_path: Path) -> None:
-    answer = _ask(_build(tmp_path), "/beliefs")
+    answer = _ask(_build(tmp_path), "/topics")
     assert answer is not None and "아직 아는 게 없어" in answer
+
+
+def test_topics_는_나무를_보여준다(tmp_path: Path) -> None:
+    """옛 /beliefs 도 같은 답이다 — 손에 익은 명령을 버리지 않는다."""
+    c = _build(tmp_path)
+    _grow(tmp_path, c)
+    answer = _ask(c, "/topics")
+    assert answer is not None and "▲ 채용준비 — 뜨는 중 (근거 3 · 2일)" in answer
+    assert _ask(c, "/beliefs") == answer
 
 
 def test_자유_질문은_llm을_부른다(tmp_path: Path) -> None:
@@ -95,23 +125,12 @@ def test_자유_질문은_llm을_부른다(tmp_path: Path) -> None:
     assert reasoner.calls == 1
 
 
-def test_믿음이_프롬프트에_들어간다(tmp_path: Path) -> None:
+def test_요즘_관심사가_프롬프트에_들어간다(tmp_path: Path) -> None:
     reasoner = CountingReasoner()
     c = _build(tmp_path, reasoner)
-    for at in (NOW - timedelta(days=2), NOW - timedelta(days=1)):
-        c.beliefs.observe(
-            Belief(
-                kind="관심사:채용준비",
-                value="AI 직무 지원 중",
-                confidence=0.9,
-                first_seen=at,
-                last_seen=at,
-                evidence=("토스 채용", "KT 대졸신입"),
-            ),
-            at,
-        )
+    _grow(tmp_path, c)
     _ask(c, "나 요즘 뭐 하고 있지?")
-    assert "관심사:채용준비" in reasoner.prompts[-1]
+    assert "채용준비 — 뜨는 중(최근 7일 중 2일): AI 직무 지원 중" in reasoner.prompts[-1]
 
 
 def test_대화에도_지금을_알려준다(tmp_path: Path) -> None:
@@ -151,3 +170,28 @@ def test_상태는_합친_수신과_카드별_기준으로_말한다(tmp_path: P
 
     assert "✅ location" in answer  # 위치는 나흘까지 정상
     assert "⚠️ sleep_hours" in answer  # 카드 기준을 모르면 36시간
+
+
+def test_topics_fits_in_one_telegram_message(tmp_path: Path) -> None:
+    """텔레그램은 4,096자가 넘는 메시지를 거절한다. 그러면 사용자는 아무 답도 못 받는다."""
+    c = _build(tmp_path)
+    traces = SQLiteTraceStore(tmp_path / "t.db")
+    traces.write(
+        [
+            Trace(
+                source="mac_chrome", kind="web_visit", text=f"흔적 {i}", at=NOW - timedelta(hours=i)
+            )
+            for i in range(400)
+        ]
+    )
+    ids = sorted(t.id for t in traces.recent("web_visit", NOW - timedelta(days=30)) if t.id)
+    ops = [
+        Op("create", name=f"꽤 긴 이름의 주제 번호 {i}", evidence=(ids[2 * i], ids[2 * i + 1]))
+        for i in range(200)
+    ]
+    c.topics.apply(plan(c.topics.load(), ops, set(ids), NOW), NOW)
+
+    answer = _ask(c, "/topics")
+
+    assert answer is not None and len(answer) <= 4096
+    assert answer.splitlines()[-1].startswith("… 외 ")

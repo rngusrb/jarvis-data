@@ -80,6 +80,15 @@ metric = registry.get(kind); FOLDERS[metric.fold](...)
 **사고 이력**: 게이트는 발송에 **성공한 뒤에야** 쿨다운을 기록한다. 나란히 달리는 두
 주기는 둘 다 게이트를 통과해 같은 말을 두 번 한다. `JarvisLoop` 이 잠금을 들고 있다.
 
+### ❌ 오래 도는 태스크가 예외 한 번으로 끝나게 두지 않는다
+```python
+# ❌ 금지 — while True: due = self.due(now, self.last_run())   # 기록 읽기가 try 밖
+# ✅ 대신 — 한 바퀴 전체를 감싸고, 실패는 로그를 남긴 뒤 다시 시도한다(DailyLoop.run_forever)
+```
+**사고 이력**: 2026-11-02 JAR-023 리뷰 재현. 매일 회고의 기록 읽기가 `database is locked` 를 한 번 던지자
+태스크가 끝났다 — job 호출 0번, 로그 0줄. `app/main.py` 는 끌 때만 태스크를 거두므로 **서버가 도는 동안
+아무도 모른 채** 재시작까지 회고가 멈춘다.
+
 ---
 
 ## GC 패턴
@@ -106,6 +115,7 @@ tests:
   - tests/integration/test_ingest.py
   - tests/integration/test_ingest_spans.py
   - tests/integration/test_ingest_samples.py
+  - tests/unit/test_daily_loop.py
 ```
 
 ```bash
@@ -118,5 +128,6 @@ python scripts/harness.py src/runtime/
 
 | 파일 | 책임 |
 |------|------|
+| `daily.py` | 하루 한 번 도는 일(회고). 정한 시각(한국 시간), 꺼져 있어 놓쳤으면 켜진 뒤 따라잡기, 실패는 30분 뒤 다시(회차당 세 번). "돌았나"는 일이 남긴 기록(성공만)으로 본다 |
 | `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금. 관측치 트리거 → 사건 트리거 → 감시 순서, 트리거 하나가 터져도 나머지는 돈다 |
 | `ingest.py` | 수신구(`/ingest`, `/ingest/spans`, `/ingest/samples`, `/ingest/traces`) + `/health`. 사건 카드가 있는 종류는 표본 문으로 와도 사건 표에 담고, 좌표가 있으면 장소에 붙인다 |

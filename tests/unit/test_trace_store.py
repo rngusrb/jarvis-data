@@ -80,3 +80,24 @@ def test_kinds_and_last_seen(tmp_path: Path) -> None:
     assert store.kinds() == ["file_seen", "web_visit"]
     assert store.last_seen()["web_visit"] == NOW
     assert store.count() == 2
+
+
+def test_traces_come_back_with_their_numbers(tmp_path: Path) -> None:
+    """주제 나무의 근거가 번호로 흔적을 가리킨다. 같은 흔적인지는 여전히 내용으로 본다."""
+    store = SQLiteTraceStore(tmp_path / "t.db")
+    store.write([_trace("a", minutes_ago=2), _trace("b", minutes_ago=1)])
+    found = store.recent("web_visit", NOW - timedelta(hours=1))
+    assert [(t.text, t.id) for t in found] == [("a", 1), ("b", 2)]
+    assert found[0] == _trace("a", minutes_ago=2)
+
+
+def test_until_leaves_out_what_came_later(tmp_path: Path) -> None:
+    """회고 되감기가 그날 아침에 아직 없던 흔적을 보면 안 된다. 그 순간은 포함한다."""
+    store = SQLiteTraceStore(tmp_path / "t.db")
+    store.write([_trace(f"검색 {i}", minutes_ago=i) for i in range(5)])
+    found = store.recent("web_visit", NOW - timedelta(hours=1), until=NOW - timedelta(minutes=2))
+    assert [t.text for t in found] == ["검색 4", "검색 3", "검색 2"]
+    limited = store.recent(
+        "web_visit", NOW - timedelta(hours=1), limit=1, until=NOW - timedelta(minutes=2)
+    )
+    assert [t.text for t in limited] == ["검색 2"]

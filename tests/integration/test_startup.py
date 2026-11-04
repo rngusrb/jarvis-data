@@ -79,6 +79,9 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         assert len(digest) == 1
         # 민감한 웹 방문도 맥락에 넣는다 — 실험 단계라 허들을 낮췄다(JAR-020).
         assert digest[0].include_sensitive is True
+        # 회고가 가꾸는 주제 나무도 들어간다(JAR-023).
+        names = [p.name for p in client.app.state.jarvis.agent.providers]
+        assert "topics" in names
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:
