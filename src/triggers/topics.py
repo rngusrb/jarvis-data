@@ -82,13 +82,15 @@ class TopicWatch:
                 continue
             if s.recent_days < self.min_recent_days or now - s.since > self.fresh:
                 continue
-            if _under(s.node.id, muted, parent):
-                continue
             picked[s.node.id] = s
         found: List[Tuple[Tuple[int, datetime], Insight]] = []
         for topic, s in picked.items():
             if any(_under(other, {topic}, parent) for other in picked if other != topic):
                 continue  # 아래에 함께 뜬 가지가 있다 — 그 가지가 말한다
+            # 👎 는 "가지만" 거름 **뒤에** 뺀다. 먼저 빼면 👎 받은 가지가 빠진 자리에 그 가지가
+            # 깨운 줄기가 같은 근거로 나간다(재리뷰 재현: '공부 › 자격증' 👎 → 다음 날 '공부').
+            if _under(topic, muted, parent):
+                continue
             found.append(((s.recent_days, s.since or now), self._insight(s, notes, now)))
         found.sort(key=lambda pair: pair[0], reverse=True)
         return [insight for _, insight in found]
@@ -106,8 +108,9 @@ class TopicWatch:
         latest = notes.get(s.node.id) or []
         if latest:
             parts.append(f"내 메모: {latest[0]}")
-        # 가지까지 합친 최근 근거 — 줄기의 직접 근거는 옛것일 수 있다.
-        recent = [f"{local(g.at):%m-%d %H:%M} {g.text}" for g in s.latest[: self.samples]]
+        # 가지까지 합친 최근 근거 — 줄기의 직접 근거는 옛것일 수 있다. 이번에 깨어난 뒤의 것만.
+        woke = [g for g in s.latest if g.at >= since]
+        recent = [f"{local(g.at):%m-%d %H:%M} {g.text}" for g in woke[: self.samples]]
         if recent:
             parts.append("최근 근거: " + " / ".join(recent))
         return Insight(

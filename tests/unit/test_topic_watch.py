@@ -134,3 +134,16 @@ def test_the_thumbs_down_window_counts_from_the_press() -> None:
     later = NOW + timedelta(days=3)
     rated = log.rated(later - TopicWatch().mute_for)
     assert muted((r.trigger, r.feedback) for r in rated) == {5}
+
+
+def test_thumbs_down_on_a_branch_does_not_let_its_trunk_speak_instead() -> None:
+    """가지를 👎 했더니 다음 날 그 가지가 깨운 줄기가 같은 근거로 나갔다(재리뷰 재현)."""
+    board = _family((1, None, [40, 41]), (2, 1, [0.5, 1.5, 2.5]))
+    assert _check(board, quiet={2}) == []
+
+
+def test_recent_evidence_is_from_this_awakening_only() -> None:
+    """쉬기 전 근거(6주 전)가 '최근 근거'에 끼면 지금 얘기가 아닌 게 섞인다."""
+    board = _family((1, None, [1.5, 42]), (2, 1, [0.5]))
+    [insight] = _check(board)
+    assert insight.summary.count("흔적") == 2  # 0.5일·1.5일 전 둘만 — 42일 전 것은 없다

@@ -140,3 +140,26 @@ def test_버튼_누름에는_새_메시지_대신_버튼_위_알림으로_답한
     assert asyncio.run(loop.run_once()) == 1
     assert source.acked == [("cb-9", "받았어: ")] and speaker.sent == []
     assert [m.who for m in log.recent()] == ["user", "jarvis"]
+
+
+def test_버튼_응답이_거절되면_새_메시지로라도_답한다(tmp_path: Path) -> None:
+    """오래된 버튼은 텔레그램이 응답을 거절한다.
+
+    그때 아무 답도 안 가면 눌렀는데 아무 일도 없는 것처럼 보인다.
+    """
+
+    @dataclass
+    class StaleButtons(ScriptedSource):
+        async def ack(self, callback_id: str, text: Optional[str] = None) -> None:
+            raise RuntimeError("query is too old")
+
+    press = Incoming(text="", at=NOW, cursor=1, action="fb:+:t1", meta={"callback_id": "cb-1"})
+    speaker = RecordingSpeaker()
+    loop = ListenLoop(
+        source=StaleButtons([[press]]),
+        responder=EchoResponder(),
+        speaker=speaker,
+        log=SQLiteConversation(tmp_path / "t.db"),
+    )
+    assert asyncio.run(loop.run_once()) == 1
+    assert speaker.sent == ["받았어: "]

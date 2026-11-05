@@ -82,12 +82,17 @@ class ListenLoop:
                 try:
                     await ack(str(callback), answer)
                 except Exception:
-                    logger.exception("버튼 응답(ack) 실패: %s", incoming.action)
+                    # 오래된 버튼(서버가 꺼져 있던 동안 눌린 것)은 텔레그램이 응답을 거절한다.
+                    # 알림 대신 새 메시지로라도 답한다 — 안 그러면 사용자는 눌렀는데 아무 답도 못
+                    # 받는다(재리뷰 재현).
+                    logger.exception(
+                        "버튼 응답(ack) 실패 — 새 메시지로 답한다: %s", incoming.action
+                    )
+                else:
+                    if answer is not None:
+                        self.log.add("jarvis", datetime.now(timezone.utc), answer)
+                        handled += 1
                     continue
-                if answer is not None:
-                    self.log.add("jarvis", datetime.now(timezone.utc), answer)
-                    handled += 1
-                continue
 
             if answer is None:
                 continue
