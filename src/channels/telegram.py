@@ -170,29 +170,40 @@ class TelegramChannel:
         await self._client.aclose()
 
 
-# 텔레그램 한 메시지의 상한(4,096자)에 여유를 둔 값.
+# 텔레그램 한 메시지의 상한(4,096)에 여유를 둔 값. 텔레그램은 UTF-16 단위로 센다 — 이모지
+# 하나가 2다.
 PIECE = 4000
 
 
+def _units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
 def split(text: str, limit: int = PIECE) -> List[str]:
-    """줄 경계에서 `limit` 자 이하 조각으로. 한 줄이 그보다 길면 그 줄을 자른다."""
-    if len(text) <= limit:
+    """줄 경계에서 `limit`(UTF-16 단위) 이하 조각으로. 한 줄이 그보다 길면 그 줄을 자른다.
+
+    공백뿐인 조각은 보내지 않는다 — 텔레그램은 빈 글을 거절하고, 그러면 그 뒤 조각들도 안 간다.
+    """
+    if _units(text) <= limit:
         return [text]
     pieces: List[str] = []
     current = ""
     for line in text.split("\n"):
-        while len(line) > limit:
+        while _units(line) > limit:
             if current:
                 pieces.append(current)
                 current = ""
-            pieces.append(line[:limit])
-            line = line[limit:]
+            cut = limit
+            while _units(line[:cut]) > limit:
+                cut -= 1
+            pieces.append(line[:cut])
+            line = line[cut:]
         candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > limit:
+        if _units(candidate) > limit:
             pieces.append(current)
             current = line
         else:
             current = candidate
     if current:
         pieces.append(current)
-    return pieces
+    return [p for p in pieces if p.strip()]

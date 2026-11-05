@@ -38,10 +38,10 @@ class EventKind:
         return self.collector is not None
 
     def describe(self, label: str) -> str:
-        """사건 이름의 뜻. 카드가 모르는 이름은 그대로 둔다.
-
-        조용히 빼면 그런 사건이 없었던 것처럼 보인다.
-        """
+        """사건 이름의 뜻. 카드가 모르는 이름은 그대로 둔다 — 조용히 빼면 그런 사건이 없었던 것처럼
+        보인다. 이름이 없는 사건(2026-10 전 옛 기록)은 종류 이름으로."""
+        if not label:
+            return self.label
         return dict(self.labels).get(label, label)
 
 

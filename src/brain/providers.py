@@ -7,12 +7,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
-from src.core.clock import WEEKDAYS, local
+from src.core.clock import KST, WEEKDAYS, local
 from src.core.events import EventKind, EventSource
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
@@ -172,7 +172,10 @@ class RecentValuesProvider:
 
         if not chunks:
             return None
-        return ContextBlock(label=f"최근 {self.window.days}일 값", body="\n".join(chunks))
+        # 몇 개까지 보이는지도 이름에 적는다 — "최근 90일 값"에 14개만 나오면 석 달 중 14일만 기록된
+        # 것으로 읽힌다(JAR-027 리뷰 재현).
+        label = f"최근 {self.window.days}일 값(지표마다 최근 {self.max_points}개까지)"
+        return ContextBlock(label=label, body="\n".join(chunks))
 
 
 class RecentTraces(Protocol):
@@ -210,7 +213,9 @@ class TraceDigestProvider:
                 continue
             days = card.digest(self.source.recent(card.kind, since), since, now)
             if days:
-                chunks.append(f"- {card.label}:\n" + "\n".join(f"  {day}" for day in days))
+                # 읽는 법은 요약을 만드는 섹터가 적는다(하루가 언제 바뀌나 등).
+                how = f" — 읽는 법: {card.reading}" if card.reading else ""
+                chunks.append(f"- {card.label}{how}:\n" + "\n".join(f"  {day}" for day in days))
 
         if not chunks:
             return None
@@ -276,36 +281,49 @@ class TopicProvider:
 
 @dataclass
 class EventDigestProvider:
-    """최근 사건(위치 등)을 날마다 한 줄로 — 언제 집을 나섰고 어디서 탔나.
+    """최근 사건(위치 등)을 날마다 한 줄로 — 언제 어디를 벗어났고 어디서 탭했나.
 
     사건은 출근 트리거만 보고 맥락에는 없었다. 그래서 "어제 몇 시에 나갔지?"에 답할 재료가 없었다.
     사건 이름의 뜻은 카드가 들고 온다(`EventKind.describe`) — 플랫폼은 "wallet"이 뭔지 모른다.
+
+    날은 **자정**에 바뀌고 온전한 날만 보인다(오늘은 지금까지). 시각으로 창을 자르면 첫날이 잘린 채
+    온전한 하루처럼 보여 "그저께 몇 시에 나갔지?"에 틀린 답을 준다. 사건이 없는 날은 "기록 없음" —
+    줄을 빼면 그날을 건너뛴 걸 모른다(JAR-028 리뷰 재현).
     """
 
     events: EventSource
     kinds: Sequence[EventKind]
     name: str = "event_digest"
     # 어제와 오늘. 보고서는 2주를 본다.
-    window: timedelta = timedelta(days=2)
+    days: int = 2
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        today = local(now).date()
+        first = today - timedelta(days=self.days - 1)
+        since = datetime.combine(first, time(0), tzinfo=KST)
         lines: List[str] = []
         for card in self.kinds:
             if not card.active:
                 continue
             found = sorted(
-                (e for e in self.events.recent(card.kind, now - self.window) if e.at <= now),
+                (e for e in self.events.recent(card.kind, since) if since <= e.at <= now),
                 key=lambda e: e.at,
             )
-            by_day: Dict[str, List[str]] = {}
+            if not found:
+                continue
+            by_day: Dict[date, List[str]] = {}
             for e in found:
                 when = local(e.at)
                 place = f"(장소 #{e.place_id})" if e.place_id is not None else ""
-                day = f"{when:%m-%d}({WEEKDAYS[when.weekday()]})"
-                by_day.setdefault(day, []).append(f"{when:%H:%M} {card.describe(e.label)}{place}")
-            lines.extend(
-                f"- {card.label} {day}: " + " · ".join(items) for day, items in by_day.items()
-            )
+                by_day.setdefault(when.date(), []).append(
+                    f"{when:%H:%M} {card.describe(e.label)}{place}"
+                )
+            for offset in range(self.days):
+                day = first + timedelta(days=offset)
+                items = by_day.get(day)
+                body = " · ".join(items) if items else "기록 없음"
+                lines.append(f"- {card.label} {day:%m-%d}({WEEKDAYS[day.weekday()]}): {body}")
         if not lines:
             return None
-        return ContextBlock(label=f"최근 {self.window.days}일 사건", body="\n".join(lines))
+        label = f"최근 {self.days}일 사건(날은 자정에 바뀐다, 오늘은 지금까지)"
+        return ContextBlock(label=label, body="\n".join(lines))

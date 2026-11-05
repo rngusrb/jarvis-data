@@ -118,3 +118,16 @@ def test_긴_말은_줄_경계에서_나눠_보내고_버튼은_마지막에_단
     # 한 줄이 상한보다 길면 그 줄을 자른다.
     assert [len(p) for p in split("가" * 9000)] == [PIECE, PIECE, 1000]
     assert split("짧다") == ["짧다"]
+
+
+def test_조각은_텔레그램처럼_UTF16으로_세고_공백뿐인_조각은_안_보낸다() -> None:
+    """이모지는 UTF-16 으로 2다. 공백뿐인 조각은 텔레그램이 빈 글로 거절해 뒤 조각까지 안 간다."""
+    from src.channels.telegram import PIECE, split
+
+    emoji = "😀" * 3000  # 3,000자지만 6,000 단위
+    pieces = split(emoji)
+    assert (
+        all(len(p.encode("utf-16-le")) // 2 <= PIECE for p in pieces) and "".join(pieces) == emoji
+    )
+    padded = "가" * (PIECE - 1) + "\n" + " " * 10 + "\n" + "나" * 10
+    assert all(p.strip() for p in split(padded))

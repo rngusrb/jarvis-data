@@ -55,7 +55,7 @@ Ref = Union[int, str]
 
 
 class Trend(str, Enum):
-    NEW = "처음 보임"  # 근거가 하루뿐 — 옛 "후보". 자비스의 맥락에는 안 넣는다
+    NEW = "처음 보임"  # 근거가 하루뿐 — 옛 "후보". 반응·대화 맥락엔 안 넣는다(보고서는 넣는다)
     RISING = "뜨는 중"
     STEADY = "꾸준"
     FADING = "시드는 중"

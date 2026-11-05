@@ -65,7 +65,9 @@ class VLLMClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model or None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        # 연결은 따로 짧게. 데스크탑이 꺼져 Tailscale 이 패킷을 버리면 연결 시도가 한도(보고서는
+        # 10분)를 다 쓰고, 그동안 듣기 루프가 멈춘다(JAR-027 리뷰 재현). 긴 건 연결 뒤의 읽기다.
+        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
         self._temperature = temperature
         self._max_tokens = max_tokens
         # R1 계열은 시스템 프롬프트를 쓰지 말고 지시를 user 메시지에 넣으라고

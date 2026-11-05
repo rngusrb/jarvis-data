@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Protocol
+from typing import Awaitable, Optional, Protocol, Set, Union
 
+from src.brain.converse import Later
 from src.channels.base import Incoming, Listener
 from src.storage.conversation import SQLiteConversation
 
@@ -27,9 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 class Responder(Protocol):
-    """받은 말에 대한 답. 답할 게 없으면 None."""
+    """받은 말에 대한 답. 답할 게 없으면 None, 오래 걸리는 답이면 `Later`(지금 말 + 나중 말)."""
 
-    async def reply(self, incoming: Incoming, now: datetime) -> Optional[str]: ...
+    async def reply(self, incoming: Incoming, now: datetime) -> Union[str, Later, None]: ...
 
 
 class Speaker(Protocol):
@@ -43,6 +44,8 @@ class ListenLoop:
     speaker: Speaker
     log: SQLiteConversation
     cursor_name: str = "telegram"
+    # 따로 기다리는 나중 답들. 들고 있지 않으면 끝나기 전에 거둬질 수 있다.
+    _pending: Set["asyncio.Task[None]"] = field(default_factory=set, repr=False)
 
     async def run_once(self) -> int:
         """한 번 듣는다. 처리한 메시지 수를 돌려준다."""
@@ -72,10 +75,20 @@ class ListenLoop:
             callback = incoming.meta.get("callback_id")
             ack = getattr(self.source, "ack", None)
             try:
-                answer = await self.responder.reply(incoming, datetime.now(timezone.utc))
+                reply = await self.responder.reply(incoming, datetime.now(timezone.utc))
             except Exception:
                 logger.exception("답 만들기 실패: %.60s", incoming.text)
-                answer = None
+                reply = None
+            answer: Optional[str]
+            if isinstance(reply, Later):
+                # 오래 걸리는 답(보고서)은 "쓰는 중"을 먼저 보내고 따로 기다린다 — 그동안 다른 말과
+                # 버튼을 계속 받는다. 지금 말을 못 보내도 나중 말은 기다린다(쓰는 중 표시가 풀리게).
+                answer = reply.now
+                task = asyncio.create_task(self._finish(reply.then))
+                self._pending.add(task)
+                task.add_done_callback(self._pending.discard)
+            else:
+                answer = reply
             if callback and ack is not None:
                 # 버튼 누름에는 새 메시지 대신 버튼 위의 짧은 알림으로 답한다 — 👍 하나에 알림이 또
                 # 울리면 안 된다. 텔레그램은 이 응답을 받아야 빙글이를 멈추므로 답이 없어도 부른다.
@@ -106,6 +119,20 @@ class ListenLoop:
             handled += 1
 
         return handled
+
+    async def _finish(self, later: Awaitable[str]) -> None:
+        """나중 답을 기다려 보낸다. 실패해도 사용자에게는 무슨 일인지 말한다."""
+        try:
+            text = await later
+        except Exception:
+            logger.exception("나중에 보낼 답을 못 만들었다")
+            text = "미안, 하던 걸 마치지 못했어."
+        try:
+            await self.speaker.send(text)
+        except Exception:
+            logger.exception("나중 답 발송 실패")
+            return
+        self.log.add("jarvis", datetime.now(timezone.utc), text)
 
     async def run_forever(self) -> None:
         """계속 듣는다.

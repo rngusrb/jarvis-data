@@ -142,10 +142,11 @@ def build_reporter(settings: Settings) -> Reporter:
                 window=timedelta(days=14),
                 include_sensitive=True,
             ),
+            # 90일 값을 다 보인다 — 14개만 보이면 석 달 중 14일만 기록된 것으로 읽힌다(리뷰 재현).
             RecentValuesProvider(
-                source=store, metrics=metrics.all(), window=timedelta(days=90), max_points=14
+                source=store, metrics=metrics.all(), window=timedelta(days=90), max_points=90
             ),
-            EventDigestProvider(events=events, kinds=event_kinds.all(), window=timedelta(days=14)),
+            EventDigestProvider(events=events, kinds=event_kinds.all(), days=14),
             CollectionStatusProvider(catalog=MergedCatalog(store, traces, events), cards=cards),
         ),
     )

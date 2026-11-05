@@ -15,7 +15,7 @@ CARD = EventKind(
     kind="location",
     label="위치",
     collector="단축어",
-    labels=(("leave_home", "집을 나섬"), ("wallet", "지갑 탭")),
+    labels=(("leave_home", "집을 나섬"), ("wallet", "지갑 탭")),  # 시험용 뜻(실제 뜻은 섹터 카드)
 )
 
 
@@ -41,11 +41,32 @@ def test_events_become_one_line_per_day_in_korean_time() -> None:
         _event("wallet", 13, 0),  # 지금(12:00) 뒤
     ]
     block = EventDigestProvider(events=Events(found), kinds=[CARD]).fetch(None, NOW)
-    assert block is not None and block.label == "최근 2일 사건"
+    assert block is not None and block.label.startswith("최근 2일 사건(날은 자정에 바뀐다")
     assert block.body.splitlines() == [
         "- 위치 11-04(수): 18:25 지갑 탭(장소 #6)",
         "- 위치 11-05(목): 07:40 집을 나섬(장소 #3) · 07:43 지갑 탭(장소 #5)",
     ]
+
+
+def test_days_are_whole_and_empty_days_say_so() -> None:
+    """시각으로 창을 자르면 첫날이 잘린 채 온전한 하루처럼 보였다.
+
+    빈 날은 줄이 아예 없었다(리뷰 재현).
+    """
+    morning = datetime(2026, 11, 5, 0, 0, tzinfo=timezone.utc)  # 한국 09:00
+    found = [_event("leave_home", 7, 30, day=3), _event("wallet", 18, 20, day=3)]
+    block = EventDigestProvider(events=Events(found), kinds=[CARD], days=3).fetch(None, morning)
+    assert block is not None
+    assert block.body.splitlines() == [
+        "- 위치 11-03(화): 07:30 집을 나섬(장소 #3) · 18:20 지갑 탭(장소 #3)",
+        "- 위치 11-04(수): 기록 없음",
+        "- 위치 11-05(목): 기록 없음",
+    ]
+
+
+def test_an_event_without_a_name_reads_as_its_kind() -> None:
+    """2026-10 전 옛 사건은 이름이 비어 있다(실데이터 9건)."""
+    assert CARD.describe("") == "위치"
 
 
 def test_an_unknown_event_name_is_shown_as_is() -> None:

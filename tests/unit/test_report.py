@@ -53,10 +53,30 @@ def test_the_report_reads_every_provider_without_a_signal() -> None:
 
 
 def test_the_instructions_say_how_to_read_the_records() -> None:
-    """한 번 써 봤더니 첫 활동을 기상으로, 근거가 있던 날을 연속 일수로 읽었다(2026-11-05)."""
-    assert "줄 맨 앞 시각은 그날 처음 기록된 활동이지 일어난" in SYSTEM_PROMPT
+    """한 번 써 봤더니 첫 활동을 기상으로, 근거가 있던 날을 연속 일수로 읽었다(2026-11-05).
+
+    하루가 언제 바뀌는지는 섹터의 사실이라 지시문이 아니라 요약 묶음이 들고 온다(리뷰).
+    """
+    from src.sectors.interest.digest import DAY_STARTS, READING
+
+    assert "읽는 법" in SYSTEM_PROMPT and "새벽" not in SYSTEM_PROMPT
     assert '"근거가 있던 날"은 날의 수다' in SYSTEM_PROMPT
-    assert "사건이 없는 날은 기록이 없는 것" in SYSTEM_PROMPT
+    assert '"기록 없음"인 날은 기록이 없는 것' in SYSTEM_PROMPT
+    assert f"새벽 {DAY_STARTS.hour}시" in READING and "일어난" in READING
+    # 텔레그램은 마크다운을 안 그린다 — ** 와 # 가 날글로 보였다.
+    assert "마크다운을 그리지 않는다" in SYSTEM_PROMPT
+
+
+def test_a_failure_still_answers_the_user(caplog: object) -> None:
+    """두뇌에 못 닿으면 예외가 듣기 루프에서 삼켜져 사용자는 아무 답도 못 받았다(리뷰 재현)."""
+    from src.brain.report import UNREACHABLE
+
+    @dataclass
+    class Down:
+        async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+            raise ConnectionError("데스크탑 꺼짐")
+
+    assert asyncio.run(Reporter(reasoner=Down(), providers=[]).write(NOW)) == UNREACHABLE
 
 
 def test_an_empty_answer_is_not_sent_as_is() -> None:
