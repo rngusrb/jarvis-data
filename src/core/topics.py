@@ -36,11 +36,15 @@ DAY = timedelta(days=1)
 # 쏟아진 검색 쉰 개가 꾸준한 관심으로 읽히지 않게 하려는 것이다.
 RECENT_DAYS = 7
 BEFORE_DAYS = 21
+# 이만큼 근거가 없으면 잠잠이다(하이라이트의 두 창을 합친 길이). 다시 보이면 새로 깨어난 것이다.
+QUIET_GAP = timedelta(days=RECENT_DAYS + BEFORE_DAYS)
 # 이만큼 근거가 없으면 코드가 접는다. 줄이는 쪽이 없으면 몇 달 뒤 옛 관심사가 프롬프트를 채운다.
 RETIRE_AFTER = timedelta(days=60)
 # 새 주제의 최소 근거. 흔적 하나짜리는 관심사가 아니라 스쳐간 호기심이다(옛 회고 규칙).
 MIN_EVIDENCE = 2
 MAX_NAME = 40
+# 관심사 신호의 줄기 이름. 트리거는 `topic:<번호>` — 게이트·대화·신호가 같이 쓴다.
+TOPIC_FAMILY = "topic"
 # 나무 모양을 바꾸는 연산. 모델이 이걸 매일 내면 나무를 믿을 수 없다(3단계 끝 기준).
 RESHAPING = ("rename", "move", "merge", "retire")
 # 누가 바꿨나. 오래 잠잠해 코드가 접은 것을 모델의 구조 변경으로 세면 변경 빈도가 부풀려진다.
@@ -294,6 +298,26 @@ class Standing:
     last: Optional[datetime]
     # 이 주제에 **직접** 붙은 근거, 최근 것부터.
     own: Tuple[Ground, ...]
+    # 이번에 깨어난 때 — 잠잠(28일 넘게 근거 없음)했다가 다시 보인 첫 근거. 안 쉬었으면 첫 근거.
+    # 관심사로 먼저 말 걸기가 "같은 깨어남은 한 번만" 판단하려고 본다.
+    since: Optional[datetime] = None
+    # 맨 처음 근거. since 보다 앞이면 "다시" 깨어난 것이다.
+    first: Optional[datetime] = None
+    # 가지까지 합친 최근 근거(최근 것부터 몇 개). 줄기의 직접 근거(`own`)는 옛것일 수 있다 — 줄기를
+    # 깨운 건 가지의 새 근거인데 "최근 근거"로 6주 전 것이 나갔다(JAR-024 리뷰 재현).
+    latest: Tuple[Ground, ...] = ()
+
+
+def awakened(times: Sequence[datetime], now: datetime) -> Optional[datetime]:
+    """근거 사이가 잠잠의 길이(28일) 이상 벌어진 마지막 자리 뒤의 첫 근거. 근거가 없으면 None."""
+    seen = sorted(t for t in times if t <= now)
+    if not seen:
+        return None
+    start = seen[0]
+    for before, after in zip(seen, seen[1:]):
+        if after - before >= QUIET_GAP:
+            start = after
+    return start
 
 
 def standings(tree: Tree, grounds: Sequence[Ground], now: datetime) -> List[Standing]:
@@ -325,6 +349,9 @@ def standings(tree: Tree, grounds: Sequence[Ground], now: datetime) -> List[Stan
                 recent_days=sum(1 for a in ages if a < RECENT_DAYS),
                 last=max(times) if times else None,
                 own=tuple(sorted(own.get(node.id, []), key=lambda g: g.at, reverse=True)),
+                since=awakened(times, now),
+                first=min(times) if times else None,
+                latest=tuple(sorted(merged.values(), key=lambda g: g.at, reverse=True)[:5]),
             )
         )
         for kid in tree.children(node.id):

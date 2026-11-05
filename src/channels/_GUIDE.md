@@ -14,10 +14,10 @@
 ```python
 class Channel(Protocol):
     name: str
-    async def send(self, text: str) -> None: ...
+    async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None: ...
 ```
 **이유**: 지금은 텔레그램이지만 iOS 푸시로 갈아탈 예정이고, 그때 위층
-(`runtime/loop.py`)은 한 줄도 바뀌면 안 된다.
+(`runtime/loop.py`)은 한 줄도 바뀌면 안 된다. 버튼(👍👎, JAR-025)은 덤이다 — 못 다는 채널은 글만 보낸다.
 
 ### 프레임워크를 붙이지 않는다
 **이유**: 텔레그램 Bot API 는 HTTP POST 하나라 `httpx` 로 충분하다.
@@ -85,6 +85,6 @@ python scripts/harness.py src/channels/
 
 | 파일 | 책임 |
 |------|------|
-| `base.py` | `Channel` 프로토콜 — 텔레그램↔iOS 갈아끼우는 이음매 |
-| `console.py` | 개발용. 채널 미설정 시 기본값 |
-| `telegram.py` | Bot API `sendMessage` |
+| `base.py` | `Channel` 프로토콜 — 텔레그램↔iOS 갈아끼우는 이음매. `send(text, buttons=None)` — 버튼을 못 다는 채널은 글만 |
+| `console.py` | 개발용. 채널 미설정 시 기본값. 버튼은 글 뒤에 [👍] 처럼 찍는다 |
+| `telegram.py` | Bot API `sendMessage`(버튼은 인라인 키보드), 버튼 응답 `ack` |

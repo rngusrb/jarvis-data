@@ -147,11 +147,17 @@ class TelegramChannel:
             return datetime.fromtimestamp(epoch, tz=timezone.utc)
         return datetime.now(timezone.utc)
 
-    async def ack(self, callback_id: str) -> None:
-        """버튼 누름에 응답한다. 안 하면 폰에서 로딩 표시가 계속 돈다."""
-        await self._client.post(
-            self._url("answerCallbackQuery"), json={"callback_query_id": callback_id}
-        )
+    async def ack(self, callback_id: str, text: Optional[str] = None) -> None:
+        """버튼 누름에 응답한다. 안 하면 폰에서 로딩 표시가 계속 돈다.
+
+        `text` 는 버튼 위에 잠깐 뜨는 알림(텔레그램은 200자까지). 실패하면 예외를 올린다 — 조용히
+        넘기면 눌렀는데 아무 일도 안 일어난 것처럼 보인다.
+        """
+        payload: Dict[str, Any] = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text[:200]
+        response = await self._client.post(self._url("answerCallbackQuery"), json=payload)
+        response.raise_for_status()
 
     async def aclose(self) -> None:
         await self._client.aclose()

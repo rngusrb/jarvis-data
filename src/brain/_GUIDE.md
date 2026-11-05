@@ -135,6 +135,25 @@ if not isinstance(content, str) or not content.strip():
 걸리면 `content` 를 **null** 로 준다. `str(None)` 은 `"None"` 이라는 문자열이 되고,
 그게 SKIP 검사와 빈 검사를 둘 다 통과해 사용자에게 발송된다.
 
+### ❌ 신호가 무엇에 대한 것인지(`at`)를 글자로만 견주지 않는다
+```python
+# ❌ 금지 — about == insight.at 인 기록이 있는가
+# ✅ 대신 — 같은 about 이거나, insight.at 보다 뒤에 판단한 기록이 있는가(SpeechLog.judged_since)
+```
+**사고 이력**: 2026-11-05 JAR-024 리뷰 재현. 관심사의 `at` 은 "이번에 깨어난 때"(첫 근거)인데, 회고는 안 붙은 흔적을
+7일 동안 다시 보여주고 다음 날 더 이른 흔적을 붙인다. 깨어난 때가 11-03 에서 11-01 로 당겨지자 글자가 달라져
+**같은 관심사를 다음 날 또 보냈다**(LLM 2번, 메시지 2개). 판단은 신호의 때보다 늘 뒤라 "그 뒤에 판단했나"는 밤·아침
+사건에도 같은 답을 내고, 판단 시각을 `at` 으로 쓰는 수집 감시는 늘 새 신호로 남는다.
+
+### ❌ 수집 경고를 👎 로 재우지 않는다
+```python
+# ❌ 금지 — 판단 지시문의 "👎 한 말과 비슷하면 말하지 않는다"를 수집 경고에도
+# ✅ 대신 — 👎 규칙은 사람 신호에만. 수집 경고는 예전 지시문 그대로, 반응도 판단 맥락에 안 넣는다
+```
+**사고 이력**: 2026-11-05 JAR-026 리뷰. 먼저 건 말 53번 중 51번이 수집 경고라 첫 👎 는 거기 떨어지기 쉽다. 그
+👎 가 30일 동안 매일 "비슷하면 말하지 않는다"와 함께 들어가면 끊김이 길어져도 감시견이 잔다 — 2026-08-29 "중단이
+심해질수록 감시견이 조용해졌다"(triggers/_GUIDE)와 같은 모양이다. 수집 경고의 👎 가 무엇을 뜻할지는 사용자가 정한다.
+
 ### ❌ "같은 밤"을 쿨다운 길이로 흉내 내지 않는다
 ```python
 # ❌ 금지 — "late_sleep": timedelta(hours=16)   # 같은 밤을 하루 한 번으로 만들려고 늘린다
@@ -185,6 +204,7 @@ tests:
   - tests/unit/test_reflect.py
   - tests/unit/test_trace_digest_provider.py
   - tests/unit/test_topic_provider.py
+  - tests/unit/test_feedback.py
 ```
 
 ```bash
@@ -200,8 +220,9 @@ python scripts/harness.py src/brain/
 | `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
 | `reflect.py` | 회고. 나무와 아직 안 붙은 흔적(번호와 함께)을 보여주고 연산을 받아 검사·적용한다. 오래 잠잠한 주제는 먼저 접고, 못 읽은 응답은 시끄럽게 실패(기록은 남긴다). 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
-| `gate.py` | 싼 필터. severity 임계값 + 같은 신호(`insight.at`)는 한 번 + 트리거별 쿨다운 |
-| `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지 |
+| `gate.py` | 싼 필터. severity 임계값 + 같은 신호는 한 번(그 트리거의 모든 기록에서, 신호의 때보다 뒤의 판단까지) + 줄기 간격(`topic:*` 를 묶어, 말한 것만) + 트리거별 쿨다운 |
+| `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지, 먼저 건 말의 표와 👍👎 |
+| `feedback.py` | 👍👎 — 버튼 모양(한 곳에만), 사람 얘기에 대한 반응을 판단 맥락으로(`FeedbackProvider`, 누른 때부터 30일) |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |
 | `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약·요즘 관심사(주제 나무)) |
 | `prompts.py` | 프롬프트 템플릿 + SKIP 파싱 |

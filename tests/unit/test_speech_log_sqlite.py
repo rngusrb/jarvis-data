@@ -184,3 +184,55 @@ def test_about_칸이_없는_DB도_옮겨진다(tmp_path: Path) -> None:
     log.record("sleep_drop", NOW + timedelta(hours=1), "새 판단", spoken=False, about=NOW)
     new = log.last("sleep_drop")
     assert new is not None and new.about == NOW
+
+
+def test_reactions_land_on_the_message_with_that_token(tmp_path: Path) -> None:
+    """👍👎 버튼은 표를 들고 온다. 나중에 누른 게 이긴다."""
+    log = SQLiteSpeechLog(tmp_path / "jarvis.db")
+    log.record("topic:3", NOW, "요즘 자격증 보네", token="ab12cd34")
+    log.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="ffff0000")
+
+    assert log.rate("ab12cd34", 1, NOW) is not None
+    rated = log.rate("ab12cd34", -1, NOW + timedelta(minutes=1))
+    assert rated is not None and rated.trigger == "topic:3" and rated.feedback == -1
+    assert rated.rated_at == NOW + timedelta(minutes=1)
+    assert log.rate("없는표", 1, NOW) is None
+    assert [(r.trigger, r.feedback) for r in log.rated(NOW - timedelta(days=1))] == [
+        ("topic:3", -1)
+    ]
+
+
+def test_judged_looks_at_every_record_and_family_at_spoken_ones(tmp_path: Path) -> None:
+    log = SQLiteSpeechLog(tmp_path / "jarvis.db")
+    first = NOW - timedelta(days=2)
+    log.record("topic:1", NOW, "A", about=first)
+    log.record("topic:1", NOW + timedelta(hours=1), "말 안 걸기로 함", spoken=False, about=NOW)
+    log.record("topic:2", NOW + timedelta(hours=2), "말 안 걸기로 함", spoken=False, about=NOW)
+
+    assert log.judged_since("topic:1", first) and log.judged_since("topic:1", NOW)
+    # 판단(NOW+2h)이 그 신호보다 뒤면 판단한 것이다 — 깨어난 때가 앞당겨져도 마찬가지.
+    assert log.judged_since("topic:2", first)
+    assert not log.judged_since("topic:2", NOW + timedelta(hours=3))
+    said = log.last_spoken_in("topic")
+    assert said is not None and said.text == "A"
+
+
+def test_an_old_table_gets_the_new_columns(tmp_path: Path) -> None:
+    """이미 만들어진 DB 에는 표·반응 칸이 없다. 조용히 빼먹으면 버튼이 아무 일도 안 한다."""
+    import sqlite3
+
+    db = tmp_path / "jarvis.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE speech (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL,"
+        " at TEXT NOT NULL, text TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO speech (trigger, at, text) VALUES ('x', ?, '옛 말')", (NOW.isoformat(),)
+    )
+    conn.commit()
+    conn.close()
+
+    log = SQLiteSpeechLog(db)
+    last = log.last("x")
+    assert last is not None and last.spoken and last.token is None and last.feedback == 0

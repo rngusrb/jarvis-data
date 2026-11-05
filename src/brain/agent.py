@@ -64,13 +64,22 @@ class JarvisAgent:
             return None
         return decision.message
 
-    def confirm_spoken(self, insight: Insight, now: datetime, text: str) -> None:
+    def first_allowed(self, candidates: Sequence[Insight], now: datetime) -> Optional[Insight]:
+        """후보들 중 게이트를 통과하는 첫 신호. 한 주기에 하나만 판단하려고 쓴다.
+
+        게이트는 싸다(기록 조회뿐). 이미 판단한 후보를 건너뛰어야 뒤의 후보에 차례가 온다.
+        """
+        return next((c for c in candidates if self.gate.allows(c, now)), None)
+
+    def confirm_spoken(
+        self, insight: Insight, now: datetime, text: str, token: Optional[str] = None
+    ) -> None:
         """발송에 **성공했을 때만** 부른다.
 
         실패한 발송까지 기억에 남기면, 사용자는 메시지를 못 받았는데
-        자비스는 "아까 말했지" 하고 쿨다운 내내 침묵한다.
+        자비스는 "아까 말했지" 하고 쿨다운 내내 침묵한다. `token` 은 그 말에 단 👍👎 버튼의 표다.
         """
-        self.gate.log.record(insight.trigger, now, text, spoken=True, about=insight.at)
+        self.gate.log.record(insight.trigger, now, text, spoken=True, about=insight.at, token=token)
 
     def confirm_silence(self, insight: Insight, now: datetime, reason: str) -> None:
         """**말 안 걸기로 판정했을 때** 부른다.

@@ -24,21 +24,44 @@ from typing import Optional, Sequence
 
 from src.brain.context import ContextBlock, render
 from src.core.clock import shown
-from src.core.models import Insight
+from src.core.models import COLLECTION_TRIGGER, Insight
 
 logger = logging.getLogger(__name__)
 
 SKIP_TOKEN = "SKIP"
 
+# 수집 상태에 대한 신호 — 수집 감시(`COLLECTION_TRIGGER`)와, 그 전(2026-10-30 까지) 지표마다
+# 따로 내던 수집 경고 "stale_data:*"(옛 기록에 남아 있다). 나머지는 모두 사람에 대한 신호다.
+LEGACY_COLLECTION = "stale_data:"
+
+
+def is_collection(trigger: str) -> bool:
+    """수집 경고인가. 판단 지시문과 `/status` 의 "사람 얘기 대 수집 경고"가 같이 쓴다."""
+    return trigger == COLLECTION_TRIGGER or trigger.startswith(LEGACY_COLLECTION)
+
+
+# 사람 얘기는 말하는 쪽이 기본이다 — "초기엔 수다스럽게, 줄이는 건 👍👎 로"(2026-10-07 사용자 결정).
+# 예전 지시문("당장 할 수 있는 행동이 없으면 말하지 않는다")으로는 관심사 얘기가 거의 다 빠진다
+# — 먼저 건 말 53번 중 사람에 대한 말은 2번이었다(2026-11-04).
+# 수집 경고는 예전 지시문을 **글자 그대로** 쓴다. 👎 규칙도 걸지 않는다 — 수집 경고에 👎 한 번이
+# "비슷하면 말하지 않는다"로 30일 동안 감시견을 재우면, 끊김이 길어질수록 조용해진 2026-08-29 사고와
+# 같은 모양이 된다(JAR-026 리뷰). 수집 경고의 👎 가 무엇을 뜻할지는 사용자가 정한다(BACKLOG).
 SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 감지된 신호를 보고 지금 말을 걸지 정한다.
 
-판단 기준:
+신호 종류에 따라 기준이 다르다.
+
+[사람] 사용자의 잠, 이동, 관심사처럼 사용자 자신에 대한 신호. 말을 거는 쪽이 기본이다.
+- 당장 할 행동이 없어도 알아챘다는 것 자체가 쓸모 있으면 짧게 말한다.
+- 관심사라면 도움이 될 만한 것(다가오는 일정, 다음에 볼 것, 확인해볼 것)을 하나 곁들인다.
+- 최근에 같은 이야기를 했거나, 사용자가 👎 한 말과 비슷하면 말하지 않는다.
+
+[수집] 자비스 자신의 데이터 수집 상태에 대한 신호.
 - 사용자가 이미 알고 있을 법한 이야기면 말하지 않는다.
 - 지금 당장 할 수 있는 행동이 없으면 말하지 않는다.
 - 최근에 비슷한 말을 했으면 말하지 않는다.
 
-말을 건다면 한국어 반말로 두 문장 이내로 쓴다. 숫자를 나열하지 말고, 사용자가 지금
-무엇을 하면 좋을지에 초점을 둔다.
+말을 건다면 한국어 반말로 두 문장 이내로 쓴다. 숫자를 나열하지 말고, 사람 얘기는 사용자에게
+무슨 뜻인지에, 수집 얘기는 사용자가 지금 무엇을 하면 좋을지에 초점을 둔다.
 
 반드시 JSON 한 줄로만 답한다. 판단 이유나 다른 말은 쓰지 않는다.
 말을 걸 때:     {"speak": true, "message": "사용자에게 보낼 말"}
@@ -56,6 +79,7 @@ class Decision:
 def build_prompt(insight: Insight, blocks: Sequence[ContextBlock], now: datetime) -> str:
     parts = [
         f"지금: {shown(now)}",
+        f"신호 종류: {'수집' if is_collection(insight.trigger) else '사람'}",
         f"감지된 신호: {insight.summary}",
         f"심각도: {insight.severity.name}",
     ]

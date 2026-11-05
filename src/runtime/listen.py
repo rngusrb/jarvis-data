@@ -69,11 +69,30 @@ class ListenLoop:
                 incoming.action or incoming.text,
                 meta={"action": incoming.action} if incoming.is_action else None,
             )
+            callback = incoming.meta.get("callback_id")
+            ack = getattr(self.source, "ack", None)
             try:
                 answer = await self.responder.reply(incoming, datetime.now(timezone.utc))
             except Exception:
                 logger.exception("답 만들기 실패: %.60s", incoming.text)
-                continue
+                answer = None
+            if callback and ack is not None:
+                # 버튼 누름에는 새 메시지 대신 버튼 위의 짧은 알림으로 답한다 — 👍 하나에 알림이 또
+                # 울리면 안 된다. 텔레그램은 이 응답을 받아야 빙글이를 멈추므로 답이 없어도 부른다.
+                try:
+                    await ack(str(callback), answer)
+                except Exception:
+                    # 오래된 버튼(서버가 꺼져 있던 동안 눌린 것)은 텔레그램이 응답을 거절한다.
+                    # 알림 대신 새 메시지로라도 답한다 — 안 그러면 사용자는 눌렀는데 아무 답도 못
+                    # 받는다(재리뷰 재현).
+                    logger.exception(
+                        "버튼 응답(ack) 실패 — 새 메시지로 답한다: %s", incoming.action
+                    )
+                else:
+                    if answer is not None:
+                        self.log.add("jarvis", datetime.now(timezone.utc), answer)
+                        handled += 1
+                    continue
 
             if answer is None:
                 continue

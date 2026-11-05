@@ -27,9 +27,13 @@ def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insigh
 ```python
 Insight(..., at=latest.at)   # 그 밤 — 같은 밤은 게이트가 한 번만 통과시킨다
 Insight(..., at=now)         # 상태가 이어지는 신호(수집 감시) — 쿨다운마다 다시 묻는다
+Insight(..., at=s.since)     # 관심사가 이번에 깨어난 때 — 다시 잠잠했다 깨어나면 새 신호
 ```
 **이유**: 게이트가 같은 `at` 의 신호를 한 번만 판단한다(JAR-018). 상태형 신호에 고정값("끊긴 시작
 시각")을 넣으면 한 번 말 안 걸기로 한 뒤 다시는 안 묻고, 막혔다는 로그도 안 남는다.
+게이트는 "같은 `at` 이거나 **그보다 뒤에** 판단한 기록이 있나"로 본다(JAR-024 리뷰 — 관심사의 깨어난 때가
+앞당겨져도 같은 깨어남이게). 그래서 **새 신호의 `at` 이 그 트리거의 마지막 판단보다 앞이면 막힌다.** 새 신호의
+`at` 은 그 신호가 생긴 때(그 밤, 그 아침, 그 깨어남) — 이전 판단보다 뒤여야 한다.
 
 ---
 
@@ -100,6 +104,7 @@ message: "트리거는 순수 함수다 — 네트워크·DB 금지"
 ```
 tests:
   - tests/unit/test_collection_watch.py
+  - tests/unit/test_topic_watch.py
 ```
 
 ```bash
@@ -114,3 +119,4 @@ python scripts/harness.py src/triggers/
 |------|------|
 | `base.py` | `Trigger`(지표 하나의 최근 구간), `EventTrigger`(사건 종류 하나의 최근 구간), `Watch`(종류별 마지막 수신 시각) 계약 |
 | `collection.py` | 수집 감시. 끊긴 것을 기기별로 모아 원인과 함께 하나의 신호로 |
+| `topics.py` | 관심사 신호. 주제 나무에서 뜨는 중이고 최근 7일 중 이틀 이상, 깨어난 지 2주 안인 주제를 후보 여럿으로(트리거 `topic:<번호>`, `at` 은 깨어난 때). 줄기와 가지가 함께 뜨면 가지만. 깨어 있는 시간(10~21시)에만, 👎 받은 주제와 그 아래 가지는 누른 때부터 30일 뺀다 |

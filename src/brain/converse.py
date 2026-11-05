@@ -24,10 +24,14 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
+from src.brain.feedback import MARKS as REACTIONS
+from src.brain.feedback import parse
+from src.brain.memory import SpeechLog
+from src.brain.prompts import is_collection
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
-from src.core.topics import Trend, standings
+from src.core.topics import TOPIC_FAMILY, Trend, standings
 from src.storage.conversation import SQLiteConversation
 from src.storage.topics import SQLiteTopicStore
 
@@ -67,6 +71,8 @@ class Conversationalist:
     # 대화 맥락으로 끌어올 과거 메시지 수. 길면 프롬프트가 잡음으로 찬다.
     recall: int = 12
     commands: Dict[str, Callable[[datetime], str]] = field(default_factory=dict)
+    # 자비스가 먼저 건 말의 기억(게이트와 같은 것). 👍👎 를 남기고 `/status` 가 센다.
+    speech: Optional[SpeechLog] = None
 
     def __post_init__(self) -> None:
         self.commands = {
@@ -81,9 +87,7 @@ class Conversationalist:
 
     async def reply(self, incoming: Incoming, now: datetime) -> Optional[str]:
         if incoming.is_action:
-            # 버튼은 다음 조각에서 다룬다. 지금은 삼키지 말고 알려준다 —
-            # 조용히 넘기면 눌렀는데 아무 일도 안 일어난 것처럼 보인다.
-            return "그 버튼은 아직 안 붙었어."
+            return self._react(incoming.action, now)
 
         text = incoming.text.strip()
         head = text.split()[0].lower() if text else ""
@@ -102,6 +106,30 @@ class Conversationalist:
             "/topics  내가 너에 대해 아는 것(주제 나무)"
         )
 
+    def _react(self, action: str, now: datetime) -> str:
+        """버튼. 모르는 버튼을 삼키면 눌렀는데 아무 일도 안 일어난 것처럼 보이므로 그대로 말한다."""
+        parsed = parse(action)
+        if parsed is None or self.speech is None:
+            return "그 버튼은 아직 안 붙었어."
+        value, token = parsed
+        record = self.speech.rate(token, value, now)
+        if record is None:
+            # 표가 기억에 없다(기록 전에 눌렸거나 DB 가 바뀜). 남긴 척하지 않는다.
+            logger.warning("반응을 남길 말이 없다: %s", action)
+            return "그 말은 내 기억에 없어서 반응을 못 남겼어."
+        if value > 0:
+            return f"{REACTIONS[1]} 고마워. 이런 얘기 계속할게."
+        if record.trigger.startswith(f"{TOPIC_FAMILY}:"):
+            return f"{REACTIONS[-1]} 알겠어. 이 관심사(와 그 아래 가지)는 한 달 동안 안 꺼낼게."
+        if is_collection(record.trigger):
+            # 수집 경고는 👎 로 재우지 않는다 — 끊김이 길어질수록 조용해지는 감시견이 된다
+            # (2026-08-29 사고). 이 👎 의 뜻은 사용자가 정한다(BACKLOG).
+            return (
+                f"{REACTIONS[-1]} 남겨 뒀어. 다만 수집 경고는 끊김이 이어지면 계속 알려야 해서"
+                " 바로 줄이진 않아."
+            )
+        return f"{REACTIONS[-1]} 알겠어. 이런 얘기는 줄일게."
+
     def _status(self, now: datetime) -> str:
         seen = self.catalog.last_seen()
         if not seen:
@@ -113,6 +141,16 @@ class Conversationalist:
             mark = "✅" if now - at < limit else "⚠️"
             when = f"{hours:.0f}시간 전" if hours < 48 else f"{hours / 24:.0f}일 전"
             lines.append(f"{mark} {kind} — {when}")
+        if self.speech is not None:
+            # 4단계 끝 기준: 사람에 대한 말이 수집 경고보다 많아짐.
+            said = self.speech.since(now - timedelta(days=7))
+            warned = sum(1 for r in said if is_collection(r.trigger))
+            liked = sum(1 for r in said if r.feedback > 0)
+            disliked = sum(1 for r in said if r.feedback < 0)
+            lines.append(
+                f"\n최근 7일 내가 먼저 건 말: 사람 얘기 {len(said) - warned} · 수집 경고 {warned}"
+                f" · {REACTIONS[1]} {liked} {REACTIONS[-1]} {disliked}"
+            )
         return "\n".join(lines)
 
     def _sleep(self, now: datetime) -> str:

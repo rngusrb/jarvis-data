@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+from typing import Dict, List, Optional
+
 
 class ConsoleChannel:
     name = "console"
 
-    async def send(self, text: str) -> None:
-        print(f"[jarvis] {text}")
+    async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
+        marks = "  " + " ".join(f"[{b['text']}]" for b in buttons) if buttons else ""
+        print(f"[jarvis] {text}{marks}")

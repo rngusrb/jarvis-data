@@ -82,6 +82,11 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         # 회고가 가꾸는 주제 나무도 들어간다(JAR-023).
         names = [p.name for p in client.app.state.jarvis.agent.providers]
         assert "topics" in names
+        # 먼저 건 말에 대한 👍👎 가 판단 맥락에, 뜨는 관심사가 신호로 들어간다(JAR-024·025).
+        assert "feedback" in names
+        jarvis = client.app.state.jarvis
+        assert jarvis.topic_watch is not None and jarvis.topics is not None
+        assert "topic" in jarvis.agent.gate.family_cooldowns
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:

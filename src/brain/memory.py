@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Dict, List, Optional, Protocol
 
@@ -42,6 +42,12 @@ class SpeechRecord:
     # 무엇에 대한 판단이었나 — 신호의 `at`(그 밤, 그 아침의 첫 사건). 게이트가 같은 것을 두 번
     # 묻지 않으려고 본다. 2026-11-02 전에 남은 기록에는 없다.
     about: Optional[datetime] = None
+    # 먼저 건 말에 붙인 짧은 표. 👍👎 버튼이 이걸 들고 돌아온다. 말 안 건 판단에는 없다.
+    token: Optional[str] = None
+    # 사용자의 반응: 1(👍), -1(👎), 0(없음). 나중에 누른 게 이긴다. 누른 때도 남긴다 — 👎 의 30일은
+    # 거기서 센다.
+    feedback: int = 0
+    rated_at: Optional[datetime] = None
 
 
 class SpeechLog(Protocol):
@@ -54,13 +60,37 @@ class SpeechLog(Protocol):
         text: str,
         spoken: bool = True,
         about: Optional[datetime] = None,
+        token: Optional[str] = None,
     ) -> None: ...
 
     def last(self, trigger: str) -> Optional[SpeechRecord]: ...
 
-    def since(self, moment: datetime) -> List[SpeechRecord]: ...
+    def judged_since(self, trigger: str, about: datetime) -> bool:
+        """이 트리거로 이 신호를 판단한 적이 있나 — 같은 `about` 이거나, 그보다 뒤에 판단한 기록.
 
-    """``moment`` 이후 **실제로 한 말**만. 맥락 제공자가 쓴다."""
+        마지막 기록만이 아니라 전부에서 본다(주제 A, B, 다시 A). "이후에 판단"까지 보는 건
+        신호의 `at` 이 앞당겨질 수 있어서다 — 회고가 더 이른 근거를 다음 날 붙이면 관심사의
+        깨어난 때가 당겨지고, 글자가 같은지만 보면 같은 깨어남을 다시 묻는다(JAR-024 리뷰 재현).
+        밤·아침 사건처럼 `at` 이 판단보다 앞서는 신호는 둘이 같은 답을 내고, 판단 시각을 `at`
+        으로 쓰는 신호(수집 감시)는 늘 새 신호다.
+        """
+        ...
+
+    def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
+        """줄기(`family:…` 트리거들) 안에서 마지막으로 **실제로 한 말**."""
+        ...
+
+    def since(self, moment: datetime) -> List[SpeechRecord]:
+        """``moment`` 이후 **실제로 한 말**만. 맥락 제공자가 쓴다."""
+        ...
+
+    def rate(self, token: str, value: int, at: datetime) -> Optional[SpeechRecord]:
+        """표가 가리키는 말에 반응을 남긴다(`at` 은 누른 때). 그런 말이 없으면 None."""
+        ...
+
+    def rated(self, moment: datetime) -> List[SpeechRecord]:
+        """``moment`` 이후에 **누른** 반응(👍👎)이 붙은 말, 누른 순."""
+        ...
 
 
 @dataclass
@@ -74,6 +104,7 @@ class InMemorySpeechLog:
         text: str,
         spoken: bool = True,
         about: Optional[datetime] = None,
+        token: Optional[str] = None,
     ) -> None:
         """판단을 기록한다.
 
@@ -83,12 +114,42 @@ class InMemorySpeechLog:
         **"싼 게이트 먼저, 비싼 LLM 나중"이 여기서 새고 있었다.**
         """
         self._by_trigger.setdefault(trigger, []).append(
-            SpeechRecord(trigger=trigger, at=at, text=text, spoken=spoken, about=about)
+            SpeechRecord(trigger=trigger, at=at, text=text, spoken=spoken, about=about, token=token)
         )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:
         entries = self._by_trigger.get(trigger)
         return entries[-1] if entries else None
+
+    def judged_since(self, trigger: str, about: datetime) -> bool:
+        return any(r.about == about or r.at > about for r in self._by_trigger.get(trigger, []))
+
+    def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
+        found = [
+            r
+            for name, records in self._by_trigger.items()
+            if name.startswith(f"{family}:")
+            for r in records
+            if r.spoken
+        ]
+        return max(found, key=lambda r: r.at) if found else None
+
+    def rated(self, moment: datetime) -> List[SpeechRecord]:
+        found = [
+            r
+            for records in self._by_trigger.values()
+            for r in records
+            if r.feedback and r.rated_at is not None and r.rated_at >= moment
+        ]
+        return sorted(found, key=lambda r: r.rated_at or r.at)
+
+    def rate(self, token: str, value: int, at: datetime) -> Optional[SpeechRecord]:
+        for records in self._by_trigger.values():
+            for i, r in enumerate(records):
+                if r.token == token:
+                    records[i] = replace(r, feedback=value, rated_at=at)
+                    return records[i]
+        return None
 
     def since(self, moment: datetime) -> List[SpeechRecord]:
         """``moment`` 이후에 **실제로 한 말**을 시간순으로.

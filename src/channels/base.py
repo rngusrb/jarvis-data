@@ -13,14 +13,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 
 class Channel(Protocol):
     name: str
 
-    async def send(self, text: str) -> None:
-        """사용자에게 메시지를 밀어넣는다. 실패하면 예외를 올린다."""
+    async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
+        """사용자에게 메시지를 밀어넣는다. 실패하면 예외를 올린다.
+
+        `buttons` 는 [{"text": 보이는 글, "action": 눌렸을 때 돌아올 값}]. 버튼을 못 다는 채널은
+        글만 보낸다 — 버튼은 덤이지 말의 일부가 아니다.
+        """
         ...
 
 
