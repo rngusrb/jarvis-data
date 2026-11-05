@@ -87,6 +87,9 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         jarvis = client.app.state.jarvis
         assert jarvis.topic_watch is not None and jarvis.topics is not None
         assert "topic" in jarvis.agent.gate.family_cooldowns
+        # 어제·오늘 위치 사건도 맥락에, /report 를 쓰는 쪽도 조립된다(JAR-027·028).
+        assert "event_digest" in names
+        assert client.app.state.reporter is not None
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:

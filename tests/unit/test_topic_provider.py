@@ -58,3 +58,23 @@ def test_leaves_out_what_was_seen_on_one_day_only(tmp_path: Path) -> None:
     ]
     store.apply(plan(store.load(), ops, set(ids), NOW), NOW)
     assert TopicProvider(topics=store).fetch(None, NOW) is None
+
+
+def test_the_report_sees_more_with_counts_that_cannot_be_misread(tmp_path: Path) -> None:
+    """ "43일"을 연속 일수로 읽었다 — "근거가 있던 날"로 적는다(2026-11-05 보고서)."""
+    from src.core.topics import Trend
+
+    store, ids = _store(tmp_path, [1, 1.1, 40, 41])
+    ops = [
+        Op("create", name="삿포로 여행", evidence=(ids[0], ids[1])),
+        Op("create", name="야구", evidence=(ids[2], ids[3])),
+    ]
+    store.apply(plan(store.load(), ops, set(ids), NOW), NOW)
+
+    wide = TopicProvider(
+        topics=store, trends=(Trend.RISING, Trend.STEADY, Trend.FADING, Trend.NEW), detail=True
+    )
+    block = wide.fetch(None, NOW)
+    assert block is not None
+    assert "- 삿포로 여행 — 처음 보임(최근 7일 중 1일), 근거 2개 · 근거가 있던 날 1일" in block.body
+    assert "야구" not in block.body  # 잠잠한 건 보고서에도 안 넣는다

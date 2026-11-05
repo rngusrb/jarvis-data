@@ -188,5 +188,5 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
 | `clock.py` | 시각 규칙 두 가지 — 저장·비교용 UTC 표기(`stamp`), 보여줄 한국 시간(`KST`, `local`). LLM 에게 알려줄 지금(`shown`, 요일까지 — `WEEKDAYS`) |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
-| `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다) |
+| `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다). 사건 이름의 뜻(`labels`·`describe` — 섹터가 단다) |
 | `places.py` | 장소 계산 — 거리, 반경 안 가장 가까운 곳, 중심 옮기기. 번호가 바뀌지 않게 하나씩 붙인다 |

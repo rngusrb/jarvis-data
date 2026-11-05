@@ -87,3 +87,34 @@ def test_텍스트가_없는_것도_커서는_넘긴다() -> None:
     assert len(got) == 1
     assert got[0].text == ""
     assert got[0].cursor == 5
+
+
+def test_긴_말은_줄_경계에서_나눠_보내고_버튼은_마지막에_단다() -> None:
+    """텔레그램은 한 메시지 4,096자까지다. 넘으면 거절돼 보고서가 통째로 안 간다."""
+    from src.channels.telegram import PIECE, split
+
+    sent: List[Dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    channel = TelegramChannel(
+        bot_token="t",
+        chat_id=OWNER,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        poll_seconds=0,
+    )
+    report = "\n".join(f"{i:03d} " + "가" * 95 for i in range(100))  # 약 1만 자
+    buttons = [{"text": "👍", "action": "fb:+:t"}]
+    asyncio.run(channel.send(report, buttons=buttons))
+
+    assert len(sent) == 3 and all(len(m["text"]) <= PIECE for m in sent)
+    assert "\n".join(m["text"] for m in sent) == report  # 줄을 안 잃는다
+    assert [("reply_markup" in m) for m in sent] == [False, False, True]
+    assert [m["disable_notification"] for m in sent] == [False, True, True]
+    # 한 줄이 상한보다 길면 그 줄을 자른다.
+    assert [len(p) for p in split("가" * 9000)] == [PIECE, PIECE, 1000]
+    assert split("짧다") == ["짧다"]

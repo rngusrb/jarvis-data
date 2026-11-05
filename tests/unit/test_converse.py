@@ -242,3 +242,22 @@ def test_상태에_먼저_건_말을_사람_얘기와_수집_경고로_센다(tm
 
     answer = _ask(c, "/status") or ""
     assert "최근 7일 내가 먼저 건 말: 사람 얘기 1 · 수집 경고 2 · 👍 1 👎 0" in answer
+
+
+def test_report는_보고서를_쓰는_쪽에_맡긴다(tmp_path: Path) -> None:
+    """명령어 꼴이지만 생각을 시키는 요청이다. 없으면 안 붙었다고 정직하게."""
+
+    @dataclass
+    class FakeReporter:
+        calls: List[datetime] = field(default_factory=list)
+
+        async def write(self, now: datetime) -> str:
+            self.calls.append(now)
+            return "# 요즘의 너"
+
+    c = _build(tmp_path)
+    assert "아직 안 붙었어" in (_ask(c, "/report") or "")
+    reporter = FakeReporter()
+    c.reporter = reporter  # type: ignore[assignment]
+    assert _ask(c, "/report") == "# 요즘의 너" and reporter.calls == [NOW]
+    assert "/report" in (_ask(c, "/help") or "")
