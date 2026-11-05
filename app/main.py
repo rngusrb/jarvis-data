@@ -49,6 +49,8 @@ from src.runtime.ingest import router as ingest_router
 from src.runtime.listen import ListenLoop
 from src.runtime.loop import JarvisLoop
 from src.sectors import commute, health, interest
+from src.sectors.commute.triggers import FAMILY as COMMUTE_FAMILY
+from src.sectors.health.triggers import FAMILY as HEALTH_FAMILY
 from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
 from src.storage.events import SQLiteEventStore
@@ -235,7 +237,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 말 걸 시간대가 10~21시(11시간)라 하루 두 번까지다(12시간이면 한 번뿐 — JAR-024 리뷰).
         # 초기엔 수다스럽게, 줄이는 건 👍👎 로(2026-10-07 결정). 신호 자체가 주 두 개쯤이라
         # (백테스트) 간격은 상한일 뿐이다.
-        family_cooldowns={TOPIC_FAMILY: timedelta(hours=6)},
+        # 건강·이동도 줄기로 센다(2026-10-07 결정, JAR-029). 같은 주기에 울린 것은 루프가 한
+        # 판단으로 묶고, 이 간격은 몇 분 차이로 따로 들어오는 것(나선 때 07:40, 탄 때 07:43)을
+        # 막는다 — 한 아침에 이동 얘기 하나, 한 밤에 잠 얘기 하나.
+        family_cooldowns={
+            TOPIC_FAMILY: timedelta(hours=6),
+            HEALTH_FAMILY: timedelta(hours=6),
+            COMMUTE_FAMILY: timedelta(hours=6),
+        },
     )
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
@@ -274,6 +283,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.catalog = catalog
     app.state.places = places
 
+    # 대화 기록. 듣는 루프가 주고받은 말을, 반응 루프가 먼저 건 말을 적는다 — 둘이 한 흐름이어야
+    # 사용자가 먼저 건 말에 답할 때 자비스가 무슨 말에 대한 답인지 안다(2026-11-05 사용자 결정).
+    conversation = SQLiteConversation(settings.db_path)
     jarvis = JarvisLoop(
         source=store,
         triggers=sector_triggers,
@@ -286,6 +298,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 회고가 가꾸는 나무에서 요즘 뜨는 관심사로 먼저 말을 건다(한 주기에 하나).
         topic_watch=TopicWatch(),
         topics=SQLiteTopicStore(settings.db_path),
+        transcript=conversation,
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis
@@ -312,7 +325,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
     channel = jarvis.channel
     if isinstance(channel, TelegramChannel):
-        conversation = SQLiteConversation(settings.db_path)
         listener = ListenLoop(
             source=channel,
             responder=Conversationalist(

@@ -62,6 +62,7 @@ SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 감지된 신호를 보
 
 말을 건다면 한국어 반말로 두 문장 이내로 쓴다. 숫자를 나열하지 말고, 사람 얘기는 사용자에게
 무슨 뜻인지에, 수집 얘기는 사용자가 지금 무엇을 하면 좋을지에 초점을 둔다.
+같은 줄기의 다른 신호가 함께 오면 한 말에 같이 담는다 — 따로 말할 기회는 없다.
 
 반드시 JSON 한 줄로만 답한다. 판단 이유나 다른 말은 쓰지 않는다.
 말을 걸 때:     {"speak": true, "message": "사용자에게 보낼 말"}
@@ -76,13 +77,23 @@ class Decision:
     message: str = ""
 
 
-def build_prompt(insight: Insight, blocks: Sequence[ContextBlock], now: datetime) -> str:
+def build_prompt(
+    insight: Insight,
+    blocks: Sequence[ContextBlock],
+    now: datetime,
+    also: Sequence[Insight] = (),
+) -> str:
+    """판단 프롬프트. `also` 는 같은 주기에 같은 줄기에서 울려 이 판단에 묶인 신호들."""
     parts = [
         f"지금: {shown(now)}",
         f"신호 종류: {'수집' if is_collection(insight.trigger) else '사람'}",
         f"감지된 신호: {insight.summary}",
         f"심각도: {insight.severity.name}",
     ]
+    if also:
+        # 같은 밤·같은 아침을 본 신호들이다. 따로 판단하면 한 주기에 두 말이 나갔다(BACKLOG 4단계).
+        lines = "\n".join(f"- {o.summary} (심각도: {o.severity.name})" for o in also)
+        parts.append(f"같은 줄기의 다른 신호(이 판단에 같이 묶였다):\n{lines}")
     if blocks:
         parts.append(f"참고 맥락:\n{render(blocks)}")
     parts.append("지금 말을 걸까?")

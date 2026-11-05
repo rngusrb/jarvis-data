@@ -31,6 +31,8 @@ def test_baseline보다_짧으면_감지한다() -> None:
     insight = trigger.check(_nights([7.0, 7.2, 6.9, 7.1, 5.0]), NOW)
     assert insight is not None
     assert insight.trigger == "sleep_drop"
+    # 수면 신호는 건강 줄기다 — 같은 밤을 보는 다른 수면 신호와 한 판단으로 묶인다(JAR-029).
+    assert insight.family == "health"
     assert insight.severity is Severity.NOTABLE
 
 

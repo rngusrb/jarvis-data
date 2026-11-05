@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS speech (
     -- 먼저 건 말에 붙인 짧은 표(👍👎 버튼이 들고 온다)와 사용자의 반응(1·-1·0), 누른 때.
     token    TEXT,
     feedback INTEGER NOT NULL DEFAULT 0,
-    rated_at TEXT
+    rated_at TEXT,
+    -- 큰 줄기(건강·이동·관심사·수집). 게이트가 "이 줄기로 마지막에 말한 때"를 이걸로 찾는다.
+    family   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_speech_trigger_at ON speech (trigger, at);
 """
@@ -54,9 +56,18 @@ class SQLiteSpeechLog:
                 "token TEXT",
                 "feedback INTEGER NOT NULL DEFAULT 0",
                 "rated_at TEXT",
+                "family TEXT",
             ):
                 if column.split()[0] not in columns:
                     conn.execute(f"ALTER TABLE speech ADD COLUMN {column}")
+            if "family" not in columns:
+                # 줄기 칸이 생기기 전 기록 중 이름에 줄기가 든 것(`topic:12`)만 채운다. 안 채우면
+                # 배포 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격(6시간) 안에 또 말한다.
+                # 이름에 줄기가 없는 옛 기록(sleep_drop 등)은 비워 둔다 — 저장소는 섹터를 모른다.
+                conn.execute(
+                    "UPDATE speech SET family = substr(trigger, 1, instr(trigger, ':') - 1)"
+                    " WHERE family IS NULL AND instr(trigger, ':') > 0"
+                )
             # 표는 ALTER 뒤에야 칸이 있다. 이 색인은 버튼이 돌아왔을 때 그 말을 찾는다.
             conn.execute("CREATE INDEX IF NOT EXISTS idx_speech_token ON speech (token)")
 
@@ -77,11 +88,12 @@ class SQLiteSpeechLog:
         spoken: bool = True,
         about: Optional[datetime] = None,
         token: Optional[str] = None,
+        family: str = "",
     ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO speech (trigger, at, text, spoken, about, token)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO speech (trigger, at, text, spoken, about, token, family)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     trigger,
                     stamp(at),
@@ -89,6 +101,7 @@ class SQLiteSpeechLog:
                     1 if spoken else 0,
                     stamp(about) if about else None,
                     token,
+                    family or None,
                 ),
             )
 
@@ -111,9 +124,9 @@ class SQLiteSpeechLog:
     def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {_COLUMNS} FROM speech WHERE trigger LIKE ? AND spoken = 1"
+                f"SELECT {_COLUMNS} FROM speech WHERE family = ? AND spoken = 1"
                 " ORDER BY at DESC LIMIT 1",
-                (f"{family}:%",),
+                (family,),
             ).fetchone()
         return _to_record(row) if row else None
 
@@ -154,7 +167,7 @@ class SQLiteSpeechLog:
         return _to_record(found)
 
 
-_COLUMNS = "trigger, at, text, spoken, about, token, feedback, rated_at"
+_COLUMNS = "trigger, at, text, spoken, about, token, feedback, rated_at, family"
 
 
 def _to_record(row: Sequence[object]) -> SpeechRecord:
@@ -167,4 +180,5 @@ def _to_record(row: Sequence[object]) -> SpeechRecord:
         token=str(row[5]) if row[5] else None,
         feedback=int(str(row[6] or 0)),
         rated_at=datetime.fromisoformat(str(row[7])) if row[7] else None,
+        family=str(row[8]) if row[8] else "",
     )

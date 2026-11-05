@@ -17,6 +17,10 @@ from src.core.models import Insight, Observation, Severity
 
 logger = logging.getLogger(__name__)
 
+# 이 섹터 신호들의 줄기. 수면 급감·늦게 잠듦·만성 부족은 같은 밤을 본다 — 한 주기에 같이 울리면
+# 한 판단·한 말로 묶이고, 말한 뒤에는 줄기 간격을 쓴다(app/main.py).
+FAMILY = "health"
+
 # 워치는 정상 수면을 Core/Deep/REM 단계로 쪼개 10~20조각을 남긴다.
 # 조각이 한두 개뿐이면 잠을 잔 게 아니라 측정이 실패한 것이다.
 MIN_SEGMENTS = 3
@@ -119,6 +123,7 @@ class SleepDropTrigger:
         )
         return Insight(
             trigger=self.name,
+            family=FAMILY,
             summary=summary,
             severity=severity,
             at=latest.at,
@@ -181,6 +186,7 @@ class ChronicShortSleepTrigger:
         )
         return Insight(
             trigger=self.name,
+            family=FAMILY,
             summary=summary,
             severity=severity,
             at=recent[-1].at,
@@ -263,6 +269,7 @@ class LateSleepTrigger:
             return None
         return Insight(
             trigger=self.name,
+            family=FAMILY,
             summary=(
                 f"어젯밤 {_clock_after_noon(slept)}에 잠들었다. 최근 {len(baseline)}일 평소"
                 f"({_clock_after_noon(usual)})보다 {slept - usual:.1f}시간 늦음."

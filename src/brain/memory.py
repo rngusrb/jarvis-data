@@ -48,6 +48,9 @@ class SpeechRecord:
     # 거기서 센다.
     feedback: int = 0
     rated_at: Optional[datetime] = None
+    # 큰 줄기(건강·이동·관심사·수집) — 신호가 들고 온 것. 게이트가 "이 줄기로 마지막에 말한 때"를
+    # 이걸로 찾는다. 2026-11-05 전 기록은 이름에 줄기가 든 것(`topic:12`)만 채워져 있다.
+    family: str = ""
 
 
 class SpeechLog(Protocol):
@@ -61,6 +64,7 @@ class SpeechLog(Protocol):
         spoken: bool = True,
         about: Optional[datetime] = None,
         token: Optional[str] = None,
+        family: str = "",
     ) -> None: ...
 
     def last(self, trigger: str) -> Optional[SpeechRecord]: ...
@@ -77,7 +81,8 @@ class SpeechLog(Protocol):
         ...
 
     def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
-        """줄기(`family:…` 트리거들) 안에서 마지막으로 **실제로 한 말**."""
+        """이 줄기에서 마지막으로 **실제로 한 말**. 기록에 적힌 줄기로 찾는다 — 트리거 이름을
+        쪼개 짐작하지 않는다(건강 트리거 이름에는 줄기가 안 들어 있다)."""
         ...
 
     def since(self, moment: datetime) -> List[SpeechRecord]:
@@ -105,6 +110,7 @@ class InMemorySpeechLog:
         spoken: bool = True,
         about: Optional[datetime] = None,
         token: Optional[str] = None,
+        family: str = "",
     ) -> None:
         """판단을 기록한다.
 
@@ -114,7 +120,15 @@ class InMemorySpeechLog:
         **"싼 게이트 먼저, 비싼 LLM 나중"이 여기서 새고 있었다.**
         """
         self._by_trigger.setdefault(trigger, []).append(
-            SpeechRecord(trigger=trigger, at=at, text=text, spoken=spoken, about=about, token=token)
+            SpeechRecord(
+                trigger=trigger,
+                at=at,
+                text=text,
+                spoken=spoken,
+                about=about,
+                token=token,
+                family=family,
+            )
         )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:
@@ -127,10 +141,9 @@ class InMemorySpeechLog:
     def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
         found = [
             r
-            for name, records in self._by_trigger.items()
-            if name.startswith(f"{family}:")
+            for records in self._by_trigger.values()
             for r in records
-            if r.spoken
+            if r.spoken and r.family == family
         ]
         return max(found, key=lambda r: r.at) if found else None
 

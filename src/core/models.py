@@ -114,6 +114,10 @@ class Insight:
     # 한 뒤 다시는 안 묻고 로그도 안 남는다.
     at: datetime
     observations: Tuple[Observation, ...] = ()
+    # 큰 줄기(건강·이동·관심사·수집). 트리거가 단다 — 어느 줄기인지는 섹터의 사실이다. 게이트는
+    # "이 줄기로 마지막에 말한 때"를 보고, 루프는 한 주기에 같은 줄기 신호를 한 판단으로 묶는다
+    # (2026-10-07 결정). 비우면 트리거 하나가 제 줄기다.
+    family: str = ""
 
 
 class ObservationCatalog(Protocol):

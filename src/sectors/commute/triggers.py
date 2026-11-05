@@ -73,6 +73,10 @@ def _past(by_day: Dict[date, Event], today: date, keep: int) -> List[Event]:
 # **받은 때**로 잰다. 일어난 때로 재면 맥을 거쳐 늦게 들어온 아침이 아무 기록 없이 빠졌다(재리뷰).
 FRESH_FOR = timedelta(hours=3)
 
+# 이 섹터 신호들의 줄기. 늦게 나섬과 평소와 다른 탑승은 같은 아침을 본다 — 나선 때와 탄 때가
+# 몇 분 차이로 따로 들어오므로, 한 아침에 두 말이 나가지 않게 하는 건 줄기 간격이다(app/main.py).
+FAMILY = "commute"
+
 
 def _just_arrived(event: Event, now: datetime, fresh_for: timedelta) -> bool:
     return now - (event.received_at or event.at) <= fresh_for
@@ -114,6 +118,7 @@ class LateDepartureTrigger:
             return None
         return Insight(
             trigger=self.name,
+            family=FAMILY,
             summary=(
                 f"오늘 아침 {_clock(left)}에 나섰다. 최근 평일 {len(past)}일 평소"
                 f"({_clock(usual)})보다 {round((left - usual) * 60)}분 늦다."
@@ -153,6 +158,7 @@ class UnusualBoardingTrigger:
         named = {r.place_id: r.name for r in roles(events)}
         return Insight(
             trigger=self.name,
+            family=FAMILY,
             summary=(
                 f"오늘 아침 첫 탑승이 평소 타는 곳(장소 #{usual}{_as(named.get(usual))}, "
                 f"최근 평일 {len(past)}일 중 {days}일)이 아니라 "
