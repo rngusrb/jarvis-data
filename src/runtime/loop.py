@@ -244,7 +244,7 @@ class JarvisLoop:
             )
         except Exception:
             # 대화 기록이 빠지면 사용자가 이 말에 답할 때 자비스가 무슨 말에 대한 답인지 모른다.
-            # 발화 기억에는 남았으니 반복은 안 한다.
+            # 발화 기억에 남았으면 반복은 안 한다(기록까지 실패했으면 위에서 따로 남겼다).
             logger.exception("먼저 건 말을 대화 기록에 못 적었다: %s", insight.trigger)
 
     async def run_forever(self, interval_sec: int) -> None:
