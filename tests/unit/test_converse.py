@@ -287,3 +287,98 @@ async def finish_later(later: object) -> str:
 
     assert isinstance(later, Later)
     return await later.then
+
+
+# ── 웹을 찾아보고 답하기 (JAR-031~033) ─────────────────────────────
+
+
+@dataclass
+class Turns:
+    """도구 고리에 정해 둔 차례를 차례로 준다."""
+
+    turns: list
+    asked: list = field(default_factory=list)
+
+    async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+        self.asked.append(messages)
+        return self.turns.pop(0)
+
+
+@dataclass
+class OneResult:
+    async def search(self, query: str) -> list:
+        from src.brain.web import Found
+
+        return [
+            Found(
+                title="큐넷",
+                url="https://www.q-net.or.kr/a",
+                snippet="3회 실기 10.24~",
+                engine="naver",
+            )
+        ]
+
+
+def _with_tools(tmp_path: Path, turns: list) -> tuple:
+    from src.brain.tools import ToolLoop
+
+    c = _build(tmp_path)
+    client = Turns(turns)
+    c.tools = ToolLoop(client=client, search=OneResult(), reader=None)  # type: ignore[arg-type]
+    return c, client
+
+
+def test_a_plain_question_is_answered_at_once_even_with_tools(tmp_path: Path) -> None:
+    from src.brain.client import Turn
+    from src.brain.tools import GUIDE
+
+    c, client = _with_tools(tmp_path, [Turn(content="나는 잘 있어. 너는?")])
+    assert _ask(c, "안녕") == "나는 잘 있어. 너는?"
+    system = client.asked[0][0]["content"]
+    assert GUIDE in system and "한국어 반말" in system
+
+
+def test_a_question_that_needs_the_web_says_it_is_looking_first(tmp_path: Path) -> None:
+    """찾기 시작하면 10~40초 — \"찾아볼게\"를 먼저 보내고 답은 따로 보낸다(듣기 루프의 Later)."""
+    from src.brain.client import ToolCall, Turn
+    from src.brain.converse import LOOKING, Later
+
+    call = ToolCall(
+        id="c1", name="web_search", arguments={"query": "정처기 실기"}, raw={"id": "c1"}
+    )
+    c, _ = _with_tools(
+        tmp_path,
+        [Turn(content="", calls=(call,)), Turn(content="3회 실기는 10월 24일부터야 (큐넷).")],
+    )
+    reply = asyncio.run(c.reply(Incoming(text="정처기 실기 언제야?", at=NOW, cursor=1), NOW))
+
+    assert isinstance(reply, Later) and reply.now == LOOKING
+    assert asyncio.run(_await(reply.then)) == "3회 실기는 10월 24일부터야 (큐넷)."
+
+
+async def _await(then):  # type: ignore[no-untyped-def]
+    return await then
+
+
+def test_an_unreachable_brain_still_gets_an_answer(tmp_path: Path) -> None:
+    """예외를 위로 올리면 듣기 루프가 로그만 남기고 아무 답도 안 보낸다 — 무슨 일인지 말한다."""
+    import httpx
+
+    from src.brain.converse import DOWN, STUCK
+
+    @dataclass
+    class Raising:
+        error: Exception
+
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            raise self.error
+
+    from src.brain.tools import ToolLoop
+
+    for error, expected in (
+        (httpx.ConnectError("down", request=httpx.Request("POST", "http://brain")), DOWN),
+        (RuntimeError("bad"), STUCK),
+    ):
+        c = _build(tmp_path)
+        c.tools = ToolLoop(client=Raising(error), search=OneResult(), reader=None)  # type: ignore[arg-type]
+        assert _ask(c, "정처기 언제야?") == expected

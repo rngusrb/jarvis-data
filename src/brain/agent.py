@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Optional, Sequence
 
 from src.brain.client import Reasoner
-from src.brain.context import ContextProvider, assemble
+from src.brain.context import ContextBlock, ContextProvider, assemble
 from src.brain.gate import Gate
 from src.brain.prompts import SYSTEM_PROMPT, build_prompt, parse_decision
 from src.core.models import Insight
@@ -32,7 +32,11 @@ class JarvisAgent:
     providers: Sequence[ContextProvider] = ()
 
     async def consider(
-        self, insight: Insight, now: datetime, also: Sequence[Insight] = ()
+        self,
+        insight: Insight,
+        now: datetime,
+        also: Sequence[Insight] = (),
+        extra: Sequence[ContextBlock] = (),
     ) -> Optional[str]:
         """이 신호에 대해 사용자에게 건넬 말. 입 다물기로 하면 None.
 
@@ -53,7 +57,8 @@ class JarvisAgent:
         if not self.gate.allows(insight, now):
             return None
 
-        blocks = assemble(self.providers, insight, now)
+        # `extra` 는 이 신호만을 위해 방금 만든 맥락(관심사 준비 — 웹에서 찾아본 것).
+        blocks = [*assemble(self.providers, insight, now), *extra]
         prompt = build_prompt(insight, blocks, now, also)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
         decision = parse_decision(reply)

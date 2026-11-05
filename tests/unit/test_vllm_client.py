@@ -98,3 +98,58 @@ def test_연결은_따로_짧게_기다린다() -> None:
     client = VLLMClient("http://vllm", timeout=600.0)
     timeout = client._client.timeout
     assert timeout.connect == 10.0 and timeout.read == 600.0
+
+
+def test_도구_호출을_읽는다() -> None:
+    """도구를 주면 tool_choice=auto, 생각을 켜면 chat_template_kwargs 를 안 보낸다."""
+    reply = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"query": "정처기"}'},
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+    sent: List[Dict[str, Any]] = []
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    turn = asyncio.run(_client(reply, sent).chat([{"role": "user", "content": "q"}], tools, True))
+
+    assert turn.content == "" and turn.finish == "tool_calls"
+    assert turn.calls[0].name == "web_search" and turn.calls[0].arguments == {"query": "정처기"}
+    assert turn.calls[0].raw["id"] == "c1"
+    assert sent[0]["tool_choice"] == "auto" and "chat_template_kwargs" not in sent[0]
+
+
+def test_도구_인자가_깨지면_빈_인자로_남긴다(caplog: Any) -> None:
+    """조용히 버리면 모델은 왜 답이 없는지 모른다 — 빈 인자로 두고 도구가 \"비었다\"로 돌려준다."""
+    reply = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "function": {"name": "web_search", "arguments": "{query: 정처기"},
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+    sent: List[Dict[str, Any]] = []
+    turn = asyncio.run(_client(reply, sent).chat([{"role": "user", "content": "q"}], None, False))
+
+    assert turn.calls[0].arguments == {}
+    assert "JSON 이 아니다" in caplog.text
+    assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False} and "tools" not in sent[0]

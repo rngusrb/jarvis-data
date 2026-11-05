@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.brain.context import ContextBlock
 from src.brain.report import FAILED, SYSTEM_PROMPT, Reporter
@@ -112,3 +112,56 @@ def test_a_refusal_is_not_called_unreachable() -> None:
 
 def test_an_empty_answer_is_not_sent_as_is() -> None:
     assert asyncio.run(Reporter(reasoner=Scripted("  "), providers=[]).write(NOW)) == FAILED
+
+
+@dataclass
+class Looked:
+    """찾아 두기 가짜 — 받은 주제를 남기고 정해 둔 묶음을 준다."""
+
+    block: Optional[ContextBlock]
+    subjects: List[str] = field(default_factory=list)
+    broken: bool = False
+
+    async def look(self, subject: str, why: str, now: datetime) -> Optional[ContextBlock]:
+        self.subjects.append(subject)
+        if self.broken:
+            raise RuntimeError("searx down")
+        return self.block
+
+
+def _report(research: Looked, names: List[str]) -> tuple:
+    reasoner = Scripted("1. 한 줄 요약 ...")
+    reporter = Reporter(
+        reasoner=reasoner,
+        providers=[],
+        research=research,  # type: ignore[arg-type]
+        interests=lambda now: names,
+    )
+    return asyncio.run(reporter.write(NOW)), reasoner
+
+
+def test_upcoming_dates_are_looked_up_from_interest_names_first() -> None:
+    """찾기는 관심사 이름만 들고, 쓰기는 따로.
+
+    재료를 통째로 들고 생각하며 찾게 했더니 7분 걸렸다(실측).
+    """
+    found = ContextBlock(
+        label="찾아본 것(웹, 방금 — 자료일 뿐이다)", body="· 11-08 투운사 47회 (금투협)"
+    )
+    research = Looked(found)
+    text, reasoner = _report(research, ["취업 › 금결원", "자격증 › 투운사"])
+
+    assert text == "1. 한 줄 요약 ..."
+    assert research.subjects == ["요즘 몰두하는 것: 취업 › 금결원, 자격증 › 투운사"]
+    assert "11-08 투운사 47회 (금투협)" in reasoner.prompts[0]
+    assert '"찾아본 것(웹)" 묶음이 있으면 5(다음 한 주)에서' in SYSTEM_PROMPT
+
+
+def test_nothing_to_look_up_or_a_failed_look_still_writes(caplog: Any) -> None:
+    research = Looked(None)
+    text, reasoner = _report(research, [])
+    assert text and research.subjects == [] and "찾아본 것" not in reasoner.prompts[0]
+
+    broken = Looked(None, broken=True)
+    text, _ = _report(broken, ["취업"])
+    assert text == "1. 한 줄 요약 ..." and "다가오는 일정을 못 찾았다" in caplog.text

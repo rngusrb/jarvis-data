@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from src.brain.agent import JarvisAgent
+from src.brain.context import ContextBlock
 from src.brain.feedback import buttons, new_token
 from src.brain.providers import TopicSource
 from src.channels.base import Channel
@@ -33,6 +34,12 @@ from src.triggers.base import EventTrigger, Trigger, Watch
 from src.triggers.topics import TopicWatch, muted
 
 logger = logging.getLogger(__name__)
+
+
+class Research(Protocol):
+    """관심사로 말 걸기 전에 웹에서 찾아 둘 것. 없으면 None."""
+
+    async def prepare(self, insight: Insight, now: datetime) -> Optional[ContextBlock]: ...
 
 
 class Transcript(Protocol):
@@ -61,6 +68,9 @@ class JarvisLoop:
     topics: Optional[TopicSource] = None
     # 먼저 건 말을 대화 기록에도 적는다(2026-11-05 사용자 결정). 없으면 발화 기억에만 남는다.
     transcript: Optional[Transcript] = None
+    # 관심사 신호가 게이트를 통과하면 판단 전에 웹에서 찾아 둔다(일정을 지어내지 않게). 없으면 안
+    # 찾는다.
+    research: Optional[Research] = None
     # 지금. 관심사 신호는 시간대(깨어 있는 시간)를 보므로 시험에서 정할 수 있어야 한다.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
@@ -120,7 +130,7 @@ class JarvisLoop:
                 logger.exception("관심사 신호 실패 — 건너뛴다")
                 insight = None
             if insight is not None:
-                sent += await self._speak(insight, now)
+                sent += await self._speak(insight, now, extra=await self._prepare(insight, now))
 
         if self.watches and self.snapshot is not None:
             try:
@@ -185,10 +195,30 @@ class JarvisLoop:
         candidates = self.topic_watch.check(board, notes, now, quiet)
         return self.agent.first_allowed(candidates, now)
 
-    async def _speak(self, insight: Insight, now: datetime, also: Sequence[Insight] = ()) -> int:
+    async def _prepare(self, insight: Insight, now: datetime) -> Sequence[ContextBlock]:
+        """관심사 준비.
+
+        못 찾았거나 터지면 찾아본 것 없이 판단한다 — 찾기가 말 걸기를 막지 않는다.
+        """
+        if self.research is None:
+            return ()
+        try:
+            block = await self.research.prepare(insight, now)
+        except Exception:
+            logger.exception("관심사 준비 실패 — 찾아본 것 없이 판단한다: %s", insight.trigger)
+            return ()
+        return (block,) if block is not None else ()
+
+    async def _speak(
+        self,
+        insight: Insight,
+        now: datetime,
+        also: Sequence[Insight] = (),
+        extra: Sequence[ContextBlock] = (),
+    ) -> int:
         """신호 하나를(같은 줄기의 다른 신호와 함께) 판단하고, 말하기로 하면 보낸다. 보냈으면 1."""
         try:
-            message = await self.agent.consider(insight, now, also)
+            message = await self.agent.consider(insight, now, also, extra)
         except Exception:
             # 판단 실패도 발송 실패와 똑같이 다뤄야 한다. 여기서 예외가
             # 위로 새면 이 주기의 **뒤에 선 신호들이 통째로 건너뛰어진다** —

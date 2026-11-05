@@ -116,3 +116,19 @@ def test_reflector_assembles(tmp_path: Path) -> None:
     assert [c.kind for c in reflector.kinds if c.reflect] == ["web_visit"]
     # 낱줄로 안 훑는 종류는 하루 요약으로 들어간다.
     assert [c.kind for c in reflector.kinds if not c.reflect and c.digest] == ["mac_app"]
+
+
+def test_web_search_is_on_only_with_an_address(tmp_path: Path) -> None:
+    """검색 주소가 없으면(시험 설정) 도구 고리를 안 붙인다. 있으면 SearXNG 와 페이지 읽기로."""
+    from dataclasses import replace
+
+    from app.main import build_tools
+    from src.brain.web import SearxSearch
+
+    assert build_tools(_settings(tmp_path)) is None
+    tools = build_tools(
+        replace(_settings(tmp_path), search_base_url="http://searx:8888"), searches=3
+    )
+    assert tools is not None and tools.searches == 3
+    assert isinstance(tools.search, SearxSearch) and tools.search.base_url == "http://searx:8888"
+    assert build_reporter(_settings(tmp_path)).research is None

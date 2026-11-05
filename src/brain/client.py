@@ -7,9 +7,11 @@ LangGraph 에이전트(:8001)를 거치지 않는다. 자비스의 '에이전트
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Protocol
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import httpx
 
@@ -42,6 +44,36 @@ def unreachable(error: BaseException) -> bool:
     있는 걸 보고 헷갈린다(JAR-027 재리뷰 재현 — vLLM 400 에 "닿지 않아"가 갔다).
     """
     return isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError))
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """모델이 부른 도구 하나. `raw` 는 받은 모양 그대로 — 대화에 다시 실어 보낸다."""
+
+    id: str
+    name: str
+    arguments: Dict[str, Any]
+    raw: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Turn:
+    """도구를 줄 수 있는 대화의 한 차례. 도구를 불렀으면 `calls`, 아니면 `content` 가 답이다."""
+
+    content: str
+    calls: Tuple[ToolCall, ...] = ()
+    finish: Optional[str] = None
+
+
+class ToolReasoner(Protocol):
+    """도구를 쓸 줄 아는 추론기. vLLM 을 `--enable-auto-tool-choice` 로 띄워야 한다(SETUP)."""
+
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        thinking: Optional[bool] = None,
+    ) -> Turn: ...
 
 
 class Reasoner(Protocol):
@@ -162,5 +194,68 @@ class VLLMClient:
         # reasoning-parser가 없는 서버를 대비한 안전망. 파서가 붙어 있으면 no-op이다.
         return strip_reasoning(content)
 
+    async def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        thinking: Optional[bool] = None,
+    ) -> Turn:
+        """메시지 목록으로 한 차례. 도구를 주면 모델이 부를지 정한다(`tool_choice=auto`).
+
+        `thinking` 을 안 주면 이 클라이언트의 기본값을 따른다. 2026-11-05 실측: 이 모델은 생각을
+        꺼도 도구를 제대로 부른다.
+        """
+        model = await self._resolve_model()
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if not (self._enable_thinking if thinking is None else thinking):
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+        response = await self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
+        response.raise_for_status()
+        data: Dict[str, Any] = response.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return Turn(content="")
+        choice = choices[0]
+        message = choice.get("message") or {}
+        content = message.get("content")
+        text = strip_reasoning(content) if isinstance(content, str) else ""
+        calls = tuple(_call(raw) for raw in message.get("tool_calls") or [])
+        if choice.get("finish_reason") == "length":
+            logger.warning(
+                "모델 답이 max_tokens(%d)에서 잘렸다 — 받은 %d자, 도구 %d개",
+                self._max_tokens,
+                len(text),
+                len(calls),
+            )
+        return Turn(content=text, calls=calls, finish=choice.get("finish_reason"))
+
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def _call(raw: Dict[str, Any]) -> ToolCall:
+    """vLLM 이 준 도구 호출 하나.
+
+    인자가 JSON 이 아니면 빈 인자로 두고 남긴다 — 도구가 "인자가 비었다"로 모델에게 돌려준다(조용히
+    버리면 모델은 왜 답이 없는지 모른다).
+    """
+    function = raw.get("function") or {}
+    name = str(function.get("name") or "")
+    text = function.get("arguments") or "{}"
+    try:
+        arguments = json.loads(text) if isinstance(text, str) else dict(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        logger.warning("도구 인자가 JSON 이 아니다(%s): %.200s", name, text)
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return ToolCall(id=str(raw.get("id") or ""), name=name, arguments=arguments, raw=raw)

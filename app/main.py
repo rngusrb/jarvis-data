@@ -14,8 +14,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import time, timedelta
-from typing import AsyncIterator, List
+from typing import AsyncIterator, List, Optional
 
+import httpx
 from fastapi import FastAPI
 
 from src.brain.agent import JarvisAgent
@@ -35,6 +36,9 @@ from src.brain.providers import (
 )
 from src.brain.reflect import Reflector
 from src.brain.report import Reporter
+from src.brain.research import TopicResearch, interests
+from src.brain.tools import ToolLoop
+from src.brain.web import PageReader, SearxSearch
 from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
@@ -109,6 +113,42 @@ def build_reflector(settings: Settings) -> Reflector:
     )
 
 
+def build_tools(
+    settings: Settings, searches: int = 4, rounds: int = 4, reads: int = 3
+) -> Optional[ToolLoop]:
+    """웹을 찾아보는 도구 고리. 검색 주소가 없으면 None — 자비스는 아는 것으로만 답한다.
+
+    대화·보고서·관심사 준비가 쓴다. vLLM 이 도구 호출을 켜고 떠 있어야 한다(SETUP — `qwen3_coder`).
+    """
+    if not settings.search_base_url:
+        return None
+    web = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0))
+    return ToolLoop(
+        # 찾은 것을 읽고 답하는 차례는 생각을 켠다 — 생각 몫까지 답 상한을 넉넉히. 2026-11-05 실측:
+        # 보통 10~40초, 가장 길게 122초(검색 네 번).
+        client=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            max_tokens=8192,
+            timeout=300.0,
+            temperature=0.4,
+        ),
+        search=SearxSearch(settings.search_base_url, web),
+        reader=PageReader(web),
+        searches=searches,
+        rounds=rounds,
+        reads=reads,
+    )
+
+
+def _research(
+    settings: Settings, limit: timedelta = timedelta(minutes=2)
+) -> Optional[TopicResearch]:
+    """찾아 두기. 한도를 낮게 — 검색 3번·읽기 2번·차례 3번, 시간 상한(관심사 준비 2분)."""
+    tools = build_tools(settings, searches=3, rounds=3, reads=2)
+    return TopicResearch(tools, limit=limit) if tools is not None else None
+
+
 def build_reporter(settings: Settings) -> Reporter:
     """`/report` 를 조립한다 — 넓게 본다. 서버와 손으로 돌리는 시험이 같은 조립을 쓴다."""
     metrics = MetricRegistry()
@@ -154,6 +194,10 @@ def build_reporter(settings: Settings) -> Reporter:
                 catalog=MergedCatalog(store, traces, events), cards=cards, retired=False
             ),
         ),
+        # "다음 한 주"의 다가오는 일정을 지어내지 않게, 쓰기 전에 요즘 관심사 이름만 들고 찾아 둔다
+        # (3분 상한). 쓰기는 생각 없이 — 재료를 들고 생각하며 찾게 했더니 7분 걸렸다(실측).
+        research=_research(settings, limit=timedelta(minutes=3)),
+        interests=lambda now: interests(SQLiteTopicStore(settings.db_path), now),
     )
 
 
@@ -287,6 +331,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.catalog = catalog
     app.state.places = places
 
+    # 웹 검색 도구 고리 — 대화와 관심사 준비가 같이 쓴다(보고서는 따로, 검색 세 번까지).
+    tools = build_tools(settings)
+    if tools is None:
+        logger.info("웹 검색 끔 — JARVIS_SEARCH_URL 이 비었다")
     # 대화 기록. 듣는 루프가 주고받은 말을, 반응 루프가 먼저 건 말을 적는다 — 둘이 한 흐름이어야
     # 사용자가 먼저 건 말에 답할 때 자비스가 무슨 말에 대한 답인지 안다(2026-11-05 사용자 결정).
     conversation = SQLiteConversation(settings.db_path)
@@ -303,6 +351,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         topic_watch=TopicWatch(),
         topics=SQLiteTopicStore(settings.db_path),
         transcript=conversation,
+        # 관심사로 말 걸기 전에 지금 도움이 될 것(다가오는 일정 등)을 찾아 둔다 — 주 두 번쯤.
+        research=_research(settings),
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis
@@ -342,6 +392,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # 게이트와 같은 기억 — 👍👎 를 남기고 /status 가 먼저 건 말을 센다.
                 speech=gate.log,
                 reporter=reporter,
+                # 바뀌는 사실(일정·가격·뉴스)은 찾아보고 답한다. 찾기 시작하면 "찾아볼게"를 먼저.
+                tools=tools,
             ),
             speaker=channel,
             log=conversation,
