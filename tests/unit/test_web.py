@@ -6,10 +6,19 @@ import asyncio
 import logging
 from typing import Dict, List
 
+import httpcore
 import httpx
 import pytest
 
-from src.brain.web import Blocked, PageReader, SearxSearch, ensure_public, extract, mobile
+from src.brain.web import (
+    Blocked,
+    PageReader,
+    PinnedTransport,
+    SearxSearch,
+    ensure_public,
+    extract,
+    mobile,
+)
 
 
 def _client(handler) -> httpx.AsyncClient:  # type: ignore[no-untyped-def]
@@ -89,6 +98,7 @@ def test_a_broken_search_is_loud() -> None:
         "169.254.1.1",
         "::1",
         "::ffff:10.0.0.1",
+        "::ffff:100.98.90.38",
     ],
 )
 def test_internal_addresses_are_never_read(address: str) -> None:
@@ -274,10 +284,11 @@ def test_a_drip_feeding_server_hits_the_deadline() -> None:
     assert len(seen) < 10
 
 
-def test_the_checked_address_is_the_one_connected() -> None:
-    """검사와 접속에서 이름을 따로 풀면 그 사이 내부 주소로 바뀔 수 있다(DNS 리바인딩, 리뷰).
+def test_the_reader_keeps_names_in_the_url() -> None:
+    """URL·Host·쿠키는 이름 그대로다.
 
-    검사한 주소로 접속하고 이름은 Host 와 SNI 로만 보낸다.
+    URL 을 IP 로 바꿔 고정했더니 도메인 쿠키가 버려져 브런치 리다이렉트가 끝없이 돌았다(재리뷰
+    재현). 데스크탑 블로그는 iframe 이라 모바일 주소로 읽는다.
     """
     asked: List[httpx.Request] = []
 
@@ -287,13 +298,56 @@ def test_the_checked_address_is_the_one_connected() -> None:
 
     reader = PageReader(_client(handler), resolve=_public("211.115.84.70"))
     asyncio.run(reader.read("https://blog.naver.com/abc/123?x=1"))
+    asyncio.run(reader.read("https://www.bücher.de/"))
 
-    request = asked[0]
-    assert request.url.host == "211.115.84.70" and request.url.path == "/abc/123"
-    assert request.url.query == b"x=1"
-    # 데스크탑 블로그는 iframe 이라 모바일 주소로 읽는다.
-    assert request.headers["host"] == "m.blog.naver.com"
-    assert request.extensions.get("sni_hostname") == "m.blog.naver.com"
+    assert asked[0].url.host == "m.blog.naver.com" and asked[0].url.query == b"x=1"
+    # 유니코드 이름은 punycode 로 — 이름을 헤더에 그대로 넣으면 보내기도 전에 터졌다(재리뷰).
+    assert asked[1].headers["host"] == "www.xn--bcher-kva.de"
+
+
+class _Recording(httpcore.AsyncMockBackend):
+    """접속한 주소를 남기는 가짜 네트워크."""
+
+    def __init__(self, buffer: List[bytes]) -> None:
+        super().__init__(buffer)
+        self.hosts: List[str] = []
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):  # type: ignore[no-untyped-def]
+        self.hosts.append(host)
+        return await super().connect_tcp(host, port, timeout, local_address, socket_options)
+
+
+OK_PAGE = [
+    b"HTTP/1.1 200 OK\r\n",
+    b"Content-Type: text/html\r\n",
+    b"Content-Length: 9\r\n",
+    b"\r\n",
+    b"<p>ok</p>",
+]
+
+
+def test_connections_go_only_to_the_checked_address() -> None:
+    """접속하는 순간 이름을 풀어 검사한 그 주소로 붙는다."""
+    network = _Recording(OK_PAGE)
+    client = httpx.AsyncClient(transport=PinnedTransport(_public("211.115.84.70"), network))
+    page = asyncio.run(
+        PageReader(client, resolve=_public("211.115.84.70")).read("http://outside.example/a")
+    )
+    assert page.text == "ok" and network.hosts == ["211.115.84.70"]
+
+
+def test_a_name_that_turns_inward_after_the_check_is_still_blocked() -> None:
+    """DNS 리바인딩: 먼저 볼 땐 공개망, 접속할 땐 127.0.0.1 — 접속하는 층이 막는다(재리뷰)."""
+    answers = [["211.115.84.70"], ["127.0.0.1"]]
+
+    async def flip(host: str, port: int) -> List[str]:
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    network = _Recording(OK_PAGE)
+    client = httpx.AsyncClient(transport=PinnedTransport(flip, network))
+    with pytest.raises(Blocked):
+        asyncio.run(PageReader(client, resolve=flip).read("http://rebind.example/"))
+    assert network.hosts == []
 
 
 def test_every_address_of_a_name_must_be_public() -> None:

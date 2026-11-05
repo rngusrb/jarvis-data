@@ -280,8 +280,10 @@ class ToolLoop:
             try:
                 page = await self.reader.read(url)
             except Exception as error:
-                logger.warning("페이지 읽기 실패: %s (%s)", url, error)
-                state.uses.append(Use("read", url, False, str(error)[:120]))
+                # 시간 초과는 str() 이 비어 원인이 안 보였다(재리뷰) — 종류를 같이 남긴다.
+                why = f"{type(error).__name__}: {error}"
+                logger.warning("페이지 읽기 실패: %s (%s)", url, why)
+                state.uses.append(Use("read", url, False, why[:120]))
                 return f"읽기 실패({type(error).__name__}). 다른 결과를 읽거나 요약으로 답한다."
             state.uses.append(Use("read", url, True, f"{len(page.text)}자", len(page.text)))
             state.pages.append(page)

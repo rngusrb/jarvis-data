@@ -38,7 +38,7 @@ from src.brain.reflect import Reflector
 from src.brain.report import Reporter
 from src.brain.research import TopicResearch, interests
 from src.brain.tools import ToolLoop
-from src.brain.web import PageReader, SearxSearch
+from src.brain.web import PageReader, SearxSearch, reader_client
 from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
@@ -134,7 +134,8 @@ def build_tools(
             temperature=0.4,
         ),
         search=SearxSearch(settings.search_base_url, web),
-        reader=PageReader(web),
+        # 읽기는 따로 — 접속하는 순간 검사한 주소로만 붙는 클라이언트(DNS 리바인딩 막기).
+        reader=PageReader(reader_client()),
         searches=searches,
         rounds=rounds,
         reads=reads,

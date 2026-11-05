@@ -27,9 +27,21 @@ import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+)
+from urllib.parse import urljoin, urlsplit
 
+import httpcore
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -137,15 +149,17 @@ class SearxSearch:
 
 @dataclass
 class PageReader:
-    """주소 하나를 받아 본문을 글로. 내부망은 안 읽고, 리다이렉트도 한 번씩 확인한다."""
+    """주소 하나를 받아 본문을 글로. 내부망은 안 읽고, 리다이렉트도 한 번씩 확인한다.
+
+    `client` 는 `reader_client()` 로 만든다 — 접속하는 순간 검사한 주소로만 붙는다(아래).
+    """
 
     client: httpx.AsyncClient
     max_chars: int = 4000
     max_redirects: int = 5
     resolve: Resolve = resolve
     # 받는 양과 시간의 상한. 다 받고 나서 자르면 63MB 를 끝까지 받았고, 1초에 1바이트씩 흘리는
-    # 서버는
-    # 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(JAR-031 리뷰 재현).
+    # 서버는 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(JAR-031 리뷰 재현).
     max_bytes: int = MAX_BYTES
     deadline: float = 15.0
 
@@ -156,9 +170,10 @@ class PageReader:
         target = mobile(url)
         logger.info("페이지 읽기(밖으로 나감): %s", target)
         for _ in range(self.max_redirects + 1):
-            address, headers, extensions = await pin(target, self.resolve)
+            # 먼저 한 번 본다(http 인지, 이름이 공개망인지) — 실제로 막는 건 접속하는 층이다.
+            await ensure_public(target, self.resolve)
             async with self.client.stream(
-                "GET", address, headers=headers, extensions=extensions, follow_redirects=False
+                "GET", target, headers={"User-Agent": USER_AGENT}, follow_redirects=False
             ) as response:
                 if response.is_redirect and response.headers.get("location"):
                     target = urljoin(target, response.headers["location"])
@@ -180,6 +195,109 @@ class PageReader:
         raise ValueError(f"리다이렉트가 {self.max_redirects}번을 넘었다: {url}")
 
 
+def reader_client(lookup: Resolve = resolve) -> httpx.AsyncClient:
+    """페이지 읽기용 클라이언트. 접속하는 순간에만 이름을 풀어 검사하고 그 주소로 붙는다."""
+    return httpx.AsyncClient(
+        transport=PinnedTransport(lookup), timeout=httpx.Timeout(20.0, connect=5.0)
+    )
+
+
+class PinnedBackend(httpcore.AsyncNetworkBackend):
+    """TCP 를 여는 순간 이름을 한 번 풀어 검사하고, 검사한 주소로 붙는다.
+
+    검사와 접속에서 이름을 따로 풀면 그 사이 내부 주소로 바뀔 수 있다(DNS 리바인딩 — JAR-031
+    리뷰). 이 서버에는 clickhouse·redis·postgres·langfuse 같은 로컬 서비스가 떠 있다. 처음엔 URL 의
+    호스트를 IP 로 바꿔 고정했더니 위층(쿠키·연결 풀·Host)까지 IP 를 보게 되어 도메인 쿠키가
+    버려지고
+    (브런치 리다이렉트가 끝없이), 같은 IP 의 다른 사이트가 남의 TLS 연결로 나갔다(421, 재리뷰 재현).
+    그래서 고정은 이 층에서만 한다 — URL·Host·SNI·쿠키·연결 풀은 이름 그대로다.
+    """
+
+    def __init__(
+        self, lookup: Resolve = resolve, inner: Optional[httpcore.AsyncNetworkBackend] = None
+    ) -> None:
+        self.lookup = lookup
+        self.inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options: Optional[Iterable[Any]] = None,
+    ) -> httpcore.AsyncNetworkStream:
+        addresses = await checked(host, port, self.lookup)
+        return await self.inner.connect_tcp(
+            addresses[0].split("%", 1)[0],
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: Optional[float] = None,
+        socket_options: Optional[Iterable[Any]] = None,
+    ) -> httpcore.AsyncNetworkStream:
+        raise Blocked("유닉스 소켓은 읽지 않는다")
+
+    async def sleep(self, seconds: float) -> None:
+        await self.inner.sleep(seconds)
+
+
+class PinnedTransport(httpx.AsyncBaseTransport):
+    """`PinnedBackend` 로 접속하는 전송. httpx 의 기본 전송과 같은 일을 공개 API 로만 한다."""
+
+    def __init__(
+        self, lookup: Resolve = resolve, inner: Optional[httpcore.AsyncNetworkBackend] = None
+    ) -> None:
+        self.pool = httpcore.AsyncConnectionPool(
+            ssl_context=httpx.create_ssl_context(),
+            network_backend=PinnedBackend(lookup, inner),
+            keepalive_expiry=5.0,
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        core = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,  # type: ignore[arg-type]
+            extensions=request.extensions,
+        )
+        response = await self.pool.handle_async_request(core)
+        return httpx.Response(
+            status_code=response.status,
+            headers=response.headers,
+            stream=_Body(response.stream),  # type: ignore[arg-type]
+            extensions=response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        await self.pool.aclose()
+
+
+class _Body(httpx.AsyncByteStream):
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for part in self._stream:
+            yield part
+
+    async def aclose(self) -> None:
+        if hasattr(self._stream, "aclose"):
+            await self._stream.aclose()
+
+
 def mobile(url: str) -> str:
     """네이버 블로그는 본문이 iframe 안에 있다 — 모바일 주소는 본문을 그대로 준다."""
     parts = urlsplit(url)
@@ -188,37 +306,17 @@ def mobile(url: str) -> str:
     return url
 
 
-async def pin(url: str, lookup: Resolve = resolve) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
-    """검사한 주소로 접속할 (주소, 헤더, 확장). 이름은 Host 헤더와 TLS 의 SNI 로만 보낸다.
-
-    검사와 접속에서 이름을 따로 풀면 그 사이 내부 주소로 바뀔 수 있다(DNS 리바인딩 — JAR-031
-    리뷰). 이
-    서버에는 clickhouse·redis·postgres·langfuse 같은 로컬 서비스가 떠 있다.
-    """
-    addresses = await ensure_public(url, lookup)
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    ip = addresses[0].split("%", 1)[0]
-    netloc = f"[{ip}]" if ":" in ip else ip
-    named = host if not parts.port else f"{host}:{parts.port}"
-    if parts.port:
-        netloc = f"{netloc}:{parts.port}"
-    address = urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, ""))
-    headers = {"User-Agent": USER_AGENT, "Host": named}
-    extensions: Dict[str, Any] = {"sni_hostname": host} if parts.scheme == "https" else {}
-    return address, headers, extensions
-
-
 async def ensure_public(url: str, lookup: Resolve = resolve) -> List[str]:
-    """http(s) 이고, 이름이 가리키는 모든 주소가 공개망이어야 한다.
-
-    아니면 `Blocked`. 주소들을 돌려준다.
-    """
+    """http(s) 이고, 이름이 가리키는 모든 주소가 공개망이어야 한다. 아니면 `Blocked`."""
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise Blocked(f"http(s) 주소가 아니다: {url}")
-    host = parts.hostname
     port = parts.port or (443 if parts.scheme == "https" else 80)
+    return await checked(parts.hostname, port, lookup)
+
+
+async def checked(host: str, port: int, lookup: Resolve = resolve) -> List[str]:
+    """이름이 가리키는 주소들. 하나라도 공개망이 아니면 `Blocked`."""
     try:
         addresses = await lookup(host, port)
     except OSError as error:
