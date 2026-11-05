@@ -19,7 +19,8 @@ from typing import Any, List
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import SECTORS, build_reflector
+from app.main import SECTORS, build_reflector, build_reporter
+from src.brain.providers import CollectionStatusProvider
 from src.core.config import Settings
 
 SECTOR_CONTRACT = ("METRICS", "TRACES", "EVENTS", "TRIGGERS")
@@ -90,6 +91,19 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         # 어제·오늘 위치 사건도 맥락에, /report 를 쓰는 쪽도 조립된다(JAR-027·028).
         assert "event_digest" in names
         assert client.app.state.reporter is not None
+        # 반응·대화의 수집 현황은 접은 지표도 보인다 — 빼면 버린 지표를 되살리라고 조른다.
+        status = [p for p in jarvis.agent.providers if isinstance(p, CollectionStatusProvider)]
+        assert len(status) == 1 and status[0].retired is True
+
+
+def test_reporter_leaves_retired_metrics_out(tmp_path: Path) -> None:
+    """보고서는 접은 지표(걸음수, 출퇴근 시각)를 "모르는 것"으로 적었다.
+
+    지시문에 "접은 것"이라고 적어도 3번 중 2번 그랬다(2026-11-05 실데이터) — 그래서 아예 안 보인다.
+    """
+    reporter = build_reporter(_settings(tmp_path))
+    status = [p for p in reporter.providers if isinstance(p, CollectionStatusProvider)]
+    assert len(status) == 1 and status[0].retired is False
 
 
 def test_reflector_assembles(tmp_path: Path) -> None:

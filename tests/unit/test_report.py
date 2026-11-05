@@ -69,34 +69,6 @@ def test_the_instructions_say_how_to_read_the_records() -> None:
     assert '"~함", "~음"으로 끝내는 개조식은 쓰지 않는다' in SYSTEM_PROMPT
 
 
-def test_the_instructions_name_the_retired_wording_the_status_block_uses() -> None:
-    """접은 지표(출퇴근 시각·걸음수)를 "모르는 것"으로 적었다(2026-11-05 실데이터).
-
-    지시문은 수집 현황의 문구를 글자 그대로 가리킨다. 현황 쪽 문구가 바뀌면 이 규칙은 아무것도 못
-    가리키게 되므로, 두 쪽을 같이 본다.
-    """
-    from datetime import timedelta
-    from typing import Dict
-
-    from src.brain.providers import CollectionStatusProvider
-    from src.core.metrics import Fold, Metric
-
-    @dataclass
-    class Seen:
-        at: Dict[str, datetime]
-
-        def last_seen(self) -> Dict[str, datetime]:
-            return self.at
-
-    # collector 가 없으면 일부러 접은 지표다. 마지막 값은 한참 전.
-    retired = Metric(kind="step_count", label="걸음수", fold=Fold.SUM)
-    seen = Seen({"step_count": NOW - timedelta(days=60)})
-    block = CollectionStatusProvider(catalog=seen, cards=[retired]).fetch(None, NOW)
-
-    assert block is not None and "되살릴 필요 없다" in block.body
-    assert '"되살릴 필요 없다"는 일부러 그만 모은 것' in SYSTEM_PROMPT
-
-
 def test_a_failure_still_answers_the_user(caplog: object) -> None:
     """두뇌에 못 닿으면 예외가 듣기 루프에서 삼켜져 사용자는 아무 답도 못 받았다(리뷰 재현)."""
     from src.brain.report import UNREACHABLE
@@ -110,8 +82,9 @@ def test_a_failure_still_answers_the_user(caplog: object) -> None:
 
 
 def test_a_refusal_is_not_called_unreachable() -> None:
-    """서버가 답했는데 거절했으면(재료 초과 400) "데스크탑이 켜져 있나 봐"는 틀린 말이다(재리뷰 재현).
+    """서버가 답했는데 거절했으면(재료 초과 400) "데스크탑이 켜져 있나 봐"는 틀린 말이다.
 
+    재리뷰에서 재현했다.
     읽다가 한도가 찬 것도 서버에는 닿은 것이다. 연결부터 안 된 것만 "닿지 않아"다.
     """
     import httpx

@@ -147,7 +147,10 @@ def build_reporter(settings: Settings) -> Reporter:
                 source=store, metrics=metrics.all(), window=timedelta(days=90), max_points=90
             ),
             EventDigestProvider(events=events, kinds=event_kinds.all(), days=14),
-            CollectionStatusProvider(catalog=MergedCatalog(store, traces, events), cards=cards),
+            # 접은 지표는 뺀다 — 보고서가 그걸 "모르는 것"으로 적었다(providers 참고).
+            CollectionStatusProvider(
+                catalog=MergedCatalog(store, traces, events), cards=cards, retired=False
+            ),
         ),
     )
 

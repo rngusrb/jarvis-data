@@ -103,3 +103,29 @@ def test_지표가_아닌_카드도_수집_경로로_보인다() -> None:
     assert block is not None
     assert "위치(location): 아이폰 단축어 — 그런데 720시간째 끊김" in block.body
     assert "웹 방문(web_visit): mac_chrome — 정상" in block.body
+
+
+def test_보고서는_접은_지표를_뺀다() -> None:
+    """접은 지표가 "수집 중단"으로 보이면 보고서가 그걸 "모르는 것"으로 적었다(2026-11-05).
+
+    반응·대화(기본값)는 그대로 보인다 — 빼면 버린 지표를 되살리라고 조른다.
+    """
+    cards = [
+        Metric(kind="step_count", label="걸음수", fold=Fold.SUM),
+        Metric(kind="sleep_hours", label="수면", fold=Fold.SUM, collector="단축어"),
+    ]
+    seen = {
+        "step_count": NOW - timedelta(days=60),
+        "sleep_hours": NOW - timedelta(hours=2),
+        "mystery": NOW,
+    }
+    hidden = CollectionStatusProvider(catalog=FakeCatalog(seen), cards=cards, retired=False).fetch(
+        INSIGHT, NOW
+    )
+    shown = CollectionStatusProvider(catalog=FakeCatalog(seen), cards=cards).fetch(INSIGHT, NOW)
+
+    assert hidden is not None and shown is not None
+    assert "step_count" not in hidden.body and "sleep_hours" in hidden.body
+    # 카드가 없는 것은 안 만든 것이지 접은 게 아니다.
+    assert "mystery" in hidden.body
+    assert "되살릴 필요 없다" in shown.body

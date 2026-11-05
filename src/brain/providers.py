@@ -1,8 +1,9 @@
 """실제 맥락 제공자들.
 
-지금은 이미 손에 있는 정보(관측치 추이와 최근 값, 최근 발화, 수집 현황, 흔적 하루 요약, 주제 나무,
-최근 사건)만 쓴다. 반응·대화·보고서가 같은 제공자를 창 크기만 달리해 쓴다 — 보고서 쪽 조립은
-`app/main.py` 의 `build_reporter`. 캘린더 파서와 저장소가 생기면 ScheduleProvider 같은 게 여기 늘어난다.
+지금은 이미 손에 있는 정보(관측치 추이와 최근 값, 최근 발화, 수집 현황, 흔적 하루 요약,
+주제 나무, 최근 사건)만 쓴다. 반응·대화·보고서가 같은 제공자를 창 크기만 달리해 쓴다 —
+보고서 쪽 조립은 `app/main.py` 의 `build_reporter`. 캘린더 파서와 저장소가 생기면
+ScheduleProvider 같은 게 여기 늘어난다.
 """
 
 from __future__ import annotations
@@ -102,6 +103,10 @@ class CollectionStatusProvider:
     # 되거나 목록에서 사라져, 자비스가 위치를 모으고 있다는 것 자체를 모른다.
     cards: Sequence[Collected]
     name: str = "collection_status"
+    # 일부러 접은 카드도 보인다 — 반응·대화가 접은 지표를 되살리라고 조르지 않게(아래). 보고서는
+    # 끈다: "수집 중단"을 빈 곳으로 읽어 접은 지표(걸음수, 출퇴근 시각)를 "모르는 것"에 적었다.
+    # 지시문에 "접은 것"이라고 적어도 3번 중 2번 그랬다(2026-11-05 실데이터).
+    retired: bool = True
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         last_seen = self.catalog.last_seen()
@@ -111,6 +116,8 @@ class CollectionStatusProvider:
         for kind in sorted(set(known) | set(last_seen)):
             metric = known.get(kind)
             at = last_seen.get(kind)
+            if metric is not None and not metric.active and not self.retired:
+                continue
 
             if metric is None:
                 state = "수집기 없음 — 아직 만들지 않았다"
