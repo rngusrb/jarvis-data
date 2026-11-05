@@ -7,6 +7,7 @@
 대신 싼 길과 비싼 길을 가른다.
 
     /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
+    /report                        넓게 모아 → LLM 이 보고서를 쓴다(1분쯤)
     그 밖의 말                     맥락 조립 → LLM
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
@@ -28,6 +29,7 @@ from src.brain.feedback import MARKS as REACTIONS
 from src.brain.feedback import parse
 from src.brain.memory import SpeechLog
 from src.brain.prompts import is_collection
+from src.brain.report import Reporter
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
@@ -73,6 +75,8 @@ class Conversationalist:
     commands: Dict[str, Callable[[datetime], str]] = field(default_factory=dict)
     # 자비스가 먼저 건 말의 기억(게이트와 같은 것). 👍👎 를 남기고 `/status` 가 센다.
     speech: Optional[SpeechLog] = None
+    # `/report` 를 쓰는 쪽. 없으면 그 명령은 안 붙었다고 답한다.
+    reporter: Optional[Reporter] = None
 
     def __post_init__(self) -> None:
         self.commands = {
@@ -91,6 +95,11 @@ class Conversationalist:
 
         text = incoming.text.strip()
         head = text.split()[0].lower() if text else ""
+        if head == "/report":
+            # 명령어 꼴이지만 생각을 시키는 요청이다 — DB 조회로 답이 안 나온다(brain/_GUIDE).
+            if self.reporter is None:
+                return "보고서는 아직 안 붙었어."
+            return await self.reporter.write(now)
         if head in self.commands:
             return self.commands[head](now)
 
@@ -103,7 +112,8 @@ class Conversationalist:
             "뭐든 물어봐. 명령어도 있어.\n"
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
-            "/topics  내가 너에 대해 아는 것(주제 나무)"
+            "/topics  내가 너에 대해 아는 것(주제 나무)\n"
+            "/report  요즘의 너 — 보고서(1분쯤 걸려)"
         )
 
     def _react(self, action: str, now: datetime) -> str:

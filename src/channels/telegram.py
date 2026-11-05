@@ -58,19 +58,26 @@ class TelegramChannel:
         return f"{API_ROOT}/bot{self._bot_token}/{method}"
 
     async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
-        payload: Dict[str, Any] = {
-            "chat_id": self._chat_id,
-            "text": text,
-            "disable_notification": False,
-        }
-        if buttons:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": b["text"], "callback_data": b["action"]} for b in buttons]
-                ]
+        """한 메시지는 4,096자까지라 긴 말(보고서)은 줄 경계에서 나눠 보낸다.
+
+        버튼은 마지막 조각에 단다.
+        """
+        pieces = split(text)
+        for i, piece in enumerate(pieces):
+            payload: Dict[str, Any] = {
+                "chat_id": self._chat_id,
+                "text": piece,
+                # 이어지는 조각마다 알림이 또 울리지 않게 첫 조각만 울린다.
+                "disable_notification": i > 0,
             }
-        response = await self._client.post(self._url("sendMessage"), json=payload)
-        response.raise_for_status()
+            if buttons and i == len(pieces) - 1:
+                payload["reply_markup"] = {
+                    "inline_keyboard": [
+                        [{"text": b["text"], "callback_data": b["action"]} for b in buttons]
+                    ]
+                }
+            response = await self._client.post(self._url("sendMessage"), json=payload)
+            response.raise_for_status()
 
     async def receive(self, since: int) -> List[Incoming]:
         """`since` 이후 도착한 것을 가져온다.
@@ -161,3 +168,31 @@ class TelegramChannel:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+# 텔레그램 한 메시지의 상한(4,096자)에 여유를 둔 값.
+PIECE = 4000
+
+
+def split(text: str, limit: int = PIECE) -> List[str]:
+    """줄 경계에서 `limit` 자 이하 조각으로. 한 줄이 그보다 길면 그 줄을 자른다."""
+    if len(text) <= limit:
+        return [text]
+    pieces: List[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            pieces.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        pieces.append(current)
+    return pieces

@@ -21,6 +21,9 @@ LOCATION = EventKind(
     stale_after=STALE_AFTER,
     # 단축어가 값 칸에 넣는 것은 GPS 정확도(m)다. 지금은 0 을 보낸다.
     value_as="accuracy",
+    # 단축어 자동화의 이름. 지갑은 교통카드를 Wallet 에 둬서 탈 때·갈아탈 때·내릴 때
+    # 찍힌다(OVERVIEW 6).
+    labels=(("leave_home", "집을 나섬"), ("wallet", "지갑(교통카드) 탭")),
 )
 
 EVENTS = [LOCATION]

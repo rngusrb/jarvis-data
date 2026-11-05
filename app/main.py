@@ -26,6 +26,7 @@ from src.brain.gate import Gate
 from src.brain.providers import (
     Collected,
     CollectionStatusProvider,
+    EventDigestProvider,
     ObservationTrendProvider,
     RecentValuesProvider,
     SpeechHistoryProvider,
@@ -33,6 +34,7 @@ from src.brain.providers import (
     TraceDigestProvider,
 )
 from src.brain.reflect import Reflector
+from src.brain.report import Reporter
 from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
@@ -40,6 +42,7 @@ from src.core.config import Settings, load_settings
 from src.core.events import EventRegistry
 from src.core.logs import hide_in_logs
 from src.core.metrics import MetricRegistry
+from src.core.topics import Trend
 from src.core.traces import TraceRegistry
 from src.runtime.daily import DailyLoop
 from src.runtime.ingest import router as ingest_router
@@ -101,6 +104,50 @@ def build_reflector(settings: Settings) -> Reflector:
         traces=SQLiteTraceStore(settings.db_path),
         topics=SQLiteTopicStore(settings.db_path),
         kinds=trace_kinds.all(),
+    )
+
+
+def build_reporter(settings: Settings) -> Reporter:
+    """`/report` 를 조립한다 — 넓게 본다. 서버와 손으로 돌리는 시험이 같은 조립을 쓴다."""
+    metrics = MetricRegistry()
+    trace_kinds = TraceRegistry()
+    event_kinds = EventRegistry()
+    for sector in SECTORS:
+        metrics.register(sector.METRICS)
+        trace_kinds.register(sector.TRACES)
+        event_kinds.register(sector.EVENTS)
+    store = SQLiteStore(settings.db_path)
+    traces = SQLiteTraceStore(settings.db_path)
+    events = SQLiteEventStore(settings.db_path)
+    cards: List[Collected] = [*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
+    return Reporter(
+        # 보고서는 두세 쪽이라 답 상한을 넉넉히. 재료가 1~2만 자라 1분 남짓 걸린다.
+        reasoner=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            max_tokens=6000,
+            timeout=600.0,
+            temperature=0.5,
+        ),
+        providers=(
+            # 잠잠한 것만 빼고 전부, 근거 수와 근거가 있던 날까지.
+            TopicProvider(
+                topics=SQLiteTopicStore(settings.db_path),
+                trends=(Trend.RISING, Trend.STEADY, Trend.FADING, Trend.NEW),
+                detail=True,
+            ),
+            TraceDigestProvider(
+                source=traces,
+                kinds=trace_kinds.all(),
+                window=timedelta(days=14),
+                include_sensitive=True,
+            ),
+            RecentValuesProvider(
+                source=store, metrics=metrics.all(), window=timedelta(days=90), max_points=14
+            ),
+            EventDigestProvider(events=events, kinds=event_kinds.all(), window=timedelta(days=14)),
+            CollectionStatusProvider(catalog=MergedCatalog(store, traces, events), cards=cards),
+        ),
     )
 
 
@@ -207,8 +254,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             TopicProvider(topics=SQLiteTopicStore(settings.db_path)),
             # 내가 먼저 건 말에 사용자가 👍👎 한 것. 줄이는 판단을 모델이 먼저 읽는다.
             FeedbackProvider(log=gate.log),
+            # 어제·오늘 위치 사건 — 사건은 출근 트리거만 보고 맥락엔 없어서 "어제 몇 시에
+            # 나갔지?"에 답할 재료가 없었다(JAR-028).
+            EventDigestProvider(events=events, kinds=event_kinds.all()),
         ),
     )
+    # `/report` — 넓게 모아 "요즘의 너"를 쓴다(JAR-027). 손으로 시험할 때도 같은 조립을 쓴다.
+    reporter = build_reporter(settings)
+    app.state.reporter = reporter
 
     app.state.settings = settings
     app.state.store = store
@@ -268,6 +321,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 stale_after={c.kind: c.stale_after for c in cards},
                 # 게이트와 같은 기억 — 👍👎 를 남기고 /status 가 먼저 건 말을 센다.
                 speech=gate.log,
+                reporter=reporter,
             ),
             speaker=channel,
             log=conversation,
