@@ -31,7 +31,7 @@ class Ran:
         return self.result
 
 
-SEARCHED = (Use("search", "금융결제원 채용 일정", True, "6개"),)
+SEARCHED = (Use("search", "금융결제원 채용 일정", True, "6개", 6),)
 
 
 def _prepare(result: Researched) -> Any:
@@ -110,3 +110,41 @@ def test_interests_prefer_the_branch_and_the_busiest(tmp_path: Any) -> None:
     topics.apply(plan(topics.load(), ops, set(ids.values()), NOW), NOW)
 
     assert interests(topics, NOW) == ["취업 › 금결원 지원", "삿포로 여행"]
+
+
+def test_interests_take_the_branches_not_their_parent(tmp_path: Any) -> None:
+    """줄기의 날 수에는 가지의 근거가 합쳐져 늘 가지 이상이다.
+
+    날 수로만 고르면 줄기가 뽑히고 가지가 다 빠졌다(리뷰 재현: 가지 둘이 다른 날에 있으면 ['취업']).
+    """
+    from datetime import timedelta
+
+    from src.brain.research import interests
+    from src.core.models import Trace
+    from src.core.topics import Op, plan
+    from src.storage.topics import SQLiteTopicStore
+    from src.storage.traces import SQLiteTraceStore
+
+    db = tmp_path / "t.db"
+    traces = SQLiteTraceStore(db)
+    days = {"금결원": (0.5, 2.5), "은행": (1.5, 3.5)}
+    traces.write(
+        [
+            Trace(
+                source="mac_chrome", kind="web_visit", text=f"{name}{d}", at=NOW - timedelta(days=d)
+            )
+            for name, ds in days.items()
+            for d in ds
+        ]
+    )
+    ids = {t.text: t.id for t in traces.recent("web_visit", NOW - timedelta(days=10)) if t.id}
+    pick = lambda name: tuple(i for text, i in ids.items() if text.startswith(name))  # noqa: E731
+    topics = SQLiteTopicStore(db)
+    ops = [
+        Op("create", ref="a", name="취업", evidence=pick("금결원") + pick("은행")),
+        Op("create", parent="a", name="금결원 지원", evidence=pick("금결원")),
+        Op("create", parent="a", name="은행 채용", evidence=pick("은행")),
+    ]
+    topics.apply(plan(topics.load(), ops, set(ids.values()), NOW), NOW)
+
+    assert sorted(interests(topics, NOW)) == ["취업 › 금결원 지원", "취업 › 은행 채용"]

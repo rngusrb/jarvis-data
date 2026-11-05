@@ -7,7 +7,8 @@
 대신 싼 길과 비싼 길을 가른다.
 
     /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
-    /report                        넓게 모아 → LLM 이 보고서를 쓴다(1분쯤)
+    /report                        넓게 모아 → LLM 이 보고서를 쓴다(2~3분 — 다가오는 일정을 먼저
+    찾는다)
     그 밖의 말                     맥락 조립 → LLM
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
@@ -17,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -65,7 +67,7 @@ MARKS = {
 class Later:
     """지금 보낼 말과, 시간이 걸려 나중에 보낼 말.
 
-    듣기 루프는 한 건씩 차례로 처리한다. 보고서(1분쯤)를 그 자리에서 기다리면 그동안 `/status` 도
+    듣기 루프는 한 건씩 차례로 처리한다. 보고서(2~3분)를 그 자리에서 기다리면 그동안 `/status` 도
     버튼도 밀리고, 기다리다 한 번 더 누르면 보고서가 두 통 온다(JAR-027 리뷰 재현). 그래서 "쓰는
     중"을 먼저 보내고 보고서는 따로 기다려 보낸다.
     """
@@ -76,6 +78,12 @@ class Later:
 
 # 찾기 시작했을 때 먼저 보내는 말. 답은 10~40초 뒤에 따로 간다.
 LOOKING = "찾아볼게. 잠깐만."
+# 첫 차례가 빈 답이라 한 차례 더 묻는다(검색은 안 한다) — "찾아볼게"라고 하면 거짓말이다.
+THINKING = "잠깐만."
+# 찾아본 답의 전체 시간 상한. 실측 최장 85초(검색 4·읽기 2) — 넘으면 무엇이 멈췄는지 말한다.
+# 상한이 없으면 "찾아볼게"만 가고 답도 로그도 안 올 수 있었다(JAR-031 리뷰).
+ANSWER_LIMIT = timedelta(minutes=4)
+TOO_LONG = "미안, 찾다가 너무 오래 걸려서 멈췄어. 조금 뒤에 다시 물어봐 줘."
 # 빈 답 — 그대로 보내면 사용자는 아무 일도 안 일어난 걸로 본다.
 BLANK = "미안, 지금 생각이 안 나. 다시 물어봐 줄래?"
 # 두뇌에 못 닿았을 때. 예외를 위로 올리면 듣기 루프가 로그만 남기고 아무 답도 안 보낸다.
@@ -142,7 +150,7 @@ class Conversationalist:
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
             "/topics  내가 너에 대해 아는 것(주제 나무)\n"
-            "/report  요즘의 너 — 보고서(1분쯤 걸려)"
+            "/report  요즘의 너 — 보고서(2~3분 걸려)"
         )
 
     def _report(self, now: datetime) -> Union[str, Later]:
@@ -151,7 +159,7 @@ class Conversationalist:
         if self._writing_since is not None and now - self._writing_since < WRITING_FOR:
             return "이미 쓰는 중이야. 끝나면 보낼게."
         self._writing_since = now
-        return Later(now="쓰는 중이야. 1분쯤 걸려.", then=self._write(self.reporter, now))
+        return Later(now="쓰는 중이야. 2~3분 걸려.", then=self._write(self.reporter, now))
 
     async def _write(self, reporter: Reporter, now: datetime) -> str:
         try:
@@ -254,11 +262,19 @@ class Conversationalist:
             return DOWN if unreachable(error) else STUCK
         if isinstance(started, Researched):
             return self._said(started.text, text)
-        return Later(now=LOOKING, then=self._looked(started, text))
+        return Later(
+            now=LOOKING if started.searching else THINKING, then=self._looked(started, text)
+        )
 
     async def _looked(self, pending: Pending, text: str) -> str:
         """찾아본 답. 실패하면 듣기 루프가 "마치지 못했어"를 보낸다(로그와 함께)."""
-        found = await pending.finish()
+        try:
+            found = await asyncio.wait_for(pending.finish(), timeout=ANSWER_LIMIT.total_seconds())
+        except asyncio.TimeoutError:
+            logger.warning(
+                "찾아본 답이 %d초를 넘겼다 — 멈춘다: %.60s", ANSWER_LIMIT.total_seconds(), text
+            )
+            return TOO_LONG
         return self._said(found.text, text)
 
     def _said(self, reply: str, text: str) -> str:

@@ -51,7 +51,7 @@
 | vLLM (Qwen3.8-27B-FP8, TP=2, 64K, 도커 `vllm-tools`, 도구 호출 `qwen3_coder` — SETUP) | 8000 |
 | SearXNG (웹 검색, 구글·네이버) | 8888 |
 | Qdrant (추후 텍스트용) | 6333 |
-| 자비스 서버 (맥) | 8100 |
+| 자비스 서버 (데스크탑, systemd `jarvis`) | 8100 |
 
 Tailscale — 데스크탑 `100.98.90.38` / 맥 `100.65.255.109`
 

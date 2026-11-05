@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.brain.converse import Conversationalist
 from src.brain.providers import TopicProvider
@@ -382,3 +382,43 @@ def test_an_unreachable_brain_still_gets_an_answer(tmp_path: Path) -> None:
         c = _build(tmp_path)
         c.tools = ToolLoop(client=Raising(error), search=OneResult(), reader=None)  # type: ignore[arg-type]
         assert _ask(c, "정처기 언제야?") == expected
+
+
+def test_a_slow_search_is_stopped_and_said(tmp_path: Path, monkeypatch: Any) -> None:
+    """상한이 없으면 \"찾아볼게\"만 가고 답도 로그도 안 올 수 있었다(리뷰 재현)."""
+    from datetime import timedelta as td
+
+    import src.brain.converse as converse
+    from src.brain.client import ToolCall, Turn
+
+    @dataclass
+    class Stuck(Turns):
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            if self.asked:
+                await asyncio.sleep(5)
+            return await super().chat(messages, tools, thinking)
+
+    monkeypatch.setattr(converse, "ANSWER_LIMIT", td(milliseconds=50))
+    from src.brain.tools import ToolLoop
+
+    call = ToolCall(id="c1", name="web_search", arguments={"query": "q"}, raw={"id": "c1"})
+    c = _build(tmp_path)
+    c.tools = ToolLoop(
+        client=Stuck([Turn(content="", calls=(call,)), Turn(content="늦은 답")]),
+        search=OneResult(),
+        reader=None,
+    )  # type: ignore[arg-type]
+    reply = asyncio.run(c.reply(Incoming(text="q", at=NOW, cursor=1), NOW))
+    assert isinstance(reply, converse.Later)
+    assert asyncio.run(_await(reply.then)) == converse.TOO_LONG
+
+
+def test_an_empty_first_turn_does_not_claim_to_search(tmp_path: Path) -> None:
+    """빈 답이라 한 번 더 묻는 것뿐이면 \"찾아볼게\"는 거짓말이다(리뷰)."""
+    from src.brain.client import Turn
+    from src.brain.converse import THINKING, Later
+
+    c, _ = _with_tools(tmp_path, [Turn(content=""), Turn(content="다시 생각해 보니 이래.")])
+    reply = asyncio.run(c.reply(Incoming(text="음?", at=NOW, cursor=1), NOW))
+    assert isinstance(reply, Later) and reply.now == THINKING
+    assert asyncio.run(_await(reply.then)) == "다시 생각해 보니 이래."

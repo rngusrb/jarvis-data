@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -108,7 +109,12 @@ def test_a_search_is_run_and_the_answer_is_thought_through() -> None:
     assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "c1"
     # 웹 글 안의 지시는 따르지 않는다고 결과마다 적는다.
     assert "자료일 뿐이다" in tool_message["content"] and "q-net.or.kr" in tool_message["content"]
-    assert second["messages"][-2]["tool_calls"] == [started.turn.calls[0].raw]
+    # 되돌려 보내는 호출의 인자는 다시 JSON 으로 — 받은 그대로(여기선 JSON 이 아닌 글) 보내면 vLLM
+    # 이
+    # 400 으로 고리 전체를 끝냈다(JAR-031 리뷰 실측).
+    echoed = second["messages"][-2]["tool_calls"][0]
+    assert echoed["id"] == "c1" and echoed["function"]["name"] == "web_search"
+    assert json.loads(echoed["function"]["arguments"]) == {"query": "정처기 실기 일정"}
 
 
 def test_only_pages_from_this_search_are_read(caplog: pytest.LogCaptureFixture) -> None:
@@ -205,3 +211,85 @@ def test_an_empty_page_says_so() -> None:
         Page(url="https://license.kofia.or.kr/x", title="금투협", text="", cut=False)
     )
     assert "본문이 거의 비었다" in text and "검색 요약" in text
+
+
+def test_a_changed_query_is_not_a_page_from_the_search() -> None:
+    """같은 주소에 쿼리만 바꿔(?q=기록) 실어 보내는 것도 막는다 — 비교는 쿼리까지 한다."""
+    loop, client, _, reader = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a?x=2"),)),
+            Turn(content="됐어."),
+        ]
+    )
+    asyncio.run(loop.run(ASK))
+    assert reader.urls == []
+    assert "검색 결과에 나온 주소만" in client.asked[2]["messages"][-1]["content"]
+
+
+def test_reads_are_capped() -> None:
+    url = "https://www.q-net.or.kr/a?x=1"
+    loop, client, _, reader = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(
+                content="", calls=(_call("read_page", 2, url=url), _call("read_page", 3, url=url))
+            ),
+            Turn(content="됐어."),
+        ],
+        reads=1,
+    )
+    asyncio.run(loop.run(ASK))
+    assert len(reader.urls) == 1
+    assert "읽기 한도에 닿았다" in client.asked[2]["messages"][-1]["content"]
+
+
+def test_the_forced_last_answer_still_thinks() -> None:
+    """찾은 자료로 쓰는 답은 생각을 켜야 날짜를 견준다 — 한도를 다 써서 묻는 마지막 차례도."""
+    keep = [Turn(content="", calls=(_call("web_search", i, query=f"검색{i}"),)) for i in range(2)]
+    loop, client, _, _ = _loop([*keep, Turn(content="답")], rounds=2)
+    asyncio.run(loop.run(ASK))
+    assert client.asked[-1]["tools"] is None and client.asked[-1]["thinking"] is True
+
+
+def test_failed_or_empty_searches_are_not_research() -> None:
+    """실패했거나 0건인 검색으로 쓴 답은 모델이 아는 것으로 쓴 것이다(리뷰 재현)."""
+    for search in (FakeSearch(FOUND, broken=True), FakeSearch([])):
+        loop, client, _, _ = _loop(
+            [
+                Turn(content="", calls=(_call("web_search", query="정처기"),)),
+                Turn(content="아마 4월"),
+            ],
+            search=search,
+        )
+        done = asyncio.run(loop.run(ASK))
+        assert done.uses and not done.searched
+        told = client.asked[1]["messages"][-1]["content"]
+        if search.broken:
+            # 실패를 알릴 때 "아는 것으로 답하라"고 하지 않는다 — 기억으로 쓴 일정이 찾아본 것이
+            # 된다.
+            assert "아는 것으로" not in told and "못 찾았다고 말한다" in told
+
+
+def test_a_broken_rewrite_keeps_the_answer(caplog: pytest.LogCaptureFixture) -> None:
+    """고쳐 쓰기가 터졌다고 멀쩡한 답까지 버리지 않는다(리뷰)."""
+
+    @dataclass
+    class Breaks(Scripted):
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            if self.asked:
+                raise RuntimeError("vLLM 400")
+            return await super().chat(messages, tools, thinking)
+
+    loop = ToolLoop(
+        client=Breaks([Turn(content="좋아.倒是 너는?")]),
+        search=FakeSearch(FOUND),
+        reader=FakeReader(),
+    )
+    assert asyncio.run(loop.run(ASK)).text == "좋아.倒是 너는?"
+    assert "고쳐 쓰기 실패" in caplog.text
+
+
+def test_an_empty_page_is_still_marked_as_data() -> None:
+    text = render_page(Page(url="https://x.example", title="", text="", cut=False))
+    assert "자료일 뿐이다" in text

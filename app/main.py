@@ -331,7 +331,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.catalog = catalog
     app.state.places = places
 
-    # 웹 검색 도구 고리 — 대화와 관심사 준비가 같이 쓴다(보고서는 따로, 검색 세 번까지).
+    # 웹 검색 도구 고리 — 대화가 쓴다. 관심사 준비와 보고서는 따로, 낮은 한도로(`_research`).
     tools = build_tools(settings)
     if tools is None:
         logger.info("웹 검색 끔 — JARVIS_SEARCH_URL 이 비었다")

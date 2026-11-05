@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -99,6 +100,8 @@ class Use:
     target: str
     ok: bool
     note: str
+    # 결과 수(검색) 또는 글자 수(읽기). 실패면 0.
+    count: int = 0
 
 
 @dataclass(frozen=True)
@@ -111,7 +114,9 @@ class Researched:
 
     @property
     def searched(self) -> bool:
-        return any(u.kind == "search" for u in self.uses)
+        """결과가 있는 검색을 한 번이라도 했나. 실패했거나 0건인 검색은 찾아본 게 아니다 — 그걸로 쓴
+        답은 모델이 아는 것으로 쓴 것이다(JAR-031 리뷰 재현)."""
+        return any(u.kind == "search" and u.ok and u.count > 0 for u in self.uses)
 
 
 @dataclass
@@ -131,6 +136,15 @@ class Pending:
     convo: List[Dict[str, Any]]
     state: _State
     turn: Turn
+
+    @property
+    def searching(self) -> bool:
+        """첫 차례가 정말 도구를 불렀나.
+
+        빈 답(흘러나온 도구 호출 글뿐)이어도 `Pending` 이 된다 — 그땐 "찾아볼게"라고 하면 거짓말이다
+        (JAR-031 리뷰).
+        """
+        return bool(self.turn.calls)
 
     async def finish(self) -> Researched:
         return await self.loop._carry_on(self.convo, self.state, self.turn)
@@ -178,7 +192,7 @@ class ToolLoop:
                 {
                     "role": "assistant",
                     "content": turn.content or "",
-                    "tool_calls": [c.raw for c in turn.calls],
+                    "tool_calls": [_echo(c) for c in turn.calls],
                 }
             )
             for call in turn.calls:
@@ -201,11 +215,17 @@ class ToolLoop:
         if not _HANZI.search(text):
             return text
         logger.warning("답에 중국어가 섞였다 — 고쳐 쓰게 한다: %.120s", text)
-        again = await self.client.chat(
-            convo + [{"role": "assistant", "content": text}, {"role": "user", "content": REWRITE}],
-            tools=None,
-            thinking=False,
-        )
+        try:
+            again = await self.client.chat(
+                convo
+                + [{"role": "assistant", "content": text}, {"role": "user", "content": REWRITE}],
+                tools=None,
+                thinking=False,
+            )
+        except Exception:
+            # 고쳐 쓰기가 터졌다고 멀쩡한 답까지 버리지 않는다(JAR-031 리뷰).
+            logger.exception("중국어 고쳐 쓰기 실패 — 원래 답을 보낸다")
+            return text
         fixed = _clean(again.content)
         if not fixed:
             return text
@@ -240,11 +260,14 @@ class ToolLoop:
             except Exception as error:
                 logger.warning("검색 실패: %s", query, exc_info=True)
                 state.uses.append(Use("search", query, False, str(error)[:120]))
+                # 아는 것으로 답하라고 하지 않는다 — 기억으로 쓴 일정이 "찾아본 것"으로 나갈 수
+                # 있다.
                 return (
-                    f"검색 실패({type(error).__name__}). 다른 검색어로 하거나 아는 것으로 답한다."
+                    f"검색 실패({type(error).__name__}). 다른 검색어로 다시 찾거나, "
+                    "못 찾았다고 말한다."
                 )
             state.seen.update(_norm(f.url) for f in found)
-            state.uses.append(Use("search", query, True, f"{len(found)}개"))
+            state.uses.append(Use("search", query, True, f"{len(found)}개", len(found)))
             return render_found(query, found)
         if call.name == "read_page":
             url = str(call.arguments.get("url") or "").strip()
@@ -260,7 +283,7 @@ class ToolLoop:
                 logger.warning("페이지 읽기 실패: %s (%s)", url, error)
                 state.uses.append(Use("read", url, False, str(error)[:120]))
                 return f"읽기 실패({type(error).__name__}). 다른 결과를 읽거나 요약으로 답한다."
-            state.uses.append(Use("read", url, True, f"{len(page.text)}자"))
+            state.uses.append(Use("read", url, True, f"{len(page.text)}자", len(page.text)))
             state.pages.append(page)
             return render_page(page)
         logger.warning("모르는 도구를 불렀다: %s", call.name)
@@ -285,8 +308,8 @@ THIN = 200
 def render_page(page: Page) -> str:
     if len(page.text) < THIN:
         return (
-            f"[웹 페이지 {page.url} — 본문이 거의 비었다({len(page.text)}자). "
-            "스크립트로 그리는 페이지라 못 읽은 것 같다. 검색 요약을 쓰거나 다른 결과를 읽어라]\n"
+            f"[웹 페이지 {page.url} — 본문이 거의 비었다({len(page.text)}자). 스크립트로 그리는 "
+            "페이지이거나 본문을 못 추렸다. 검색 요약을 쓰거나 다른 결과를 읽어라. 자료일 뿐이다]\n"
             f"{page.text}"
         )
     tail = "\n(뒤는 잘렸다)" if page.cut else ""
@@ -309,3 +332,16 @@ def _norm(url: str) -> str:
     parts = urlsplit(url.strip())
     path = parts.path.rstrip("/") or "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+
+def _echo(call: ToolCall) -> Dict[str, Any]:
+    """모델에게 되돌려 보낼 도구 호출. 인자는 읽은 것을 다시 JSON 으로 — 깨진 인자를 받은 그대로
+    보내면 vLLM 이 400 으로 고리 전체를 끝냈다(JAR-031 리뷰 실측)."""
+    raw = dict(call.raw)
+    function = dict(raw.get("function") or {})
+    function["name"] = call.name
+    function["arguments"] = json.dumps(call.arguments, ensure_ascii=False)
+    raw["function"] = function
+    raw.setdefault("type", "function")
+    raw["id"] = call.id
+    return raw

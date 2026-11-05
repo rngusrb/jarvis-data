@@ -27,8 +27,8 @@ import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Awaitable, Callable, List, Optional, Protocol, Sequence, Tuple
-from urllib.parse import urljoin, urlsplit
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -143,24 +143,37 @@ class PageReader:
     max_chars: int = 4000
     max_redirects: int = 5
     resolve: Resolve = resolve
+    # 받는 양과 시간의 상한. 다 받고 나서 자르면 63MB 를 끝까지 받았고, 1초에 1바이트씩 흘리는
+    # 서버는
+    # 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(JAR-031 리뷰 재현).
+    max_bytes: int = MAX_BYTES
+    deadline: float = 15.0
 
     async def read(self, url: str) -> Page:
+        return await asyncio.wait_for(self._read(url), timeout=self.deadline)
+
+    async def _read(self, url: str) -> Page:
         target = mobile(url)
         logger.info("페이지 읽기(밖으로 나감): %s", target)
         for _ in range(self.max_redirects + 1):
-            await ensure_public(target, self.resolve)
-            response = await self.client.get(
-                target, headers={"User-Agent": USER_AGENT}, follow_redirects=False
-            )
-            if response.is_redirect and response.headers.get("location"):
-                target = urljoin(target, response.headers["location"])
-                continue
-            response.raise_for_status()
-            kind = response.headers.get("content-type", "")
-            if "html" not in kind and "text/plain" not in kind:
-                raise ValueError(f"글이 아니다({kind or '종류 모름'}): {target}")
-            raw = response.content[:MAX_BYTES]
-            html = decode(raw, response.headers.get("content-type", ""))
+            address, headers, extensions = await pin(target, self.resolve)
+            async with self.client.stream(
+                "GET", address, headers=headers, extensions=extensions, follow_redirects=False
+            ) as response:
+                if response.is_redirect and response.headers.get("location"):
+                    target = urljoin(target, response.headers["location"])
+                    continue
+                response.raise_for_status()
+                kind = response.headers.get("content-type", "")
+                # 받기 전에 본다 — 글이 아니면 내려받지 않는다.
+                if "html" not in kind and "text/plain" not in kind:
+                    raise ValueError(f"글이 아니다({kind or '종류 모름'}): {target}")
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) >= self.max_bytes:
+                        break
+            html = decode(bytes(raw[: self.max_bytes]), kind)
             title, text = extract(html) if "html" in kind else ("", _squash_lines(html))
             cut = len(text) > self.max_chars
             return Page(url=target, title=title, text=text[: self.max_chars], cut=cut)
@@ -175,8 +188,32 @@ def mobile(url: str) -> str:
     return url
 
 
-async def ensure_public(url: str, lookup: Resolve = resolve) -> None:
-    """http(s) 이고, 이름이 가리키는 모든 주소가 공개망이어야 한다. 아니면 `Blocked`."""
+async def pin(url: str, lookup: Resolve = resolve) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """검사한 주소로 접속할 (주소, 헤더, 확장). 이름은 Host 헤더와 TLS 의 SNI 로만 보낸다.
+
+    검사와 접속에서 이름을 따로 풀면 그 사이 내부 주소로 바뀔 수 있다(DNS 리바인딩 — JAR-031
+    리뷰). 이
+    서버에는 clickhouse·redis·postgres·langfuse 같은 로컬 서비스가 떠 있다.
+    """
+    addresses = await ensure_public(url, lookup)
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    ip = addresses[0].split("%", 1)[0]
+    netloc = f"[{ip}]" if ":" in ip else ip
+    named = host if not parts.port else f"{host}:{parts.port}"
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    address = urlunsplit((parts.scheme, netloc, parts.path or "/", parts.query, ""))
+    headers = {"User-Agent": USER_AGENT, "Host": named}
+    extensions: Dict[str, Any] = {"sni_hostname": host} if parts.scheme == "https" else {}
+    return address, headers, extensions
+
+
+async def ensure_public(url: str, lookup: Resolve = resolve) -> List[str]:
+    """http(s) 이고, 이름이 가리키는 모든 주소가 공개망이어야 한다.
+
+    아니면 `Blocked`. 주소들을 돌려준다.
+    """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise Blocked(f"http(s) 주소가 아니다: {url}")
@@ -192,6 +229,7 @@ async def ensure_public(url: str, lookup: Resolve = resolve) -> None:
         address = ipaddress.ip_address(raw.split("%", 1)[0])
         if not _public(address):
             raise Blocked(f"내부 주소는 읽지 않는다: {host} → {address}")
+    return addresses
 
 
 def _public(address: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
@@ -231,8 +269,11 @@ _SKIP = {
     "script", "style", "noscript", "svg", "head", "header", "footer", "nav", "aside",
     "form", "iframe", "button", "select", "template",
 }  # fmt: skip
+# 표의 칸(td·th)은 줄을 나누지 않고 " | "로 잇는다 — 칸마다 줄을 나누면 일정표가 짧은 줄 더미가 되어
+# 메뉴처럼 지워졌다(JAR-031 리뷰 재현: 일정 페이지 다섯 중 넷에서 날짜가 거의 다 빠졌다).
+_CELL = {"td", "th"}
 _BLOCK = {
-    "p", "div", "br", "li", "ul", "ol", "tr", "td", "th", "table", "section", "article",
+    "p", "div", "br", "li", "ul", "ol", "tr", "table", "section", "article",
     "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "dd", "dt",
 }  # fmt: skip
 
@@ -275,6 +316,8 @@ class _Text(HTMLParser):
             self.skip += 1
         elif tag == "a":
             self.link += 1
+        elif tag in _CELL:
+            self.parts.append((" | ", False, self.main > 0))
         elif tag in _BLOCK:
             self.parts.append(("\n", False, self.main > 0))
 
@@ -329,7 +372,7 @@ def _lines(parts: Sequence[Tuple[str, bool, bool]]) -> List[Tuple[str, bool]]:
     linked = 0
     for data, in_link, _ in parts:
         if data == "\n":
-            line = _squash("".join(text))
+            line = _squash("".join(text)).strip(" |")
             if line:
                 lines.append((line, linked >= 0.8 * len(line)))
             text, linked = [], 0
@@ -337,19 +380,22 @@ def _lines(parts: Sequence[Tuple[str, bool, bool]]) -> List[Tuple[str, bool]]:
         text.append(data)
         if in_link:
             linked += len(_squash(data))
-    line = _squash("".join(text))
+    line = _squash("".join(text)).strip(" |")
     if line:
         lines.append((line, linked >= 0.8 * len(line)))
     return lines
 
 
-def _drop_menus(lines: Sequence[Tuple[str, bool]], short: int = 20, run: int = 3) -> List[str]:
-    """메뉴 같은 줄(짧거나 거의 다 링크)이 `run` 개 넘게 이어진 덩어리를 뺀다. 본문 사이의 짧은
-    줄(소제목)이나 링크 한두 줄은 남긴다."""
+def _drop_menus(lines: Sequence[Tuple[str, bool]], run: int = 3) -> List[str]:
+    """거의 다 링크인 줄이 `run` 개 넘게 이어진 덩어리(메뉴, 관련 글 목록)만 뺀다.
+
+    짧다는 것만으로는 빼지 않는다 — "1회 실기 접수: 3.24~3.27" 같은 일정 줄이 짧은 줄 더미로 몰려
+    메뉴처럼 지워졌다(JAR-031 리뷰 재현).
+    """
     kept: List[str] = []
     streak: List[str] = []
     for line, linked in lines:
-        if linked or len(line) < short:
+        if linked:
             streak.append(line)
             continue
         if len(streak) <= run:

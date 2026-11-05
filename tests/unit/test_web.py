@@ -194,3 +194,108 @@ def test_without_an_article_the_page_minus_menus_is_kept() -> None:
         "짧은 줄",
         "그다음 문단도 충분히 길게 쓰여 있다고 하자.",
     ]
+
+
+def test_schedule_tables_and_short_date_lines_survive() -> None:
+    """칸마다 줄을 나누니 일정표가 짧은 줄 더미가 되어 메뉴처럼 지워졌다.
+
+    실제 일정 페이지 다섯 중 넷에서 날짜가 거의 다 빠졌다(JAR-031 리뷰 재현). 표의 한 행은 한 줄로,
+    짧아도 링크가 아니면 남긴다.
+    """
+    html = (
+        "<body><ul>"
+        + "".join(f'<li><a href="/{i}">관련 글 {i}</a></li>' for i in range(5))
+        + "</ul>"
+        "<div><p>1회 실기 접수: 3.24~3.27</p><p>2회 실기 접수: 6.23~6.26</p>"
+        "<p>3회 실기 접수: 9.22~9.25</p><p>4회 없음</p><p>발표 12.18</p>"
+        "<table><tr><th>회차</th><th>필기접수</th></tr><tr><td>1회</td><td>1.12~1.15</td></tr></table>"
+        "</div></body>"
+    )
+    _, text = extract(html)
+    assert "관련 글" not in text
+    assert text.split("\n") == [
+        "1회 실기 접수: 3.24~3.27",
+        "2회 실기 접수: 6.23~6.26",
+        "3회 실기 접수: 9.22~9.25",
+        "4회 없음",
+        "발표 12.18",
+        "회차 | 필기접수",
+        "1회 | 1.12~1.15",
+    ]
+
+
+def _streamed(chunks: List[bytes], seen: List[int], kind: str = "text/html", delay: float = 0.0):  # type: ignore[no-untyped-def]
+    async def body():  # type: ignore[no-untyped-def]
+        for i, chunk in enumerate(chunks):
+            if delay:
+                await asyncio.sleep(delay)
+            seen.append(i)
+            yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": kind}, content=body())
+
+    return handler
+
+
+def test_a_huge_page_is_not_downloaded_whole() -> None:
+    """다 받고 나서 자르면 63MB 를 끝까지 받았다(리뷰 재현) — 상한에서 멈춘다."""
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b"<p>" + b"a" * 1000 + b"</p>"] * 100, seen)),
+        max_bytes=3000,
+        resolve=_public("211.115.84.70"),
+    )
+    page = asyncio.run(reader.read("https://big.example/"))
+    assert len(seen) <= 4 and page.text.startswith("a")
+
+
+def test_a_non_text_body_is_refused_before_it_is_read() -> None:
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b"%PDF"] * 50, seen, kind="application/pdf")),
+        resolve=_public("211.115.84.70"),
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(reader.read("https://a.kr/file.pdf"))
+    assert seen == []
+
+
+def test_a_drip_feeding_server_hits_the_deadline() -> None:
+    """1초에 1바이트씩 흘리면 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(리뷰 재현)."""
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b"a"] * 100, seen, delay=0.05)),
+        deadline=0.2,
+        resolve=_public("211.115.84.70"),
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(reader.read("https://slow.example/"))
+    assert len(seen) < 10
+
+
+def test_the_checked_address_is_the_one_connected() -> None:
+    """검사와 접속에서 이름을 따로 풀면 그 사이 내부 주소로 바뀔 수 있다(DNS 리바인딩, 리뷰).
+
+    검사한 주소로 접속하고 이름은 Host 와 SNI 로만 보낸다.
+    """
+    asked: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"<p>ok</p>")
+
+    reader = PageReader(_client(handler), resolve=_public("211.115.84.70"))
+    asyncio.run(reader.read("https://blog.naver.com/abc/123?x=1"))
+
+    request = asked[0]
+    assert request.url.host == "211.115.84.70" and request.url.path == "/abc/123"
+    assert request.url.query == b"x=1"
+    # 데스크탑 블로그는 iframe 이라 모바일 주소로 읽는다.
+    assert request.headers["host"] == "m.blog.naver.com"
+    assert request.extensions.get("sni_hostname") == "m.blog.naver.com"
+
+
+def test_every_address_of_a_name_must_be_public() -> None:
+    with pytest.raises(Blocked):
+        asyncio.run(ensure_public("https://split.example/", _public("211.115.84.70", "10.0.0.5")))

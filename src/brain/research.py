@@ -88,13 +88,13 @@ def interests(topics: TopicSource, now: datetime, limit: int = 5) -> List[str]:
     줄기와 그 아래 가지가 함께 오르면 가지만 — 검색어는 구체적일수록 낫다.
     """
     board = [s for s in standings(topics.load(), topics.grounds(), now) if s.trend in WATCHED]
-    board.sort(key=lambda s: (s.recent_days, s.depth, s.count), reverse=True)
-    chosen: List[List[str]] = []
-    for s in board:
-        path = list(s.path)
-        if any(c[: len(path)] == path or path[: len(c)] == c for c in chosen):
-            continue
-        chosen.append(path)
-        if len(chosen) >= limit:
-            break
-    return [" › ".join(p) for p in chosen]
+    paths = [tuple(s.path) for s in board]
+    # 줄기의 날 수에는 가지의 근거도 합쳐져서 늘 가지 이상이다 — 날 수로만 고르면 줄기가 뽑히고
+    # 가지는 다 빠졌다(JAR-031 리뷰 재현). 지켜보는 가지가 있는 줄기는 후보에서 뺀다.
+    leaves = [
+        s
+        for s in board
+        if not any(len(p) > len(s.path) and p[: len(s.path)] == tuple(s.path) for p in paths)
+    ]
+    leaves.sort(key=lambda s: (s.recent_days, s.count), reverse=True)
+    return [" › ".join(s.path) for s in leaves[:limit]]
