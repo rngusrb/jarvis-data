@@ -42,9 +42,10 @@ def test_a_topic_rising_for_three_of_the_last_seven_days_is_a_candidate() -> Non
     assert insight.at == NOW - timedelta(days=2.5)
 
 
-def test_two_days_is_not_yet_a_trend() -> None:
-    """하루 이틀은 스쳐간 것일 수 있다."""
-    assert _check(_board([0.5, 1.5])) == []
+def test_one_day_is_not_yet_a_trend() -> None:
+    """하루뿐인 건 "처음 보임"이다 — 한 번 검색해본 걸 관심사라고 붙들지 않는다. 이틀이면 뜬다."""
+    assert _check(_board([0.5, 0.6])) == []
+    assert len(_check(_board([0.5, 1.5]))) == 1
 
 
 def test_a_months_long_steady_topic_is_not_news() -> None:
