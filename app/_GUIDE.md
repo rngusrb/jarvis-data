@@ -92,4 +92,4 @@ python scripts/harness.py app/
 |------|------|
 | `reflect.py` | 회고 CLI. 지금 한 번, 나무 보기(`--show`), 지난 날들을 하루씩 되감기(`--replay`, DB 사본에서), 사본의 나무 들이기(`--adopt`, 새 코드로 재시작하기 전에) |
 | `migrate.py` | 관측치로 담겼던 사건 종류를 사건 표로 옮기는 일회성 CLI. 옮긴 걸 확인한 뒤에 지운다 |
-| `main.py` | 섹터 등록 → 지표 레지스트리 → 트리거·에이전트·채널 조립 → FastAPI. 매일 회고 시각(`REFLECT_AT`). 줄기 간격(`family_cooldowns` — 관심사·건강·이동, 각 섹터의 `FAMILY`). 대화 기록 하나를 듣는 루프와 반응 루프가 같이 쓴다(먼저 건 말도 적힌다). 회고·보고서 조립(`build_reflector`·`build_reporter` — CLI·시험이 같은 조립을 쓴다) |
+| `main.py` | 섹터 등록 → 지표 레지스트리 → 트리거·에이전트·채널 조립 → FastAPI. 매일 회고 시각(`REFLECT_AT`). 줄기 간격(`family_cooldowns` — 관심사·건강·이동, 각 섹터의 `FAMILY`). 대화 기록 하나를 듣는 루프와 반응 루프가 같이 쓴다(먼저 건 말도 적힌다). 웹 검색 도구 고리(`build_tools` — 대화용, 검색 주소가 없으면 None)와 찾아 두기(`_research` — 관심사 준비 2분·보고서 3분 상한, 낮은 한도). 회고·보고서 조립(`build_reflector`·`build_reporter` — CLI·시험이 같은 조립을 쓴다) |

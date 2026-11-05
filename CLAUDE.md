@@ -48,7 +48,8 @@
 
 | 서비스 | 포트 |
 |--------|------|
-| vLLM (Qwen3.8-27B-FP8, TP=2, `--reasoning-parser qwen3`) | 8000 |
+| vLLM (Qwen3.8-27B-FP8, TP=2, 64K, 도커 `vllm-tools`, 도구 호출 `qwen3_coder` — SETUP) | 8000 |
+| SearXNG (웹 검색, 구글·네이버) | 8888 |
 | Qdrant (추후 텍스트용) | 6333 |
 | 자비스 서버 (맥) | 8100 |
 
