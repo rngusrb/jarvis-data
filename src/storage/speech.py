@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -18,6 +19,9 @@ from typing import Iterator, List, Optional, Sequence
 
 from src.brain.memory import SpeechRecord
 from src.core.clock import stamp
+from src.core.topics import TOPIC_FAMILY
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS speech (
@@ -60,14 +64,19 @@ class SQLiteSpeechLog:
             ):
                 if column.split()[0] not in columns:
                     conn.execute(f"ALTER TABLE speech ADD COLUMN {column}")
-            if "family" not in columns:
-                # 줄기 칸이 생기기 전 기록 중 이름에 줄기가 든 것(`topic:12`)만 채운다. 안 채우면
-                # 배포 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격(6시간) 안에 또 말한다.
-                # 이름에 줄기가 없는 옛 기록(sleep_drop 등)은 비워 둔다 — 저장소는 섹터를 모른다.
-                conn.execute(
-                    "UPDATE speech SET family = substr(trigger, 1, instr(trigger, ':') - 1)"
-                    " WHERE family IS NULL AND instr(trigger, ':') > 0"
-                )
+            # 줄기 칸이 생기기 전의 관심사 기록(`topic:12`)에 줄기를 채운다. 안 채우면 배포
+            # 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격(6시간) 안에 또 말한다.
+            # **관심사만** 채운다 — 이름 앞부분을 통째로 줄기로 읽었더니 옛 수집 경고
+            # (`stale_data:location` 등 353행)에 어느 줄기도 아닌 "stale_data"가 적혔다
+            # (JAR-029 리뷰, 운영 사본). 다른 옛 기록은 비워 둔다 — 줄기 간격을 안 쓰는 줄기이거나
+            # (수집) 이름에 줄기가 없다(sleep_drop 등). 열 때마다 돈다: 칸만 생기고 채우기가
+            # 잠김으로 실패해도 다음에 마저 채운다(리뷰 재현).
+            filled = conn.execute(
+                "UPDATE speech SET family = ? WHERE family IS NULL AND trigger LIKE ?",
+                (TOPIC_FAMILY, f"{TOPIC_FAMILY}:%"),
+            ).rowcount
+            if filled:
+                logger.info("옛 관심사 발화 %d건에 줄기(%s)를 채웠다", filled, TOPIC_FAMILY)
             # 표는 ALTER 뒤에야 칸이 있다. 이 색인은 버튼이 돌아왔을 때 그 말을 찾는다.
             conn.execute("CREATE INDEX IF NOT EXISTS idx_speech_token ON speech (token)")
 

@@ -206,8 +206,9 @@ def _press(c: Conversationalist, action: str) -> Optional[str]:
 def test_엄지를_누르면_그_말에_반응이_남는다(tmp_path: Path) -> None:
     c = _build(tmp_path)
     assert c.speech is not None
-    c.speech.record("topic:7", NOW, "요즘 정보처리기사 보네", token="t7")
-    c.speech.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="s1")
+    # 관심사인지는 기록의 줄기로 안다 — 이름을 쪼개 짐작하지 않는다(JAR-029).
+    c.speech.record("topic:7", NOW, "요즘 정보처리기사 보네", token="t7", family="topic")
+    c.speech.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="s1", family="health")
 
     assert "이 관심사(와 그 아래 가지)는 한 달 동안 안 꺼낼게" in (_press(c, "fb:-:t7") or "")
     assert "계속할게" in (_press(c, "fb:+:s1") or "")

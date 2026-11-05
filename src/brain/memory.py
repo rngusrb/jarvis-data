@@ -49,7 +49,7 @@ class SpeechRecord:
     feedback: int = 0
     rated_at: Optional[datetime] = None
     # 큰 줄기(건강·이동·관심사·수집) — 신호가 들고 온 것. 게이트가 "이 줄기로 마지막에 말한 때"를
-    # 이걸로 찾는다. 2026-11-05 전 기록은 이름에 줄기가 든 것(`topic:12`)만 채워져 있다.
+    # 이걸로 찾는다. 2026-11-05 전 기록은 관심사(`topic:12`)만 채워져 있다.
     family: str = ""
 
 

@@ -160,7 +160,7 @@ class Conversationalist:
             return "그 말은 내 기억에 없어서 반응을 못 남겼어."
         if value > 0:
             return f"{REACTIONS[1]} 고마워. 이런 얘기 계속할게."
-        if record.trigger.startswith(f"{TOPIC_FAMILY}:"):
+        if record.family == TOPIC_FAMILY:
             return f"{REACTIONS[-1]} 알겠어. 이 관심사(와 그 아래 가지)는 한 달 동안 안 꺼낼게."
         if is_collection(record.trigger):
             # 수집 경고는 👎 로 재우지 않는다 — 끊김이 길어질수록 조용해지는 감시견이 된다

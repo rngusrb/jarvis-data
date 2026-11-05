@@ -151,6 +151,11 @@ class JarvisLoop:
         grouped: List[Tuple[Insight, List[Insight]]] = []
         for members in families.values():
             allowed = [m for m in members if self._allowed(m, now)]
+            for member in members:
+                if member not in allowed:
+                    # 이미 판단했거나 쉬는 중. 묶으면 막힌 신호가 대표가 되어 새 신호까지 판단 없이
+                    # 사라진다(JAR-029 리뷰 재현) — 거른 흔적은 남긴다.
+                    logger.debug("게이트가 막음 — 묶지 않는다: %s", member.trigger)
             if not allowed:
                 continue
             lead = max(allowed, key=lambda m: m.severity)
@@ -209,11 +214,19 @@ class JarvisLoop:
             logger.exception("발송 실패 (%s): %s", self.channel.name, insight.trigger)
             return 0
 
-        self.agent.confirm_spoken(insight, now, message, token=token, also=also)
-        self._transcribe(insight, message, token)
+        try:
+            self.agent.confirm_spoken(insight, now, message, token=token, also=also)
+        except Exception:
+            # 말은 나갔다. 기록이 행 여럿(대표 + 묶인 신호)이라 하나가 잠김으로 터질 수 있는데,
+            # 여기서 위로 새면 이 주기의 관심사·수집 감시까지 건너뛴다(JAR-029 리뷰). 못 적은
+            # 신호는 다음 주기에 다시 판단될 수 있다 — 크게 남긴다.
+            logger.exception("보낸 말을 발화 기억에 다 못 적었다: %s", insight.trigger)
+        self._transcribe(insight, message, token, also)
         return 1
 
-    def _transcribe(self, insight: Insight, message: str, token: str) -> None:
+    def _transcribe(
+        self, insight: Insight, message: str, token: str, also: Sequence[Insight] = ()
+    ) -> None:
         """먼저 건 말을 대화 기록에도 적는다. 못 적어도 말은 이미 나갔다 — 남기고 넘어간다."""
         if self.transcript is None:
             return
@@ -222,7 +235,12 @@ class JarvisLoop:
                 "jarvis",
                 self.clock(),
                 message,
-                meta={"first": True, "trigger": insight.trigger, "token": token},
+                meta={
+                    "first": True,
+                    "trigger": insight.trigger,
+                    "token": token,
+                    "also": [o.trigger for o in also],
+                },
             )
         except Exception:
             # 대화 기록이 빠지면 사용자가 이 말에 답할 때 자비스가 무슨 말에 대한 답인지 모른다.

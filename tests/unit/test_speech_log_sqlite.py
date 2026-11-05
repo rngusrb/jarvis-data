@@ -265,11 +265,14 @@ def test_the_family_is_written_and_found_by_its_column(tmp_path: Path) -> None:
     assert log.last_spoken_in("sleep_drop") is None
 
 
-def test_old_records_get_their_family_from_the_name_only_when_it_is_there(tmp_path: Path) -> None:
-    """줄기 칸이 생기기 전 기록. `topic:12` 는 이름에 줄기가 있어 채운다.
+def test_only_old_topic_records_get_their_family_and_every_open_fills_them(
+    tmp_path: Path,
+) -> None:
+    """줄기 칸이 생기기 전 기록. 관심사(`topic:12`)만 채운다.
 
-    안 채우면 배포 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격 안에 또 말한다. 이름에 줄기가
-    없으면 짐작하지 않는다.
+    안 채우면 배포 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격 안에 또 말한다. 이름 앞부분을
+    통째로 줄기로 읽으면 옛 수집 경고(`stale_data:location`)에 "stale_data"가 적혔다(JAR-029 리뷰,
+    운영 사본 353행). 칸만 생기고 채우기가 실패해도 다음에 열 때 마저 채운다.
     """
     import sqlite3
 
@@ -279,7 +282,7 @@ def test_old_records_get_their_family_from_the_name_only_when_it_is_there(tmp_pa
         "CREATE TABLE speech (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL,"
         " at TEXT NOT NULL, text TEXT NOT NULL, spoken INTEGER NOT NULL DEFAULT 1)"
     )
-    for trigger in ("topic:12", "sleep_drop"):
+    for trigger in ("topic:12", "sleep_drop", "stale_data:location", "collection"):
         conn.execute(
             "INSERT INTO speech (trigger, at, text) VALUES (?, ?, '옛 말')",
             (trigger, NOW.isoformat()),
@@ -290,8 +293,19 @@ def test_old_records_get_their_family_from_the_name_only_when_it_is_there(tmp_pa
     log = SQLiteSpeechLog(db)
     said = log.last_spoken_in("topic")
     assert said is not None and said.trigger == "topic:12" and said.family == "topic"
-    old = log.last("sleep_drop")
-    assert old is not None and old.family == ""
-    # 두 번째로 열어도 다시 채우지 않는다(칸이 생길 때 한 번).
-    SQLiteSpeechLog(db)
-    assert log.last_spoken_in("sleep_drop") is None
+    for other in ("sleep_drop", "stale_data:location", "collection"):
+        old = log.last(other)
+        assert old is not None and old.family == "", other
+    assert log.last_spoken_in("stale_data") is None
+
+    # 칸은 생겼는데 채우기가 안 끝난 관심사 행(잠김으로 실패한 경우)은 다음에 열 때 채운다.
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO speech (trigger, at, text) VALUES ('topic:13', ?, '안 채운 말')",
+        ((NOW + timedelta(hours=1)).isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+    reopened = SQLiteSpeechLog(db)
+    said = reopened.last_spoken_in("topic")
+    assert said is not None and said.trigger == "topic:13"

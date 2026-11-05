@@ -96,6 +96,8 @@ def test_평소와_다른_곳에서_타면_말할_거리다() -> None:
     insight = UnusualBoardingTrigger().check(_usual() + _morning(6, 7.0, OTHER), _now(6))
 
     assert insight is not None
+    # 늦게 나섬과 같은 이동 줄기 — 한 아침에 이동 얘기는 하나(JAR-029).
+    assert insight.family == "commute"
     assert f"장소 #{STATION}" in insight.summary and f"장소 #{OTHER}" in insight.summary
     # 역할 후보가 있으면 이름을 같이 준다 — LLM 이 "장소 #2"를 사람 말로 바꿀 재료다.
     assert "아침에 타는 곳" in insight.summary
