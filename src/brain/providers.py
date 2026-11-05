@@ -1,7 +1,8 @@
 """실제 맥락 제공자들.
 
-지금은 이미 손에 있는 정보(관측치 추이, 최근 발화, 흔적 요약, 주제 나무)만 쓴다. 캘린더 파서와
-저장소가 생기면 ScheduleProvider, ProfileProvider 같은 게 여기 늘어난다.
+지금은 이미 손에 있는 정보(관측치 추이와 최근 값, 최근 발화, 수집 현황, 흔적 하루 요약, 주제 나무,
+최근 사건)만 쓴다. 반응·대화·보고서가 같은 제공자를 창 크기만 달리해 쓴다 — 보고서 쪽 조립은
+`app/main.py` 의 `build_reporter`. 캘린더 파서와 저장소가 생기면 ScheduleProvider 같은 게 여기 늘어난다.
 """
 
 from __future__ import annotations

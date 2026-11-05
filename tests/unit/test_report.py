@@ -1,4 +1,4 @@
-"""보고서 — 넓게 모아 쓰고, 기록 읽는 법을 지시문에 적는다."""
+"""보고서 — 넓게 모아 쓰고, 기록 읽는 법을 같이 주고, 실패해도 늘 답한다."""
 
 from __future__ import annotations
 
@@ -77,6 +77,34 @@ def test_a_failure_still_answers_the_user(caplog: object) -> None:
             raise ConnectionError("데스크탑 꺼짐")
 
     assert asyncio.run(Reporter(reasoner=Down(), providers=[]).write(NOW)) == UNREACHABLE
+
+
+def test_a_refusal_is_not_called_unreachable() -> None:
+    """서버가 답했는데 거절했으면(재료 초과 400) "데스크탑이 켜져 있나 봐"는 틀린 말이다(재리뷰 재현).
+
+    읽다가 한도가 찬 것도 서버에는 닿은 것이다. 연결부터 안 된 것만 "닿지 않아"다.
+    """
+    import httpx
+
+    from src.brain.report import REFUSED, UNREACHABLE
+
+    request = httpx.Request("POST", "http://brain/v1/chat/completions")
+
+    @dataclass
+    class Raises:
+        error: Exception
+
+        async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+            raise self.error
+
+    def answer(error: Exception) -> str:
+        return asyncio.run(Reporter(reasoner=Raises(error), providers=[]).write(NOW))
+
+    too_big = httpx.Response(400, request=request)
+    assert answer(httpx.HTTPStatusError("400", request=request, response=too_big)) == REFUSED
+    assert answer(httpx.ReadTimeout("읽기 한도", request=request)) == REFUSED
+    assert answer(httpx.ConnectTimeout("연결 한도", request=request)) == UNREACHABLE
+    assert answer(httpx.ConnectError("연결 거부", request=request)) == UNREACHABLE
 
 
 def test_an_empty_answer_is_not_sent_as_is() -> None:

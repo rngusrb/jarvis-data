@@ -5,11 +5,14 @@
 부를 때(`/report`)만 돈다.
 
 처음엔 한 번 해 보는 실험이었다(2026-11-05, 사용자 요청 "나에 대한 보고서를 써 보게"). 쓸 만했고
-틀린 곳이 둘 있었다. 둘 다 기록을 읽는 법을 몰라서였다 — 그래서 지시문에 읽는 법을 적는다.
+틀린 곳이 둘 있었다. 둘 다 기록을 읽는 법을 몰라서였다 — 그래서 읽는 법을 같이 준다.
 
   하루 요약의 첫 시각(05:12)을 기상 시각으로 읽었다 → "주말엔 05~06시 기상"
   (수면 기록은 10-02 뒤로 없다)
   주제의 "43일"(근거가 있던 날 수)을 연속으로 읽었다 → "자소서 43일째 꾸준"
+
+일반 규칙("근거가 있던 날"은 날의 수)은 지시문에 둔다. 섹터의 사실(하루는 새벽 5시에 바뀐다)은 그 기록
+묶음이 들고 온다(`TraceKind.reading`) — 플랫폼 지시문이 섹터를 알면 안 된다(리뷰).
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Sequence
 
-from src.brain.client import Reasoner
+from src.brain.client import Reasoner, unreachable
 from src.brain.context import ContextProvider, assemble, render
 from src.core.clock import shown
 
@@ -56,6 +59,9 @@ FAILED = "보고서를 못 썼어. 조금 뒤에 /report 다시 해 줘."
 # 두뇌(vLLM)에 닿지 못했거나 거절당했을 때. 예외를 그대로 올리면 듣기 루프가 로그만 남기고 아무 답도
 # 안 보낸다 — 사용자는 "1분쯤 걸려"를 보고 기다리다 끝난다(JAR-027 리뷰 재현).
 UNREACHABLE = "보고서를 못 썼어 — 두뇌(서버의 모델)에 닿지 않아. 데스크탑이 켜져 있는지 봐 줘."
+# 닿았는데 답을 못 받았을 때 — 거절(재료가 모델 한도를 넘음, 서버 오류)이나 읽다가 한도가 찼다. 데스크탑은
+# 켜져 있으니 켜져 있나 보라고 하면 틀린 말이다(재리뷰 재현 — vLLM 400 에 위 문구가 갔다).
+REFUSED = "보고서를 못 썼어 — 두뇌가 답을 못 냈어(이유는 자비스 로그에). 조금 뒤에 /report 다시 해 줘."
 # 이보다 크면 경고를 남긴다. 모델 한도는 65,536 토큰이고 답 몫이 6,000 이라, 실측 0.62 토큰/자로
 # 약 9만 자가 끝이다. 2026-11-05 실측 재료는 1.2만 자.
 PROMPT_WARN = 60_000
@@ -75,11 +81,11 @@ class Reporter:
             logger.warning("보고서 재료가 크다 — %d자(경고 %d자)", len(prompt), PROMPT_WARN)
         try:
             reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
-        except Exception:
+        except Exception as error:
             logger.exception(
-                "보고서 — 두뇌를 못 불렀다 (재료 %d묶음, %d자)", len(blocks), len(prompt)
+                "보고서 — 두뇌가 답을 못 냈다 (재료 %d묶음, %d자)", len(blocks), len(prompt)
             )
-            return UNREACHABLE
+            return UNREACHABLE if unreachable(error) else REFUSED
         if not reply or not reply.strip():
             logger.warning("보고서 답이 비었다 (재료 %d묶음, %d자)", len(blocks), len(prompt))
             return FAILED

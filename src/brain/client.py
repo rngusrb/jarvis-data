@@ -34,6 +34,16 @@ def strip_reasoning(text: str) -> str:
     return cleaned.strip()
 
 
+def unreachable(error: BaseException) -> bool:
+    """연결부터 안 된 실패인가 — 데스크탑이 꺼졌거나 길(Tailscale)이 끊겼다.
+
+    서버가 답은 했는데 거절한 것(400 재료 초과, 5xx)이나 읽다가 한도가 찬 것과는 사용자에게 할 말이
+    다르다. 앞은 "데스크탑이 켜져 있나 봐 줘", 뒤는 "조금 뒤에 다시". 거절에 앞의 말을 보내면 켜져
+    있는 걸 보고 헷갈린다(JAR-027 재리뷰 재현 — vLLM 400 에 "닿지 않아"가 갔다).
+    """
+    return isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, ConnectionError))
+
+
 class Reasoner(Protocol):
     """자비스가 필요로 하는 추론 능력의 전부.
 
