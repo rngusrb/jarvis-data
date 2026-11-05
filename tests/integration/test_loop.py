@@ -879,3 +879,30 @@ def test_대화_기록에_못_적어도_말은_남고_시끄럽게_실패한다(
     said = loop.agent.gate.log.last("sleep_drop")
     assert said is not None and said.spoken
     assert "대화 기록에 못 적었다" in caplog.text
+
+
+def test_묶다가_게이트가_터져도_그_신호만_건너뛴다(caplog: pytest.LogCaptureFixture) -> None:
+    """묶기 전에 게이트(기록 읽기)가 터지면 뒤의 줄기와 감시까지 그 주기를 통째로 건너뛰었다."""
+
+    @dataclass
+    class Flaky(Gate):
+        def allows(self, insight: Insight, now: datetime) -> bool:
+            if insight.trigger == "sleep_drop":
+                raise RuntimeError("database is locked")
+            return super().allows(insight, now)
+
+    reasoner = Answering()
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[
+            Fixed(_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")),
+            Fixed(_signal("late_departure", "40분 늦게 나섬", Severity.NOTABLE, "commute")),
+        ],
+        agent=JarvisAgent(reasoner=reasoner, gate=Flaky()),
+        channel=RecordingChannel(),
+        clock=lambda: MORNING,
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert "40분 늦게 나섬" in reasoner.prompts[0]
+    assert "게이트를 못 봤다" in caplog.text

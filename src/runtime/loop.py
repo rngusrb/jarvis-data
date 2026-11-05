@@ -150,12 +150,21 @@ class JarvisLoop:
             families.setdefault(insight.family or insight.trigger, []).append(insight)
         grouped: List[Tuple[Insight, List[Insight]]] = []
         for members in families.values():
-            allowed = [m for m in members if self.agent.gate.allows(m, now)]
+            allowed = [m for m in members if self._allowed(m, now)]
             if not allowed:
                 continue
             lead = max(allowed, key=lambda m: m.severity)
             grouped.append((lead, [m for m in allowed if m is not lead]))
         return grouped
+
+    def _allowed(self, insight: Insight, now: datetime) -> bool:
+        """게이트. 기록을 못 읽으면 그 신호만 이번 주기에 건너뛴다 — 묶기 전에 여기서 터지면 뒤의
+        관심사·수집 감시까지 그 주기를 통째로 건너뛴다(판단 안에서 터질 때와 같게 다룬다)."""
+        try:
+            return self.agent.gate.allows(insight, now)
+        except Exception:
+            logger.exception("게이트를 못 봤다 — 이번 주기엔 건너뛴다: %s", insight.trigger)
+            return False
 
     def _topic(self, now: datetime) -> Optional[Insight]:
         """뜨는 관심사 중 게이트를 통과하는 첫 것 하나. 한 주기에 관심사 얘기는 하나만 판단한다."""
