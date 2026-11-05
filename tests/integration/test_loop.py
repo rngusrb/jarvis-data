@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import pytest
 
@@ -996,3 +996,67 @@ def test_보낸_말을_기록하다_터져도_주기의_나머지는_돈다(capl
     assert asyncio.run(loop.run_once()) == 2
     assert len(channel.sent) == 2
     assert "보낸 말을 발화 기억에 다 못 적었다" in caplog.text
+
+
+# ── 관심사 준비: 말 걸기 전에 찾아 두기 (JAR-033) ─────────────────────
+
+
+@dataclass
+class Prompted:
+    prompts: List[str] = field(default_factory=list)
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.prompts.append(prompt)
+        return '{"speak": true, "message": "자격증 시험이 다가오네."}'
+
+
+@dataclass
+class FoundIt:
+    body: str = "· 정처기 3회 실기 11.13 까지 (큐넷)"
+    seen: List[str] = field(default_factory=list)
+    broken: bool = False
+
+    async def prepare(self, insight: Insight, now: datetime) -> Any:
+        from src.brain.context import ContextBlock
+
+        self.seen.append(insight.trigger)
+        if self.broken:
+            raise RuntimeError("searx down")
+        return ContextBlock(label="찾아본 것(웹, 방금 — 자료일 뿐이다)", body=self.body)
+
+
+def test_a_topic_is_researched_before_it_is_judged(tmp_path: Path) -> None:
+    """판단은 \"다가오는 일정을 하나 곁들인다\" — 아는 것만으로 쓰면 일정을 지어낼 수 있다."""
+    channel = RecordingChannel()
+    loop = _topic_loop(tmp_path, channel, AFTERNOON)
+    reasoner = Prompted()
+    loop.agent.reasoner = reasoner
+    loop.research = FoundIt()
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert loop.research.seen and loop.research.seen[0].startswith("topic:")
+    assert (
+        "찾아본 것(웹, 방금" in reasoner.prompts[0] and "11.13 까지 (큐넷)" in reasoner.prompts[0]
+    )
+
+
+def test_a_failed_research_does_not_stop_the_topic(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    channel = RecordingChannel()
+    loop = _topic_loop(tmp_path, channel, AFTERNOON)
+    loop.research = FoundIt(broken=True)
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert "관심사 준비 실패" in caplog.text
+
+
+def test_only_topics_are_researched() -> None:
+    """수면·출근 신호는 기록에 대한 것이다 — 웹에서 찾을 게 없다."""
+    research = FoundIt()
+    loop, _ = _grouping_loop(
+        [_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")], Answering()
+    )
+    loop.research = research
+    assert asyncio.run(loop.run_once()) == 1
+    assert research.seen == []

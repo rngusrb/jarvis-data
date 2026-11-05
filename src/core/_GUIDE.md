@@ -185,7 +185,7 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `models.py` | `Observation`·`Insight`(줄기 `family` — 트리거가 단다)·`Severity` + 저장소 프로토콜. 수집 감시의 트리거 이름(`COLLECTION_TRIGGER` — 판단 지시문·`/status` 가 같이 쓴다) |
 | `metrics.py` | 지표 카드(`Metric`)와 레지스트리 |
 | `folding.py` | 원본 → 하루치 관측치. 겹침 병합·기기 중복 제거, 수면의 잠든·깬 시각(가장 긴 잠 덩어리) |
-| `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
+| `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만. 웹 검색 주소(`search_base_url` — 비면 검색 끔, 시험 설정은 빈 값) |
 | `clock.py` | 시각 규칙 두 가지 — 저장·비교용 UTC 표기(`stamp`), 보여줄 한국 시간(`KST`, `local`). LLM 에게 알려줄 지금(`shown`, 요일까지 — `WEEKDAYS`) |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
 | `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다). 사건 이름의 뜻(`labels`·`describe` — 섹터가 단다) |

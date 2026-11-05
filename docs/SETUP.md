@@ -51,6 +51,7 @@ cp .env.example .env    # 없으면 아래 표 보고 직접 만든다
 | `JARVIS_TELEGRAM_BOT_TOKEN` | 비우면 콘솔로 출력 |
 | `JARVIS_TELEGRAM_CHAT_ID` | 위와 같음 |
 | `JARVIS_LOOP_INTERVAL_SEC` | 기본 1800 |
+| `JARVIS_SEARCH_URL` | 웹 검색(SearXNG) 주소. 기본 `http://100.98.90.38:8888`, 비우면 검색하지 않는다 |
 
 **토큰은 각자 만든다.** 남의 토큰을 받아 쓰면 그 사람 서버에 데이터를 쏜다.
 
@@ -95,14 +96,51 @@ sudo systemctl enable --now jarvis
 > 나갔다면 발화 기록이 9시간 미래에 찍혀 그만큼 쿨다운이 길어진다. 이미 깔린 서버에는 덧붙이기만 한다:
 > `/etc/systemd/system/jarvis.service.d/clock.conf` 에 `[Unit]` `Wants=time-sync.target` `After=time-sync.target`.
 
-**vLLM도 자동 기동을 켠다.** 도커로 돌린다면:
+### vLLM — 도커, 도구 호출을 켜고
+
+모델 파일은 호스트(`~/hf-cache`)에 두고 붙인다. 컨테이너 안에 두면 옵션 하나 바꾸려 컨테이너를 새로
+만들 때마다 29GB 를 다시 받는다(2026-11-05 — 처음 컨테이너는 볼륨 없이 떠 있었다, `docker cp` 로 뺐다).
+웹 검색(`src/brain/tools.py`)은 도구 호출이 켜져 있어야 한다. 이 모델의 템플릿은 `<function=…>` XML
+꼴이라 파서가 `qwen3_coder` 다(hermes 아님 — 템플릿을 `/tokenize` 로 확인했다).
 
 ```bash
-docker update --restart unless-stopped vllm
+docker run -d --name vllm-tools --gpus all --shm-size 8g -p 8000:8000 \
+  --restart unless-stopped -v ~/hf-cache:/root/.cache/huggingface \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen3.8-27B-FP8 --tensor-parallel-size 2 --max-model-len 65536 \
+  --gpu-memory-utilization 0.90 --max-num-seqs 8 --kv-cache-dtype fp8 --trust-remote-code \
+  --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder
 ```
 
-> 사고 이력: 컨테이너를 새 이미지로 다시 만들면 이 정책이 `no` 로 돌아간다.
-> 이미지를 올린 뒤에는 다시 걸어야 한다.
+뜨는 데 5분쯤 걸린다(`curl localhost:8000/v1/models` 가 답할 때까지). 게이트웨이(caddy)는 컨테이너 이름이
+아니라 `localhost:8000` 으로 붙어서 이름이 바뀌어도 괜찮다.
+
+> 사고 이력: 컨테이너를 새 이미지로 다시 만들면 재시작 정책이 `no` 로 돌아간다. 위처럼
+> `--restart unless-stopped` 를 같이 준다. 멈춰 둔 옛 컨테이너(`vllm`)는 되돌리기용이다 — 안 쓰면
+> `docker rm vllm`(디스크 32GB).
+
+### SearXNG — 웹 검색
+
+같은 데스크탑에 떠 있다(:8888). 자비스는 JSON 으로 묻고 요청마다 엔진을 고른다 — 구글(`google cse`,
+요약에 일정이 실린다)과 네이버(한국어 공지·블로그). 덕덕고·스타트페이지는 캡차, Brave 는 요청 한도에
+막혀 있었다(2026-11-05). 설정 파일(`~/searxng/settings.yml`)에 JSON 이 켜져 있어야 한다:
+
+```yaml
+use_default_settings: true
+server:
+  secret_key: "<openssl rand -hex 32>"
+  limiter: false
+search:
+  formats: [html, json]
+```
+
+```bash
+docker run -d --name searxng --restart unless-stopped -p 8888:8080 \
+  -v ~/searxng:/etc/searxng searxng/searxng:latest
+```
+
+**검색어는 밖으로 나간다**(SearXNG 를 거쳐 구글·네이버로 — 사용자가 원한 것). 자비스 로그의
+"웹 검색(밖으로 나감)"이 나간 검색어 전부다.
 
 ---
 

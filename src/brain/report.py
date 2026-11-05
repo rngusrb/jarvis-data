@@ -21,10 +21,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Sequence
+from typing import Callable, List, Optional, Sequence
 
 from src.brain.client import Reasoner, unreachable
-from src.brain.context import ContextProvider, assemble, render
+from src.brain.context import ContextBlock, ContextProvider, assemble, render
+from src.brain.research import TopicResearch
 from src.core.clock import shown
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ SYSTEM_PROMPT = """너는 한 사람의 개인 비서 "자비스"다. 네가 그
 - 관심사의 "근거가 있던 날"은 날의 수다. 그만큼 연속으로 했다는 뜻이 아니다.
 - "기록 없음"인 날은 기록이 없는 것이다. 그날 아무것도 안 했다거나 집에 있었다는 뜻이 아니다.
 - 잠든·일어난 시각처럼 기록에 없는 것은 모른다고 쓴다. 다른 기록에서 미루어 짓지 않는다.
+- "찾아본 것(웹)" 묶음이 있으면 5(다음 한 주)에서 날짜·출처와 함께 쓴다. 없으면 다가오는
+  일정을 지어내지 않는다.
 
 지켜야 할 것:
 - 기록에 있는 것만 쓴다. 짐작은 "~로 보여"처럼 짐작이라고 밝히고, 근거(날짜, 날 수, 횟수)를
@@ -59,7 +62,7 @@ SYSTEM_PROMPT = """너는 한 사람의 개인 비서 "자비스"다. 네가 그
 # 모델이 아무것도 못 냈을 때. 빈 답을 그대로 보내면 사용자는 아무 일도 안 일어난 걸로 본다.
 FAILED = "보고서를 못 썼어. 조금 뒤에 /report 다시 해 줘."
 # 두뇌(vLLM)에 연결부터 안 될 때(데스크탑 꺼짐, 길 끊김). 예외를 그대로 올리면 듣기 루프가
-# 로그만 남기고 아무 답도 안 보낸다 — 사용자는 "1분쯤 걸려"를 보고 기다리다 끝난다(JAR-027
+# 로그만 남기고 아무 답도 안 보낸다 — 사용자는 "쓰는 중"을 보고 기다리다 끝난다(JAR-027
 # 리뷰 재현).
 UNREACHABLE = "보고서를 못 썼어 — 두뇌(서버의 모델)에 닿지 않아. 데스크탑이 켜져 있는지 봐 줘."
 # 닿았는데 답을 못 받았을 때 — 거절(재료가 모델 한도를 넘음, 서버 오류)이나 읽다가 한도가
@@ -77,11 +80,18 @@ PROMPT_WARN = 60_000
 class Reporter:
     reasoner: Reasoner
     providers: Sequence[ContextProvider]
+    # 쓰기 전에 요즘 관심사의 다가오는 일정을 웹에서 찾아 둔다(없으면 기록으로만 쓴다). 찾기는
+    # 관심사 이름만 들고 — 재료를 통째로 들고 생각하며 찾게 했더니 7분 걸렸다(research 머리말).
+    research: Optional[TopicResearch] = None
+    interests: Optional[Callable[[datetime], List[str]]] = None
 
     async def write(self, now: datetime) -> str:
         """보고서. 실패해도 늘 사용자에게 보낼 말을 돌려준다(이유는 로그에)."""
         # 신호 없이 조립한다 — 보고서는 신호에 대한 것이 아니라 사람에 대한 것이다(brain/_GUIDE).
         blocks = assemble(self.providers, None, now)
+        found = await self._upcoming(now)
+        if found is not None:
+            blocks.append(found)
         prompt = f"지금: {shown(now)}\n\n{render(blocks)}\n\n위 기록으로 보고서를 써라."
         if len(prompt) > PROMPT_WARN:
             logger.warning("보고서 재료가 크다 — %d자(경고 %d자)", len(prompt), PROMPT_WARN)
@@ -96,3 +106,17 @@ class Reporter:
             logger.warning("보고서 답이 비었다 (재료 %d묶음, %d자)", len(blocks), len(prompt))
             return FAILED
         return reply.strip()
+
+    async def _upcoming(self, now: datetime) -> Optional[ContextBlock]:
+        """요즘 관심사에 다가오는 일정. 못 찾았거나 터지면 None — 찾기가 보고서를 막지 않는다."""
+        if self.research is None or self.interests is None:
+            return None
+        try:
+            names = self.interests(now)
+            if not names:
+                return None
+            subject = f"요즘 몰두하는 것: {', '.join(names)}"
+            return await self.research.look(subject, "보고서", now)
+        except Exception:
+            logger.exception("보고서 — 다가오는 일정을 못 찾았다, 기록으로만 쓴다")
+            return None

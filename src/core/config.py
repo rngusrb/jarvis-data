@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 # :8001(local-llm-agent)이 아니라 :8000을 직접 부른다 — 자비스의 판단 로직은
 # 이 레포(src/brain)가 갖고, 저쪽은 순수 추론기로만 쓰기로 했다.
 DEFAULT_BRAIN_URL = "http://100.98.90.38:8000"
+# 같은 데스크탑의 SearXNG(웹 검색). 비우면 자비스는 검색하지 않는다.
+DEFAULT_SEARCH_URL = "http://100.98.90.38:8888"
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,8 @@ class Settings:
     loop_interval_sec: int
     db_path: Path
     ingest_token: str
+    # 웹 검색(SearXNG). 비어 있으면 도구 고리를 안 붙인다 — 시험이 만드는 설정은 비어 있다.
+    search_base_url: str = ""
 
     @property
     def telegram_enabled(self) -> bool:
@@ -46,4 +50,5 @@ def load_settings() -> Settings:
         db_path=Path(os.getenv("JARVIS_DB_PATH", "data/jarvis.db")),
         # 아이폰 단축어가 들고 올 토큰. Tailscale 안이라도 한 겹 더 둔다.
         ingest_token=os.getenv("JARVIS_INGEST_TOKEN", ""),
+        search_base_url=os.getenv("JARVIS_SEARCH_URL", DEFAULT_SEARCH_URL).rstrip("/"),
     )

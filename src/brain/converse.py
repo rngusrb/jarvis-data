@@ -7,7 +7,8 @@
 대신 싼 길과 비싼 길을 가른다.
 
     /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
-    /report                        넓게 모아 → LLM 이 보고서를 쓴다(1분쯤)
+    /report                        넓게 모아 → LLM 이 보고서를 쓴다(2~3분 — 다가오는 일정을 먼저
+    찾는다)
     그 밖의 말                     맥락 조립 → LLM
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
@@ -17,19 +18,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
 from typing import Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
-from src.brain.client import Reasoner
+from src.brain.client import Reasoner, unreachable
 from src.brain.context import ContextProvider, assemble, render
 from src.brain.feedback import MARKS as REACTIONS
 from src.brain.feedback import parse
 from src.brain.memory import SpeechLog
 from src.brain.prompts import is_collection
 from src.brain.report import Reporter
+from src.brain.tools import GUIDE, Pending, Researched, ToolLoop
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
@@ -42,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 사용자가 너에게 말을 걸었다.
 
-- 한국어 반말로 짧게 답한다. 세 문장을 넘기지 않는다.
+- 한국어 반말로 짧게 답한다. 세 문장을 넘기지 않는다(찾아본 답은 다섯 문장까지, 출처를 짧게).
 - 아는 것만 말한다. 데이터에 없는 건 없다고 한다.
 - 숫자를 나열하지 말고 그래서 어떻다는 것을 말한다.
 - 사용자가 네 판단을 부정하면 받아들인다. 우기지 않는다."""
@@ -64,7 +67,7 @@ MARKS = {
 class Later:
     """지금 보낼 말과, 시간이 걸려 나중에 보낼 말.
 
-    듣기 루프는 한 건씩 차례로 처리한다. 보고서(1분쯤)를 그 자리에서 기다리면 그동안 `/status` 도
+    듣기 루프는 한 건씩 차례로 처리한다. 보고서(2~3분)를 그 자리에서 기다리면 그동안 `/status` 도
     버튼도 밀리고, 기다리다 한 번 더 누르면 보고서가 두 통 온다(JAR-027 리뷰 재현). 그래서 "쓰는
     중"을 먼저 보내고 보고서는 따로 기다려 보낸다.
     """
@@ -72,6 +75,20 @@ class Later:
     now: str
     then: Awaitable[str]
 
+
+# 찾기 시작했을 때 먼저 보내는 말. 답은 10~40초 뒤에 따로 간다.
+LOOKING = "찾아볼게. 잠깐만."
+# 첫 차례가 빈 답이라 한 차례 더 묻는다(검색은 안 한다) — "찾아볼게"라고 하면 거짓말이다.
+THINKING = "잠깐만."
+# 찾아본 답의 전체 시간 상한. 실측 최장 85초(검색 4·읽기 2) — 넘으면 무엇이 멈췄는지 말한다.
+# 상한이 없으면 "찾아볼게"만 가고 답도 로그도 안 올 수 있었다(JAR-031 리뷰).
+ANSWER_LIMIT = timedelta(minutes=4)
+TOO_LONG = "미안, 찾다가 너무 오래 걸려서 멈췄어. 조금 뒤에 다시 물어봐 줘."
+# 빈 답 — 그대로 보내면 사용자는 아무 일도 안 일어난 걸로 본다.
+BLANK = "미안, 지금 생각이 안 나. 다시 물어봐 줄래?"
+# 두뇌에 못 닿았을 때. 예외를 위로 올리면 듣기 루프가 로그만 남기고 아무 답도 안 보낸다.
+DOWN = "미안, 지금 두뇌(서버의 모델)에 닿지 않아. 데스크탑이 켜져 있는지 봐 줘."
+STUCK = "미안, 지금 답을 못 만들었어(이유는 자비스 로그에). 조금 뒤에 다시 물어봐 줘."
 
 # 보고서를 쓰는 중이라고 보는 최대 시간. 쓰다가 죽어 표시가 남아도 이만큼 지나면 다시 쓸 수 있다.
 WRITING_FOR = timedelta(minutes=15)
@@ -94,6 +111,9 @@ class Conversationalist:
     speech: Optional[SpeechLog] = None
     # `/report` 를 쓰는 쪽. 없으면 그 명령은 안 붙었다고 답한다.
     reporter: Optional[Reporter] = None
+    # 웹을 찾아보는 도구 고리. 있으면 바뀌는 사실(일정·가격·뉴스)을 찾아보고 답한다(2026-11-05
+    # 사용자 요청). 찾기 시작하면 "찾아볼게"를 먼저 보내고 답은 따로 기다려 보낸다 — 10~40초.
+    tools: Optional[ToolLoop] = None
     # 보고서를 쓰기 시작한 때. 쓰는 중에 또 부르면 하나 더 쓰지 않는다.
     _writing_since: Optional[datetime] = field(default=None, repr=False)
 
@@ -130,7 +150,7 @@ class Conversationalist:
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
             "/topics  내가 너에 대해 아는 것(주제 나무)\n"
-            "/report  요즘의 너 — 보고서(1분쯤 걸려)"
+            "/report  요즘의 너 — 보고서(2~3분 걸려)"
         )
 
     def _report(self, now: datetime) -> Union[str, Later]:
@@ -139,7 +159,7 @@ class Conversationalist:
         if self._writing_since is not None and now - self._writing_since < WRITING_FOR:
             return "이미 쓰는 중이야. 끝나면 보낼게."
         self._writing_since = now
-        return Later(now="쓰는 중이야. 1분쯤 걸려.", then=self._write(self.reporter, now))
+        return Later(now="쓰는 중이야. 2~3분 걸려.", then=self._write(self.reporter, now))
 
     async def _write(self, reporter: Reporter, now: datetime) -> str:
         try:
@@ -225,7 +245,45 @@ class Conversationalist:
 
     # ── 비싼 길 ──────────────────────────────────────
 
-    async def _think(self, text: str, now: datetime) -> str:
+    async def _think(self, text: str, now: datetime) -> Union[str, Later]:
+        """자유 질문. 도구가 있으면 한 차례 돌려 보고, 찾기 시작하면 `Later` 로 넘긴다."""
+        prompt = self._prompt(text, now)
+        try:
+            if self.tools is None:
+                return self._said(await self.reasoner.ask(prompt, system=SYSTEM_PROMPT), text)
+            started = await self.tools.begin(
+                [
+                    {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{GUIDE}"},
+                    {"role": "user", "content": prompt},
+                ]
+            )
+        except Exception as error:
+            logger.exception("대화 답을 못 만들었다: %.60s", text)
+            return DOWN if unreachable(error) else STUCK
+        if isinstance(started, Researched):
+            return self._said(started.text, text)
+        return Later(
+            now=LOOKING if started.searching else THINKING, then=self._looked(started, text)
+        )
+
+    async def _looked(self, pending: Pending, text: str) -> str:
+        """찾아본 답. 실패하면 듣기 루프가 "마치지 못했어"를 보낸다(로그와 함께)."""
+        try:
+            found = await asyncio.wait_for(pending.finish(), timeout=ANSWER_LIMIT.total_seconds())
+        except asyncio.TimeoutError:
+            logger.warning(
+                "찾아본 답이 %d초를 넘겼다 — 멈춘다: %.60s", ANSWER_LIMIT.total_seconds(), text
+            )
+            return TOO_LONG
+        return self._said(found.text, text)
+
+    def _said(self, reply: str, text: str) -> str:
+        if not reply or not reply.strip():
+            logger.warning("대화 응답이 비었다: %.60s", text)
+            return BLANK
+        return reply.strip()
+
+    def _prompt(self, text: str, now: datetime) -> str:
         parts: List[str] = []
 
         # 요즘 관심사(주제 나무)는 맥락 제공자가 넣는다 — 먼저 말 거는 쪽과 같은 것을 본다.
@@ -245,11 +303,4 @@ class Conversationalist:
             )
 
         parts.append(f"[지금] {shown(now)}\n\n[지금 질문]\n{text}")
-        prompt = "\n\n".join(parts)
-
-        reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
-        if not reply or not reply.strip():
-            # 빈 응답을 그대로 돌려주면 사용자는 아무 일도 안 일어난 걸로 본다.
-            logger.warning("대화 응답이 비었다: %.60s", text)
-            return "미안, 지금 생각이 안 나. 다시 물어봐 줄래?"
-        return reply.strip()
+        return "\n\n".join(parts)

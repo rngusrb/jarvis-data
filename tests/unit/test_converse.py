@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.brain.converse import Conversationalist
 from src.brain.providers import TopicProvider
@@ -287,3 +287,138 @@ async def finish_later(later: object) -> str:
 
     assert isinstance(later, Later)
     return await later.then
+
+
+# ── 웹을 찾아보고 답하기 (JAR-031~033) ─────────────────────────────
+
+
+@dataclass
+class Turns:
+    """도구 고리에 정해 둔 차례를 차례로 준다."""
+
+    turns: list
+    asked: list = field(default_factory=list)
+
+    async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+        self.asked.append(messages)
+        return self.turns.pop(0)
+
+
+@dataclass
+class OneResult:
+    async def search(self, query: str) -> list:
+        from src.brain.web import Found
+
+        return [
+            Found(
+                title="큐넷",
+                url="https://www.q-net.or.kr/a",
+                snippet="3회 실기 10.24~",
+                engine="naver",
+            )
+        ]
+
+
+def _with_tools(tmp_path: Path, turns: list) -> tuple:
+    from src.brain.tools import ToolLoop
+
+    c = _build(tmp_path)
+    client = Turns(turns)
+    c.tools = ToolLoop(client=client, search=OneResult(), reader=None)  # type: ignore[arg-type]
+    return c, client
+
+
+def test_a_plain_question_is_answered_at_once_even_with_tools(tmp_path: Path) -> None:
+    from src.brain.client import Turn
+    from src.brain.tools import GUIDE
+
+    c, client = _with_tools(tmp_path, [Turn(content="나는 잘 있어. 너는?")])
+    assert _ask(c, "안녕") == "나는 잘 있어. 너는?"
+    system = client.asked[0][0]["content"]
+    assert GUIDE in system and "한국어 반말" in system
+
+
+def test_a_question_that_needs_the_web_says_it_is_looking_first(tmp_path: Path) -> None:
+    """찾기 시작하면 10~40초 — \"찾아볼게\"를 먼저 보내고 답은 따로 보낸다(듣기 루프의 Later)."""
+    from src.brain.client import ToolCall, Turn
+    from src.brain.converse import LOOKING, Later
+
+    call = ToolCall(
+        id="c1", name="web_search", arguments={"query": "정처기 실기"}, raw={"id": "c1"}
+    )
+    c, _ = _with_tools(
+        tmp_path,
+        [Turn(content="", calls=(call,)), Turn(content="3회 실기는 10월 24일부터야 (큐넷).")],
+    )
+    reply = asyncio.run(c.reply(Incoming(text="정처기 실기 언제야?", at=NOW, cursor=1), NOW))
+
+    assert isinstance(reply, Later) and reply.now == LOOKING
+    assert asyncio.run(_await(reply.then)) == "3회 실기는 10월 24일부터야 (큐넷)."
+
+
+async def _await(then):  # type: ignore[no-untyped-def]
+    return await then
+
+
+def test_an_unreachable_brain_still_gets_an_answer(tmp_path: Path) -> None:
+    """예외를 위로 올리면 듣기 루프가 로그만 남기고 아무 답도 안 보낸다 — 무슨 일인지 말한다."""
+    import httpx
+
+    from src.brain.converse import DOWN, STUCK
+
+    @dataclass
+    class Raising:
+        error: Exception
+
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            raise self.error
+
+    from src.brain.tools import ToolLoop
+
+    for error, expected in (
+        (httpx.ConnectError("down", request=httpx.Request("POST", "http://brain")), DOWN),
+        (RuntimeError("bad"), STUCK),
+    ):
+        c = _build(tmp_path)
+        c.tools = ToolLoop(client=Raising(error), search=OneResult(), reader=None)  # type: ignore[arg-type]
+        assert _ask(c, "정처기 언제야?") == expected
+
+
+def test_a_slow_search_is_stopped_and_said(tmp_path: Path, monkeypatch: Any) -> None:
+    """상한이 없으면 \"찾아볼게\"만 가고 답도 로그도 안 올 수 있었다(리뷰 재현)."""
+    from datetime import timedelta as td
+
+    import src.brain.converse as converse
+    from src.brain.client import ToolCall, Turn
+
+    @dataclass
+    class Stuck(Turns):
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            if self.asked:
+                await asyncio.sleep(5)
+            return await super().chat(messages, tools, thinking)
+
+    monkeypatch.setattr(converse, "ANSWER_LIMIT", td(milliseconds=50))
+    from src.brain.tools import ToolLoop
+
+    call = ToolCall(id="c1", name="web_search", arguments={"query": "q"}, raw={"id": "c1"})
+    c = _build(tmp_path)
+    c.tools = ToolLoop(
+        client=Stuck([Turn(content="", calls=(call,)), Turn(content="늦은 답")]),
+        search=OneResult(),
+        reader=None,
+    )  # type: ignore[arg-type]
+    reply = asyncio.run(c.reply(Incoming(text="q", at=NOW, cursor=1), NOW))
+    assert isinstance(reply, converse.Later)
+    assert asyncio.run(_await(reply.then)) == converse.TOO_LONG
+
+
+def test_an_empty_first_turn_does_not_claim_to_search(tmp_path: Path) -> None:
+    """빈 답이라 한 번 더 묻는 것뿐이면 \"찾아볼게\"는 거짓말이다(리뷰)."""
+    from src.brain.client import Turn
+    from src.brain.converse import THINKING, Later
+
+    c, _ = _with_tools(tmp_path, [Turn(content=""), Turn(content="다시 생각해 보니 이래.")])
+    reply = asyncio.run(c.reply(Incoming(text="음?", at=NOW, cursor=1), NOW))
+    assert isinstance(reply, Later) and reply.now == THINKING
+    assert asyncio.run(_await(reply.then)) == "다시 생각해 보니 이래."

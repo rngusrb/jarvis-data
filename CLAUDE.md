@@ -48,9 +48,10 @@
 
 | 서비스 | 포트 |
 |--------|------|
-| vLLM (Qwen3.8-27B-FP8, TP=2, `--reasoning-parser qwen3`) | 8000 |
+| vLLM (Qwen3.8-27B-FP8, TP=2, 64K, 도커 `vllm-tools`, 도구 호출 `qwen3_coder` — SETUP) | 8000 |
+| SearXNG (웹 검색, 구글·네이버) | 8888 |
 | Qdrant (추후 텍스트용) | 6333 |
-| 자비스 서버 (맥) | 8100 |
+| 자비스 서버 (데스크탑, systemd `jarvis`) | 8100 |
 
 Tailscale — 데스크탑 `100.98.90.38` / 맥 `100.65.255.109`
 
@@ -84,5 +85,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 2026-11-05 | [4단계 첫째: 관심사로 먼저 말 걸기, 👍👎](docs/sprints/2026-11-05-phase4-person-first.md) |
 | 2026-11-05 | [4단계 둘째: 자비스가 쓰는 보고서, 위치 사건을 맥락에](docs/sprints/2026-11-05-phase4-report.md) |
 | 2026-11-05 | [4단계 셋째: 신호에 줄기, 같은 줄기는 한 판단으로, 먼저 건 말도 대화 기록에](docs/sprints/2026-11-05-phase4-speech-families.md) |
+| 2026-11-05 | [4단계 넷째: 자비스가 스스로 웹 검색](docs/sprints/2026-11-05-phase4-web-search.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
