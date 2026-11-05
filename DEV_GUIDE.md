@@ -84,7 +84,8 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 회고 프롬프트 | `src/brain/reflect.py` — `SYSTEM_PROMPT` |
 | 회고 시각 | `app/main.py` — `REFLECT_AT` (되감기도 같은 시각) |
 | 관심사로 먼저 말 거는 조건·시간대 | `src/triggers/topics.py` — `TopicWatch` |
-| 관심사 얘기 간격(줄기) | `app/main.py` — `family_cooldowns` |
+| 줄기(관심사·건강·이동)마다 말한 뒤 기다릴 간격 | `app/main.py` — `family_cooldowns` |
+| 한 주기에 같은 줄기 신호를 묶는 법 | `src/runtime/loop.py` — `_together`, 신호의 줄기는 각 트리거의 `FAMILY` |
 | `/report` 보고서의 재료·지시문 | `app/main.py` — `build_reporter`, `src/brain/report.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |

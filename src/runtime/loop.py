@@ -20,7 +20,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from src.brain.agent import JarvisAgent
 from src.brain.feedback import buttons, new_token
@@ -33,6 +33,14 @@ from src.triggers.base import EventTrigger, Trigger, Watch
 from src.triggers.topics import TopicWatch, muted
 
 logger = logging.getLogger(__name__)
+
+
+class Transcript(Protocol):
+    """대화 기록. 먼저 건 말도 여기 적어야 사용자가 거기에 답할 때 대화가 이어진다."""
+
+    def add(
+        self, who: str, at: datetime, text: str, meta: Optional[Dict[str, Any]] = None
+    ) -> None: ...
 
 
 @dataclass
@@ -51,6 +59,8 @@ class JarvisLoop:
     # 관심사 신호와 그 재료(회고가 가꾸는 주제 나무).
     topic_watch: Optional[TopicWatch] = None
     topics: Optional[TopicSource] = None
+    # 먼저 건 말을 대화 기록에도 적는다(2026-11-05 사용자 결정). 없으면 발화 기억에만 남는다.
+    transcript: Optional[Transcript] = None
     # 지금. 관심사 신호는 시간대(깨어 있는 시간)를 보므로 시험에서 정할 수 있어야 한다.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
@@ -73,6 +83,9 @@ class JarvisLoop:
     async def _cycle(self) -> int:
         now = self.clock()
         sent = 0
+        # 섹터의 신호(관측치·사건)는 다 모은 뒤 줄기로 묶어 판단한다. 같은 밤을 본 수면 신호 셋이
+        # 따로 판단되면 한 주기에 두세 말이 나간다(BACKLOG 4단계).
+        heard: List[Insight] = []
 
         for trigger in self.triggers:
             try:
@@ -84,7 +97,7 @@ class JarvisLoop:
                 logger.exception("트리거 실패 — 건너뛴다: %s", trigger.name)
                 continue
             if insight is not None:
-                sent += await self._speak(insight, now)
+                heard.append(insight)
 
         if self.events is not None:
             for event_trigger in self.event_triggers:
@@ -95,7 +108,10 @@ class JarvisLoop:
                     logger.exception("사건 트리거 실패 — 건너뛴다: %s", event_trigger.name)
                     continue
                 if insight is not None:
-                    sent += await self._speak(insight, now)
+                    heard.append(insight)
+
+        for lead, rest in self._together(heard, now):
+            sent += await self._speak(lead, now, rest)
 
         if self.topic_watch is not None and self.topics is not None:
             try:
@@ -121,6 +137,40 @@ class JarvisLoop:
 
         return sent
 
+    def _together(
+        self, heard: Sequence[Insight], now: datetime
+    ) -> List[Tuple[Insight, List[Insight]]]:
+        """같은 줄기 신호를 (판단할 것, 같이 묶을 것)으로. 줄기가 없는 신호는 혼자다.
+
+        게이트를 통과한 것만 묶는다 — 이미 판단했거나 쉬는 중인 신호를 묶으면 같은 밤을 두 번
+        기록한다. 판단할 것은 가장 무거운 신호(같으면 먼저 울린 것)다.
+        """
+        families: Dict[str, List[Insight]] = {}
+        for insight in heard:
+            families.setdefault(insight.family or insight.trigger, []).append(insight)
+        grouped: List[Tuple[Insight, List[Insight]]] = []
+        for members in families.values():
+            allowed = [m for m in members if self._allowed(m, now)]
+            for member in members:
+                if member not in allowed:
+                    # 이미 판단했거나 쉬는 중. 묶으면 막힌 신호가 대표가 되어 새 신호까지 판단 없이
+                    # 사라진다(JAR-029 리뷰 재현) — 거른 흔적은 남긴다.
+                    logger.debug("게이트가 막음 — 묶지 않는다: %s", member.trigger)
+            if not allowed:
+                continue
+            lead = max(allowed, key=lambda m: m.severity)
+            grouped.append((lead, [m for m in allowed if m is not lead]))
+        return grouped
+
+    def _allowed(self, insight: Insight, now: datetime) -> bool:
+        """게이트. 기록을 못 읽으면 그 신호만 이번 주기에 건너뛴다 — 묶기 전에 여기서 터지면 뒤의
+        관심사·수집 감시까지 그 주기를 통째로 건너뛴다(판단 안에서 터질 때와 같게 다룬다)."""
+        try:
+            return self.agent.gate.allows(insight, now)
+        except Exception:
+            logger.exception("게이트를 못 봤다 — 이번 주기엔 건너뛴다: %s", insight.trigger)
+            return False
+
     def _topic(self, now: datetime) -> Optional[Insight]:
         """뜨는 관심사 중 게이트를 통과하는 첫 것 하나. 한 주기에 관심사 얘기는 하나만 판단한다."""
         assert self.topic_watch is not None and self.topics is not None
@@ -135,10 +185,10 @@ class JarvisLoop:
         candidates = self.topic_watch.check(board, notes, now, quiet)
         return self.agent.first_allowed(candidates, now)
 
-    async def _speak(self, insight: Insight, now: datetime) -> int:
-        """신호 하나를 판단하고, 말하기로 하면 보낸다. 보냈으면 1."""
+    async def _speak(self, insight: Insight, now: datetime, also: Sequence[Insight] = ()) -> int:
+        """신호 하나를(같은 줄기의 다른 신호와 함께) 판단하고, 말하기로 하면 보낸다. 보냈으면 1."""
         try:
-            message = await self.agent.consider(insight, now)
+            message = await self.agent.consider(insight, now, also)
         except Exception:
             # 판단 실패도 발송 실패와 똑같이 다뤄야 한다. 여기서 예외가
             # 위로 새면 이 주기의 **뒤에 선 신호들이 통째로 건너뛰어진다** —
@@ -164,8 +214,38 @@ class JarvisLoop:
             logger.exception("발송 실패 (%s): %s", self.channel.name, insight.trigger)
             return 0
 
-        self.agent.confirm_spoken(insight, now, message, token=token)
+        try:
+            self.agent.confirm_spoken(insight, now, message, token=token, also=also)
+        except Exception:
+            # 말은 나갔다. 기록이 행 여럿(대표 + 묶인 신호)이라 하나가 잠김으로 터질 수 있는데,
+            # 여기서 위로 새면 이 주기의 관심사·수집 감시까지 건너뛴다(JAR-029 리뷰). 못 적은
+            # 신호는 다음 주기에 다시 판단될 수 있다 — 크게 남긴다.
+            logger.exception("보낸 말을 발화 기억에 다 못 적었다: %s", insight.trigger)
+        self._transcribe(insight, message, token, also)
         return 1
+
+    def _transcribe(
+        self, insight: Insight, message: str, token: str, also: Sequence[Insight] = ()
+    ) -> None:
+        """먼저 건 말을 대화 기록에도 적는다. 못 적어도 말은 이미 나갔다 — 남기고 넘어간다."""
+        if self.transcript is None:
+            return
+        try:
+            self.transcript.add(
+                "jarvis",
+                self.clock(),
+                message,
+                meta={
+                    "first": True,
+                    "trigger": insight.trigger,
+                    "token": token,
+                    "also": [o.trigger for o in also],
+                },
+            )
+        except Exception:
+            # 대화 기록이 빠지면 사용자가 이 말에 답할 때 자비스가 무슨 말에 대한 답인지 모른다.
+            # 발화 기억에 남았으면 반복은 안 한다(기록까지 실패했으면 위에서 따로 남겼다).
+            logger.exception("먼저 건 말을 대화 기록에 못 적었다: %s", insight.trigger)
 
     async def run_forever(self, interval_sec: int) -> None:
         while True:

@@ -31,6 +31,9 @@ from typing import Dict, List, Mapping, Optional, Sequence
 
 from src.core.models import COLLECTION_TRIGGER, Insight, Severity
 
+# 수집 경고의 줄기. 경고는 하나로 묶여 나가지만(10-30) 줄기를 적어 둬야 발화 기록에서 같이 센다.
+FAMILY = "collection"
+
 
 @dataclass(frozen=True)
 class Watched:
@@ -103,6 +106,7 @@ class CollectionWatch:
             summary="수집이 끊겼다.\n" + "\n".join(lines),
             severity=severity,
             at=now,
+            family=FAMILY,
         )
 
 

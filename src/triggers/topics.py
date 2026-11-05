@@ -115,6 +115,7 @@ class TopicWatch:
             parts.append("최근 근거: " + " / ".join(recent))
         return Insight(
             trigger=topic_trigger(s.node.id),
+            family=FAMILY,
             summary="\n".join(parts),
             severity=Severity.NOTABLE,
             # 이 주제가 이번에 깨어난 때. 회고가 더 이른 근거를 나중에 붙이면 앞당겨질 수 있어서,

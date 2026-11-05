@@ -31,6 +31,8 @@ def test_baseline보다_짧으면_감지한다() -> None:
     insight = trigger.check(_nights([7.0, 7.2, 6.9, 7.1, 5.0]), NOW)
     assert insight is not None
     assert insight.trigger == "sleep_drop"
+    # 수면 신호는 건강 줄기다 — 같은 밤을 보는 다른 수면 신호와 한 판단으로 묶인다(JAR-029).
+    assert insight.family == "health"
     assert insight.severity is Severity.NOTABLE
 
 
@@ -180,6 +182,15 @@ def test_평소보다_유난히_늦게_잠들면_말할_거리다() -> None:
     usual = [_onset_night(d, "01:50") for d in range(7)]
     summary = _late_sleep(usual + [_onset_night(7, "04:20")])
     assert summary is not None and "04:20" in summary and "01:50" in summary
+
+
+def test_늦게_잠듦도_건강_줄기다() -> None:
+    """같은 밤의 수면 급감과 한 판단으로 묶인다 — 줄기를 빼먹으면 두 말이 다시 나간다(JAR-029)."""
+    from src.sectors.health.triggers import LateSleepTrigger
+
+    nights = [_onset_night(d, "01:50") for d in range(7)] + [_onset_night(7, "04:20")]
+    insight = LateSleepTrigger().check(nights, nights[-1].at + timedelta(hours=10))
+    assert insight is not None and insight.family == "health"
 
 
 def test_자정을_넘어도_이어서_잰다() -> None:

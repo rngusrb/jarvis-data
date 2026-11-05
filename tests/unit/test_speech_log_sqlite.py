@@ -205,9 +205,23 @@ def test_reactions_land_on_the_message_with_that_token(tmp_path: Path) -> None:
 def test_judged_looks_at_every_record_and_family_at_spoken_ones(tmp_path: Path) -> None:
     log = SQLiteSpeechLog(tmp_path / "jarvis.db")
     first = NOW - timedelta(days=2)
-    log.record("topic:1", NOW, "A", about=first)
-    log.record("topic:1", NOW + timedelta(hours=1), "말 안 걸기로 함", spoken=False, about=NOW)
-    log.record("topic:2", NOW + timedelta(hours=2), "말 안 걸기로 함", spoken=False, about=NOW)
+    log.record("topic:1", NOW, "A", about=first, family="topic")
+    log.record(
+        "topic:1",
+        NOW + timedelta(hours=1),
+        "말 안 걸기로 함",
+        spoken=False,
+        about=NOW,
+        family="topic",
+    )
+    log.record(
+        "topic:2",
+        NOW + timedelta(hours=2),
+        "말 안 걸기로 함",
+        spoken=False,
+        about=NOW,
+        family="topic",
+    )
 
     assert log.judged_since("topic:1", first) and log.judged_since("topic:1", NOW)
     # 판단(NOW+2h)이 그 신호보다 뒤면 판단한 것이다 — 깨어난 때가 앞당겨져도 마찬가지.
@@ -236,3 +250,62 @@ def test_an_old_table_gets_the_new_columns(tmp_path: Path) -> None:
     log = SQLiteSpeechLog(db)
     last = log.last("x")
     assert last is not None and last.spoken and last.token is None and last.feedback == 0
+
+
+def test_the_family_is_written_and_found_by_its_column(tmp_path: Path) -> None:
+    """줄기는 기록에 적힌 칸으로 찾는다 — 건강 트리거 이름에는 줄기가 없다."""
+    log = SQLiteSpeechLog(tmp_path / "jarvis.db")
+    log.record("sleep_drop", NOW, "어젯밤 짧게 잤네", about=NOW, family="health")
+    log.record("late_sleep", NOW, "한 말에 묶음", spoken=False, about=NOW, family="health")
+
+    said = log.last_spoken_in("health")
+    assert said is not None and said.trigger == "sleep_drop" and said.family == "health"
+    last = log.last("late_sleep")
+    assert last is not None and last.family == "health" and not last.spoken
+    assert log.last_spoken_in("sleep_drop") is None
+
+
+def test_only_old_topic_records_get_their_family_and_every_open_fills_them(
+    tmp_path: Path,
+) -> None:
+    """줄기 칸이 생기기 전 기록. 관심사(`topic:12`)만 채운다.
+
+    안 채우면 배포 직전에 한 관심사 얘기를 게이트가 못 봐서 줄기 간격 안에 또 말한다. 이름 앞부분을
+    통째로 줄기로 읽으면 옛 수집 경고(`stale_data:location`)에 "stale_data"가 적혔다(JAR-029 리뷰,
+    운영 사본 353행). 칸만 생기고 채우기가 실패해도 다음에 열 때 마저 채운다.
+    """
+    import sqlite3
+
+    db = tmp_path / "jarvis.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE speech (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL,"
+        " at TEXT NOT NULL, text TEXT NOT NULL, spoken INTEGER NOT NULL DEFAULT 1)"
+    )
+    for trigger in ("topic:12", "sleep_drop", "stale_data:location", "collection"):
+        conn.execute(
+            "INSERT INTO speech (trigger, at, text) VALUES (?, ?, '옛 말')",
+            (trigger, NOW.isoformat()),
+        )
+    conn.commit()
+    conn.close()
+
+    log = SQLiteSpeechLog(db)
+    said = log.last_spoken_in("topic")
+    assert said is not None and said.trigger == "topic:12" and said.family == "topic"
+    for other in ("sleep_drop", "stale_data:location", "collection"):
+        old = log.last(other)
+        assert old is not None and old.family == "", other
+    assert log.last_spoken_in("stale_data") is None
+
+    # 칸은 생겼는데 채우기가 안 끝난 관심사 행(잠김으로 실패한 경우)은 다음에 열 때 채운다.
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO speech (trigger, at, text) VALUES ('topic:13', ?, '안 채운 말')",
+        ((NOW + timedelta(hours=1)).isoformat(),),
+    )
+    conn.commit()
+    conn.close()
+    reopened = SQLiteSpeechLog(db)
+    said = reopened.last_spoken_in("topic")
+    assert said is not None and said.trigger == "topic:13"

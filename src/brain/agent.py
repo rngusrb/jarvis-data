@@ -31,8 +31,14 @@ class JarvisAgent:
     gate: Gate = field(default_factory=Gate)
     providers: Sequence[ContextProvider] = ()
 
-    async def consider(self, insight: Insight, now: datetime) -> Optional[str]:
+    async def consider(
+        self, insight: Insight, now: datetime, also: Sequence[Insight] = ()
+    ) -> Optional[str]:
         """이 신호에 대해 사용자에게 건넬 말. 입 다물기로 하면 None.
+
+        `also` 는 같은 주기에 같은 줄기에서 울려 이 판단에 묶인 신호들이다(게이트는 루프가 이미
+        봤다). 말 안 걸기로 하면 그것들도 같은 판단으로 기록한다 — 안 그러면 다음 주기에 따로
+        묻는다.
 
         None을 돌려주는 경우가 둘인데 **뒤쪽만 기록한다.**
 
@@ -48,7 +54,7 @@ class JarvisAgent:
             return None
 
         blocks = assemble(self.providers, insight, now)
-        prompt = build_prompt(insight, blocks, now)
+        prompt = build_prompt(insight, blocks, now, also)
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
         decision = parse_decision(reply)
         if decision is None:
@@ -61,6 +67,8 @@ class JarvisAgent:
             return None
         if not decision.speak:
             self.confirm_silence(insight, now, "말 안 걸기로 함")
+            for other in also:
+                self.confirm_silence(other, now, f"말 안 걸기로 함(함께 판단: {insight.trigger})")
             return None
         return decision.message
 
@@ -72,14 +80,39 @@ class JarvisAgent:
         return next((c for c in candidates if self.gate.allows(c, now)), None)
 
     def confirm_spoken(
-        self, insight: Insight, now: datetime, text: str, token: Optional[str] = None
+        self,
+        insight: Insight,
+        now: datetime,
+        text: str,
+        token: Optional[str] = None,
+        also: Sequence[Insight] = (),
     ) -> None:
         """발송에 **성공했을 때만** 부른다.
 
         실패한 발송까지 기억에 남기면, 사용자는 메시지를 못 받았는데
         자비스는 "아까 말했지" 하고 쿨다운 내내 침묵한다. `token` 은 그 말에 단 👍👎 버튼의 표다.
+
+        `also`(같은 말에 묶인 신호)는 판단한 것으로만 적는다(`spoken` 거짓, 글에 함께 판단한 신호).
+        말한 것은 하나로 센다 — 따로 말한 것으로 적으면 `/status` 가 한 말을 두 번 센다.
         """
-        self.gate.log.record(insight.trigger, now, text, spoken=True, about=insight.at, token=token)
+        self.gate.log.record(
+            insight.trigger,
+            now,
+            text,
+            spoken=True,
+            about=insight.at,
+            token=token,
+            family=insight.family,
+        )
+        for other in also:
+            self.gate.log.record(
+                other.trigger,
+                now,
+                f"한 말에 묶음(함께 판단: {insight.trigger})",
+                spoken=False,
+                about=other.at,
+                family=other.family,
+            )
 
     def confirm_silence(self, insight: Insight, now: datetime, reason: str) -> None:
         """**말 안 걸기로 판정했을 때** 부른다.
@@ -92,4 +125,6 @@ class JarvisAgent:
         남아서 30분 뒤 똑같이 물어봤다. "싼 게이트 먼저, 비싼 LLM 나중"이
         여기서 새고 있었다.
         """
-        self.gate.log.record(insight.trigger, now, reason, spoken=False, about=insight.at)
+        self.gate.log.record(
+            insight.trigger, now, reason, spoken=False, about=insight.at, family=insight.family
+        )

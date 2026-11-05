@@ -48,6 +48,8 @@ def test_catches_what_baseline_misses() -> None:
     assert insight is not None
     assert insight.trigger == "chronic_short_sleep"
     assert insight.severity is Severity.URGENT
+    # 만성 부족도 건강 줄기 — 같은 밤의 수면 신호와 한 판단으로 묶인다(JAR-029).
+    assert insight.family == "health"
 
 
 def test_stays_quiet_when_usually_fine() -> None:

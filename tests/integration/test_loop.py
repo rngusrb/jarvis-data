@@ -13,7 +13,11 @@ from src.brain.gate import Gate
 from src.core.models import Event, Insight, Observation, Severity, Trace
 from src.core.topics import Op, plan
 from src.runtime.loop import JarvisLoop
-from src.sectors.health.triggers import LateSleepTrigger, SleepDropTrigger
+from src.sectors.health.triggers import (
+    ChronicShortSleepTrigger,
+    LateSleepTrigger,
+    SleepDropTrigger,
+)
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
@@ -724,3 +728,271 @@ def test_줄기에_엄지_아래를_받으면_새_가지로도_다시_안_온다
     _grow_topic(traces, topics, "금융결제원", (0.5, 1.5), later, parent=trunk)
     loop.clock = lambda: later
     assert asyncio.run(loop.run_once()) == 0
+
+
+# ── 줄기로 묶기, 먼저 건 말을 대화 기록에 (JAR-029·030) ──────────────────────
+
+
+@dataclass
+class Fixed:
+    """늘 같은 신호를 내는 트리거. 창은 안 본다."""
+
+    insight: Insight
+    kind: str = "sleep_hours"
+    lookback: timedelta = timedelta(days=1)
+
+    @property
+    def name(self) -> str:
+        return self.insight.trigger
+
+    def check(self, window: Sequence[Observation], now: datetime) -> Optional[Insight]:
+        return self.insight
+
+
+@dataclass
+class Answering:
+    reply: str = '{"speak": true, "message": "어젯밤 짧게, 늦게 잤네."}'
+    prompts: List[str] = field(default_factory=list)
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.prompts.append(prompt)
+        return self.reply
+
+
+@dataclass
+class Transcript:
+    added: List[tuple] = field(default_factory=list)
+    broken: bool = False
+
+    def add(self, who: str, at: datetime, text: str, meta: Optional[dict] = None) -> None:
+        if self.broken:
+            raise RuntimeError("database is locked")
+        self.added.append((who, at, text, meta or {}))
+
+
+NIGHT = datetime(2026, 11, 5, tzinfo=KST)
+MORNING = NIGHT + timedelta(hours=8)
+
+
+def _signal(trigger: str, summary: str, severity: Severity, family: str = "") -> Insight:
+    return Insight(trigger=trigger, summary=summary, severity=severity, at=NIGHT, family=family)
+
+
+def _grouping_loop(
+    signals: List[Insight], reasoner: Answering, transcript: Optional[Transcript] = None
+) -> tuple:
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[Fixed(s) for s in signals],
+        agent=JarvisAgent(reasoner=reasoner, gate=Gate()),
+        channel=channel,
+        clock=lambda: MORNING,
+        transcript=transcript,
+    )
+    return loop, channel
+
+
+def test_같은_줄기_신호는_한_판단_한_말로_묶는다() -> None:
+    """같은 밤을 본 수면 신호들이 한 주기에 울리면 따로 판단돼 두 말이 나갔다(BACKLOG 4단계).
+
+    가장 무거운 신호를 판단하고 나머지는 같은 판단에 넣는다. 묶인 신호도 판단한 것으로 남아
+    다음 주기에 따로 묻지 않는다. 말한 것은 하나로 센다.
+    """
+    drop = _signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")
+    late = _signal("late_sleep", "평소보다 2시간 늦게 잠듦", Severity.URGENT, "health")
+    reasoner = Answering()
+    loop, channel = _grouping_loop([drop, late], reasoner)
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert len(channel.sent) == 1 and len(reasoner.prompts) == 1
+    prompt = reasoner.prompts[0]
+    assert "감지된 신호: 평소보다 2시간 늦게 잠듦" in prompt
+    assert "같은 줄기의 다른 신호" in prompt and "어젯밤 수면 4.0시간" in prompt
+
+    log = loop.agent.gate.log
+    lead, joined = log.last("late_sleep"), log.last("sleep_drop")
+    assert lead is not None and lead.spoken and lead.family == "health"
+    assert joined is not None and not joined.spoken and "함께 판단: late_sleep" in joined.text
+    assert [r.trigger for r in log.since(NIGHT)] == ["late_sleep"]
+
+    assert asyncio.run(loop.run_once()) == 0
+    assert len(reasoner.prompts) == 1
+
+
+def test_묶어서_말_안_하기로_하면_모두_그_판단으로_남는다() -> None:
+    drop = _signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")
+    late = _signal("late_sleep", "평소보다 2시간 늦게 잠듦", Severity.NOTABLE, "health")
+    reasoner = Answering(reply='{"speak": false}')
+    loop, channel = _grouping_loop([drop, late], reasoner)
+
+    assert asyncio.run(loop.run_once()) == 0
+    log = loop.agent.gate.log
+    assert log.judged_since("sleep_drop", NIGHT) and log.judged_since("late_sleep", NIGHT)
+    # 먼저 울린 것이 판단을 맡는다(무게가 같으면).
+    assert "감지된 신호: 어젯밤 수면 4.0시간" in reasoner.prompts[0]
+
+    assert asyncio.run(loop.run_once()) == 0
+    assert len(reasoner.prompts) == 1 and channel.sent == []
+
+
+def test_줄기가_다르거나_없으면_묶지_않는다() -> None:
+    """잠과 출근은 다른 얘기다. 줄기 없는 신호는 혼자 판단한다."""
+    signals = [
+        _signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health"),
+        _signal("late_departure", "평소보다 40분 늦게 나섬", Severity.NOTABLE, "commute"),
+        _signal("solo", "줄기 없는 신호", Severity.NOTABLE),
+    ]
+    reasoner = Answering()
+    loop, channel = _grouping_loop(signals, reasoner)
+
+    assert asyncio.run(loop.run_once()) == 3
+    assert len(reasoner.prompts) == 3
+    assert all("같은 줄기의 다른 신호" not in p for p in reasoner.prompts)
+
+
+def test_먼저_건_말도_대화_기록에_적는다() -> None:
+    """사용자가 먼저 건 말에 답하면 대화가 이어져야 한다(2026-11-05 사용자 결정)."""
+    transcript = Transcript()
+    loop, channel = _grouping_loop(
+        [_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")],
+        Answering(),
+        transcript,
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert len(transcript.added) == 1
+    who, at, text, meta = transcript.added[0]
+    assert who == "jarvis" and at == MORNING and text == channel.sent[0]
+    assert meta["first"] is True and meta["trigger"] == "sleep_drop"
+    said = loop.agent.gate.log.last("sleep_drop")
+    assert said is not None and meta["token"] == said.token
+
+
+def test_대화_기록에_못_적어도_말은_남고_시끄럽게_실패한다(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transcript = Transcript(broken=True)
+    loop, channel = _grouping_loop(
+        [_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")],
+        Answering(),
+        transcript,
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    said = loop.agent.gate.log.last("sleep_drop")
+    assert said is not None and said.spoken
+    assert "대화 기록에 못 적었다" in caplog.text
+
+
+def test_묶다가_게이트가_터져도_그_신호만_건너뛴다(caplog: pytest.LogCaptureFixture) -> None:
+    """묶기 전에 게이트(기록 읽기)가 터지면 뒤의 줄기와 감시까지 그 주기를 통째로 건너뛰었다."""
+
+    @dataclass
+    class Flaky(Gate):
+        def allows(self, insight: Insight, now: datetime) -> bool:
+            if insight.trigger == "sleep_drop":
+                raise RuntimeError("database is locked")
+            return super().allows(insight, now)
+
+    reasoner = Answering()
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[
+            Fixed(_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")),
+            Fixed(_signal("late_departure", "40분 늦게 나섬", Severity.NOTABLE, "commute")),
+        ],
+        agent=JarvisAgent(reasoner=reasoner, gate=Flaky()),
+        channel=RecordingChannel(),
+        clock=lambda: MORNING,
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert "40분 늦게 나섬" in reasoner.prompts[0]
+    assert "게이트를 못 봤다" in caplog.text
+
+
+def test_실제_수면_트리거들이_같은_밤에_울리면_한_말이다() -> None:
+    """수면 급감과 늦게 잠듦이 같은 밤을 보고 한 주기에 울린다(BACKLOG 4단계의 본 버그).
+
+    손으로 줄기를 단 신호가 아니라 섹터 트리거 그대로다 — 트리거가 줄기를 빼먹으면 여기서 걸린다.
+    """
+    reasoner = Answering()
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=FakeSource(_usual_nights() + [_short_night(0)]),
+        triggers=[SleepDropTrigger(), LateSleepTrigger(), ChronicShortSleepTrigger()],
+        agent=JarvisAgent(reasoner=reasoner, gate=Gate()),
+        channel=channel,
+        clock=lambda: datetime(2026, 11, 3, 8, 0, tzinfo=KST),
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert len(reasoner.prompts) == 1 and len(channel.sent) == 1
+    assert "같은 줄기의 다른 신호" in reasoner.prompts[0]
+    log = loop.agent.gate.log
+    judged = [log.last(t) for t in ("sleep_drop", "late_sleep")]
+    assert all(r is not None and r.family == "health" for r in judged)
+    assert sum(1 for r in judged if r is not None and r.spoken) == 1
+
+
+def test_게이트에_막힌_신호는_묶지_않는다() -> None:
+    """이미 판단한 무거운 신호를 묶으면 그게 대표가 되어 판단 안에서 막히고, 같이 묶인 새 밤의
+    수면 급감까지 판단도 기록도 없이 사라졌다(JAR-029 리뷰 재현 — 만성 부족은 7일에 한 번)."""
+    chronic = _signal("chronic_short_sleep", "요즘 내내 짧게 잠", Severity.URGENT, "health")
+    drop = _signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.NOTABLE, "health")
+    reasoner = Answering()
+    loop, channel = _grouping_loop([chronic, drop], reasoner)
+    loop.agent.gate.log.record(
+        "chronic_short_sleep",
+        NIGHT + timedelta(hours=1),
+        "말 안 걸기로 함",
+        spoken=False,
+        about=NIGHT,
+        family="health",
+    )
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert len(reasoner.prompts) == 1
+    prompt = reasoner.prompts[0]
+    assert "감지된 신호: 어젯밤 수면 4.0시간" in prompt and "요즘 내내 짧게 잠" not in prompt
+
+
+def test_보낸_말을_기록하다_터져도_주기의_나머지는_돈다(caplog: pytest.LogCaptureFixture) -> None:
+    """기록이 대표·묶인 신호 여러 행이라 하나가 잠김으로 터질 수 있다. 위로 새면 이 주기의 다른
+    줄기·관심사·수집 감시까지 건너뛰었다(JAR-029 리뷰)."""
+    from src.brain.memory import InMemorySpeechLog
+
+    @dataclass
+    class Locked(InMemorySpeechLog):
+        def record(
+            self,
+            trigger: str,
+            at: datetime,
+            text: str,
+            spoken: bool = True,
+            about: Optional[datetime] = None,
+            token: Optional[str] = None,
+            family: str = "",
+        ) -> None:
+            if not spoken:
+                raise RuntimeError("database is locked")
+            super().record(trigger, at, text, spoken, about, token, family)
+
+    reasoner = Answering()
+    channel = RecordingChannel()
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[
+            Fixed(_signal("sleep_drop", "어젯밤 수면 4.0시간", Severity.URGENT, "health")),
+            Fixed(_signal("late_sleep", "평소보다 2시간 늦게 잠듦", Severity.NOTABLE, "health")),
+            Fixed(_signal("late_departure", "40분 늦게 나섬", Severity.NOTABLE, "commute")),
+        ],
+        agent=JarvisAgent(reasoner=reasoner, gate=Gate(log=Locked())),
+        channel=channel,
+        clock=lambda: MORNING,
+    )
+
+    assert asyncio.run(loop.run_once()) == 2
+    assert len(channel.sent) == 2
+    assert "보낸 말을 발화 기억에 다 못 적었다" in caplog.text
