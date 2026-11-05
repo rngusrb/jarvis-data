@@ -30,9 +30,10 @@ CREATE TABLE IF NOT EXISTS speech (
     spoken  INTEGER NOT NULL DEFAULT 1,
     -- 무엇에 대한 판단이었나(신호의 at). 게이트가 같은 밤을 두 번 묻지 않으려고 본다.
     about   TEXT,
-    -- 먼저 건 말에 붙인 짧은 표(👍👎 버튼이 들고 온다)와 사용자의 반응(1·-1·0).
+    -- 먼저 건 말에 붙인 짧은 표(👍👎 버튼이 들고 온다)와 사용자의 반응(1·-1·0), 누른 때.
     token    TEXT,
-    feedback INTEGER NOT NULL DEFAULT 0
+    feedback INTEGER NOT NULL DEFAULT 0,
+    rated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_speech_trigger_at ON speech (trigger, at);
 """
@@ -52,6 +53,7 @@ class SQLiteSpeechLog:
                 "about TEXT",
                 "token TEXT",
                 "feedback INTEGER NOT NULL DEFAULT 0",
+                "rated_at TEXT",
             ):
                 if column.split()[0] not in columns:
                     conn.execute(f"ALTER TABLE speech ADD COLUMN {column}")
@@ -98,11 +100,11 @@ class SQLiteSpeechLog:
             ).fetchone()
         return _to_record(row) if row else None
 
-    def judged(self, trigger: str, about: datetime) -> bool:
+    def judged_since(self, trigger: str, about: datetime) -> bool:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM speech WHERE trigger = ? AND about = ? LIMIT 1",
-                (trigger, stamp(about)),
+                "SELECT 1 FROM speech WHERE trigger = ? AND (about = ? OR at > ?) LIMIT 1",
+                (trigger, stamp(about), stamp(about)),
             ).fetchone()
         return row is not None
 
@@ -128,24 +130,31 @@ class SQLiteSpeechLog:
     def rated(self, moment: datetime) -> List[SpeechRecord]:
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT {_COLUMNS} FROM speech WHERE at >= ? AND spoken = 1 AND feedback != 0"
-                " ORDER BY at",
+                f"SELECT {_COLUMNS} FROM speech WHERE rated_at >= ? AND spoken = 1"
+                " AND feedback != 0 ORDER BY rated_at",
                 (stamp(moment),),
             ).fetchall()
         return [_to_record(row) for row in rows]
 
-    def rate(self, token: str, value: int) -> Optional[SpeechRecord]:
+    def rate(self, token: str, value: int, at: datetime) -> Optional[SpeechRecord]:
         with self._connect() as conn:
-            changed = conn.execute(
-                "UPDATE speech SET feedback = ? WHERE token = ?", (value, token)
-            ).rowcount
             row = conn.execute(
-                f"SELECT {_COLUMNS} FROM speech WHERE token = ? LIMIT 1", (token,)
+                "SELECT id FROM speech WHERE token = ? AND spoken = 1 ORDER BY id DESC LIMIT 1",
+                (token,),
             ).fetchone()
-        return _to_record(row) if changed and row else None
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE speech SET feedback = ?, rated_at = ? WHERE id = ?",
+                (value, stamp(at), row[0]),
+            )
+            found = conn.execute(
+                f"SELECT {_COLUMNS} FROM speech WHERE id = ?", (row[0],)
+            ).fetchone()
+        return _to_record(found)
 
 
-_COLUMNS = "trigger, at, text, spoken, about, token, feedback"
+_COLUMNS = "trigger, at, text, spoken, about, token, feedback, rated_at"
 
 
 def _to_record(row: Sequence[object]) -> SpeechRecord:
@@ -157,4 +166,5 @@ def _to_record(row: Sequence[object]) -> SpeechRecord:
         about=datetime.fromisoformat(str(row[4])) if row[4] else None,
         token=str(row[5]) if row[5] else None,
         feedback=int(str(row[6] or 0)),
+        rated_at=datetime.fromisoformat(str(row[7])) if row[7] else None,
     )

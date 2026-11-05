@@ -192,10 +192,11 @@ def test_reactions_land_on_the_message_with_that_token(tmp_path: Path) -> None:
     log.record("topic:3", NOW, "요즘 자격증 보네", token="ab12cd34")
     log.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="ffff0000")
 
-    assert log.rate("ab12cd34", 1) is not None
-    rated = log.rate("ab12cd34", -1)
+    assert log.rate("ab12cd34", 1, NOW) is not None
+    rated = log.rate("ab12cd34", -1, NOW + timedelta(minutes=1))
     assert rated is not None and rated.trigger == "topic:3" and rated.feedback == -1
-    assert log.rate("없는표", 1) is None
+    assert rated.rated_at == NOW + timedelta(minutes=1)
+    assert log.rate("없는표", 1, NOW) is None
     assert [(r.trigger, r.feedback) for r in log.rated(NOW - timedelta(days=1))] == [
         ("topic:3", -1)
     ]
@@ -208,8 +209,10 @@ def test_judged_looks_at_every_record_and_family_at_spoken_ones(tmp_path: Path) 
     log.record("topic:1", NOW + timedelta(hours=1), "말 안 걸기로 함", spoken=False, about=NOW)
     log.record("topic:2", NOW + timedelta(hours=2), "말 안 걸기로 함", spoken=False, about=NOW)
 
-    assert log.judged("topic:1", first) and log.judged("topic:1", NOW)
-    assert not log.judged("topic:2", first)
+    assert log.judged_since("topic:1", first) and log.judged_since("topic:1", NOW)
+    # 판단(NOW+2h)이 그 신호보다 뒤면 판단한 것이다 — 깨어난 때가 앞당겨져도 마찬가지.
+    assert log.judged_since("topic:2", first)
+    assert not log.judged_since("topic:2", NOW + timedelta(hours=3))
     said = log.last_spoken_in("topic")
     assert said is not None and said.text == "A"
 

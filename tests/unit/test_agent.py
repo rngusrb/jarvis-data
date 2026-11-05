@@ -133,3 +133,17 @@ def test_판단에_신호가_사람_얘기인지_수집_상태인지_알려준�
     assert "신호 종류: 수집" in build_prompt(watch, [], now)
     # 2026-10-30 전의 지표별 수집 경고도 수집이다(/status 가 옛 기록을 센다).
     assert is_collection("stale_data:sleep_hours") and not is_collection("late_sleep")
+
+
+def test_수집_경고의_기준은_예전_지시문_그대로다() -> None:
+    """👎 규칙은 사람 얘기에만. 수집 경고에 걸면 👎 하나가 감시견을 30일 재운다(JAR-026 리뷰)."""
+    from src.brain.prompts import SYSTEM_PROMPT
+
+    people, collection = SYSTEM_PROMPT.split("[수집]")
+    assert "👎" in people and "👎" not in collection
+    for old in (
+        "사용자가 이미 알고 있을 법한 이야기면 말하지 않는다.",
+        "지금 당장 할 수 있는 행동이 없으면 말하지 않는다.",
+        "최근에 비슷한 말을 했으면 말하지 않는다.",
+    ):
+        assert old in collection

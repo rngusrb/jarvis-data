@@ -121,23 +121,22 @@ def test_듣기_실패가_루프를_죽이지_않는다(tmp_path: Path) -> None:
     assert asyncio.run(loop.run_once()) == 0
 
 
-def test_버튼을_누르면_빙글이를_먼저_멈춘다(tmp_path: Path) -> None:
-    """텔레그램은 답을 기다리며 버튼에 빙글이를 돌린다. 받았다고 먼저 알려준다."""
+def test_버튼_누름에는_새_메시지_대신_버튼_위_알림으로_답한다(tmp_path: Path) -> None:
+    """👍 하나에 알림이 또 울리면 안 된다. 텔레그램은 이 응답을 받아야 빙글이를 멈춘다."""
 
     @dataclass
     class ButtonSource(ScriptedSource):
-        acked: List[str] = field(default_factory=list)
+        acked: List[tuple] = field(default_factory=list)
 
-        async def ack(self, callback_id: str) -> None:
-            self.acked.append(callback_id)
+        async def ack(self, callback_id: str, text: Optional[str] = None) -> None:
+            self.acked.append((callback_id, text))
 
     press = Incoming(text="", at=NOW, cursor=1, action="fb:+:t1", meta={"callback_id": "cb-9"})
     source = ButtonSource([[press]])
-    loop = ListenLoop(
-        source=source,
-        responder=EchoResponder(),
-        speaker=RecordingSpeaker(),
-        log=SQLiteConversation(tmp_path / "t.db"),
-    )
-    asyncio.run(loop.run_once())
-    assert source.acked == ["cb-9"]
+    speaker = RecordingSpeaker()
+    log = SQLiteConversation(tmp_path / "t.db")
+    loop = ListenLoop(source=source, responder=EchoResponder(), speaker=speaker, log=log)
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert source.acked == [("cb-9", "받았어: ")] and speaker.sent == []
+    assert [m.who for m in log.recent()] == ["user", "jarvis"]

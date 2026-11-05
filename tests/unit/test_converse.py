@@ -209,12 +209,20 @@ def test_엄지를_누르면_그_말에_반응이_남는다(tmp_path: Path) -> N
     c.speech.record("topic:7", NOW, "요즘 정보처리기사 보네", token="t7")
     c.speech.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="s1")
 
-    assert "이 관심사는 한 달 동안 먼저 안 꺼낼게" in (_press(c, "fb:-:t7") or "")
+    assert "이 관심사(와 그 아래 가지)는 한 달 동안 안 꺼낼게" in (_press(c, "fb:-:t7") or "")
     assert "계속할게" in (_press(c, "fb:+:s1") or "")
     assert [(r.trigger, r.feedback) for r in c.speech.rated(NOW - timedelta(days=1))] == [
         ("topic:7", -1),
         ("late_sleep", 1),
     ]
+
+
+def test_수집_경고의_엄지_아래는_감시견을_재우지_않는다고_말한다(tmp_path: Path) -> None:
+    """2026-08-29: 끊김이 길어질수록 감시견이 조용해졌다. 👎 하나로 그렇게 되면 안 된다."""
+    c = _build(tmp_path)
+    assert c.speech is not None
+    c.speech.record("collection", NOW, "폰 데이터가 끊겼어", token="w1")
+    assert "바로 줄이진 않아" in (_press(c, "fb:-:w1") or "")
 
 
 def test_기억에_없는_말의_엄지는_남긴_척하지_않는다(tmp_path: Path) -> None:
@@ -230,7 +238,7 @@ def test_상태에_먼저_건_말을_사람_얘기와_수집_경고로_센다(tm
     c.speech.record("topic:3", NOW - timedelta(hours=3), "요즘 자격증 보네", token="c")
     c.speech.record("late_sleep", NOW - timedelta(days=9), "옛날 얘기", token="d")
     c.speech.record("topic:4", NOW, "말 안 걸기로 함", spoken=False)
-    c.speech.rate("c", 1)
+    c.speech.rate("c", 1, NOW)
 
     answer = _ask(c, "/status") or ""
     assert "최근 7일 내가 먼저 건 말: 사람 얘기 1 · 수집 경고 2 · 👍 1 👎 0" in answer

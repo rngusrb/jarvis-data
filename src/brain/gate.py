@@ -36,7 +36,7 @@ class Gate:
     def allows(self, insight: Insight, now: datetime) -> bool:
         if insight.severity < self.min_severity:
             return False
-        if self.log.judged(insight.trigger, insight.at):
+        if self.log.judged_since(insight.trigger, insight.at):
             # 이미 판단한 신호다 — 말했든 안 했든, 시간이 지나도 같은 밤은 같은 밤이다.
             # 쿨다운만으로 막을 땐 아침에 들어온 밤을 6시간마다 세 번 물었고, 16시간으로 늘리자
             # 그날 밤 한 번 더 물으면서 다음 날 아침의 새 밤까지 오후로 밀렸다(JAR-018 리뷰 재현).

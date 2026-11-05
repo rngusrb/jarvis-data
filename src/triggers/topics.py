@@ -16,10 +16,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from src.core.clock import local
 from src.core.models import Insight, Severity
-from src.core.topics import RECENT_DAYS, Standing, Trend
+from src.core.topics import RECENT_DAYS, TOPIC_FAMILY, Standing, Trend
 
 # 게이트가 "이 줄기로 마지막에 말한 때"를 볼 때 쓰는 줄기 이름. 트리거 이름은 `topic:<번호>`.
-FAMILY = "topic"
+FAMILY = TOPIC_FAMILY
 
 
 def topic_trigger(topic: int) -> str:
@@ -43,6 +43,7 @@ class TopicWatch:
     # 깨어난 지 이만큼 안이어야 "새로" 뜨는 것이다. 몇 달째 꾸준한 주제는 새 소식이 아니다.
     # 백테스트(2026-11-05, 운영 나무로 지난 61일을 매일 15시에): 7일 중 2일·14일 → 신호 15개
     # (주 2개쯤), 3일·14일 → 8개, 4일 → 6개, 2일·21일 → 18개. 초기엔 수다스럽게(2026-10-07 결정).
+    # 이 수는 근거가 지금 연결에 붙은 채로 센 하한이다 — 실제로는 회고가 근거를 더 붙여 가며 자란다.
     min_recent_days: int = 2
     fresh: timedelta = timedelta(days=14)
     # 말 걸 시간대(한국 시간, 시작 포함·끝 제외). 관심사 얘기는 급하지 않다 — 회고가 새벽 5시 반에
@@ -51,8 +52,12 @@ class TopicWatch:
     hours: Tuple[int, int] = (10, 21)
     # 요약에 넣는 최근 근거 수.
     samples: int = 3
-    # 👎 받은 관심사는 이만큼 신호를 내지 않는다.
+    # 👎 받은 관심사(와 그 아래 가지)는 👎 를 누른 때부터 이만큼 신호를 내지 않는다.
     mute_for: timedelta = timedelta(days=30)
+
+    def awake(self, now: datetime) -> bool:
+        start, end = self.hours
+        return start <= local(now).hour < end
 
     def check(
         self,
@@ -63,18 +68,28 @@ class TopicWatch:
     ) -> List[Insight]:
         """말할 만한 주제들, 앞일수록 강한 것. 시간대 밖이면 빈 목록.
 
-        `notes` 는 주제마다 최근 메모(최근 것부터), `muted` 는 사용자가 👎 한 주제 번호다.
+        `notes` 는 주제마다 최근 메모(최근 것부터), `muted` 는 사용자가 👎 한 주제 번호다 — 그 아래
+        가지도 같이 뺀다(줄기를 👎 했는데 새 가지로 같은 얘기가 다시 오면 안 된다).
+        줄기와 가지가 함께 뜨면 가지(더 구체적인 쪽)만 낸다. 줄기는 가지의 근거로 깨어난 것이라 같은
+        얘기를 두 번 하게 된다(JAR-024 리뷰 재현: '공부'를 말하고 다음 날 '공부 › 자격증').
         """
-        start, end = self.hours
-        if not start <= local(now).hour < end:
+        if not self.awake(now):
             return []
-        found: List[Tuple[Tuple[int, datetime], Insight]] = []
+        parent = {s.node.id: s.node.parent for s in board}
+        picked: Dict[int, Standing] = {}
         for s in board:
-            if s.node.id in muted or s.trend is not Trend.RISING or s.since is None:
+            if s.trend is not Trend.RISING or s.since is None:
                 continue
             if s.recent_days < self.min_recent_days or now - s.since > self.fresh:
                 continue
-            found.append(((s.recent_days, s.since), self._insight(s, notes, now)))
+            if _under(s.node.id, muted, parent):
+                continue
+            picked[s.node.id] = s
+        found: List[Tuple[Tuple[int, datetime], Insight]] = []
+        for topic, s in picked.items():
+            if any(_under(other, {topic}, parent) for other in picked if other != topic):
+                continue  # 아래에 함께 뜬 가지가 있다 — 그 가지가 말한다
+            found.append(((s.recent_days, s.since or now), self._insight(s, notes, now)))
         found.sort(key=lambda pair: pair[0], reverse=True)
         return [insight for _, insight in found]
 
@@ -91,14 +106,28 @@ class TopicWatch:
         latest = notes.get(s.node.id) or []
         if latest:
             parts.append(f"내 메모: {latest[0]}")
-        recent = [f"{local(g.at):%m-%d %H:%M} {g.text}" for g in s.own[: self.samples]]
+        # 가지까지 합친 최근 근거 — 줄기의 직접 근거는 옛것일 수 있다.
+        recent = [f"{local(g.at):%m-%d %H:%M} {g.text}" for g in s.latest[: self.samples]]
         if recent:
             parts.append("최근 근거: " + " / ".join(recent))
         return Insight(
             trigger=topic_trigger(s.node.id),
             summary="\n".join(parts),
             severity=Severity.NOTABLE,
-            # 이 주제가 이번에 깨어난 때. 같은 깨어남은 게이트가 한 번만 판단한다 — 다시 잠잠했다가
-            # 깨어나면 새 신호다(Insight.at 계약, triggers/_GUIDE.md).
+            # 이 주제가 이번에 깨어난 때. 회고가 더 이른 근거를 나중에 붙이면 앞당겨질 수 있어서,
+            # 게이트는 "이 때 이후에 판단한 적 있나"로 본다(`SpeechLog.judged_since`).
+            # 다시 잠잠했다가 깨어나면 새 신호다(Insight.at 계약, triggers/_GUIDE.md).
             at=since,
         )
+
+
+def _under(topic: int, roots: Set[int], parent: Dict[int, Optional[int]]) -> bool:
+    """`topic` 이 `roots` 중 하나이거나 그 아래 가지인가(살아 있는 나무의 부모 사슬로)."""
+    seen: Set[int] = set()
+    current: Optional[int] = topic
+    while current is not None and current not in seen:
+        if current in roots:
+            return True
+        seen.add(current)
+        current = parent.get(current)
+    return False

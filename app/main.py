@@ -180,9 +180,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 통과시킨다. late_sleep 에 16시간을 줬을 땐 그날 밤 한 번 더 물으면서 다음 날 아침의
             # 새 밤까지 오후로 밀었다(JAR-018 리뷰 재현).
         },
-        # 관심사 얘기는 주제마다 트리거가 따로라(`topic:12`) 묶어서 센다 — 말한 뒤 반나절. 초기엔
-        # 수다스럽게(하루 두 번까지 — 말 걸 시간대가 10~21시), 줄이는 건 👍👎 로.
-        family_cooldowns={TOPIC_FAMILY: timedelta(hours=12)},
+        # 관심사 얘기는 주제마다 트리거가 따로라(`topic:12`) 묶어서 센다 — 말한 뒤 6시간.
+        # 말 걸 시간대가 10~21시(11시간)라 하루 두 번까지다(12시간이면 한 번뿐 — JAR-024 리뷰).
+        # 초기엔 수다스럽게, 줄이는 건 👍👎 로(2026-10-07 결정). 신호 자체가 주 두 개쯤이라
+        # (백테스트) 간격은 상한일 뿐이다.
+        family_cooldowns={TOPIC_FAMILY: timedelta(hours=6)},
     )
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),

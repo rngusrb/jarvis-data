@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
+from src.brain.prompts import is_collection
 from src.core.clock import local
 from src.core.models import Insight
 
@@ -46,10 +47,13 @@ def parse(action: str) -> Optional[Tuple[int, str]]:
 
 @dataclass
 class FeedbackProvider:
-    """내가 먼저 건 말에 사용자가 어떻게 반응했나(최근 30일).
+    """내가 먼저 건 말에 사용자가 어떻게 반응했나(최근 30일, 누른 때로).
 
     게이트가 숫자로 줄이기 전에, 모델이 먼저 읽고 말투와 거리를 조정한다. 👎 받은 말과 비슷한 말을
     또 하면 사용자는 알림을 끈다 — 알림 스팸이 이 프로덕트의 주된 실패 방식이다.
+
+    수집 경고에 대한 반응은 넣지 않는다. 판단이 "👎 한 말과 비슷하면 말하지 않는다"를 따르면 수집
+    경고 👎 하나가 30일 동안 감시견을 재운다(JAR-026 리뷰). 그 👎 의 뜻은 사용자가 정한다(BACKLOG).
     """
 
     log: SpeechLog
@@ -57,7 +61,7 @@ class FeedbackProvider:
     window: timedelta = timedelta(days=30)
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
-        rated = self.log.rated(now - self.window)
+        rated = [r for r in self.log.rated(now - self.window) if not is_collection(r.trigger)]
         if not rated:
             return None
         lines = [f"- {local(r.at):%m/%d} {MARKS[r.feedback]} {r.text}" for r in rated[-10:]]

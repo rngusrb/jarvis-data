@@ -31,7 +31,7 @@ from src.brain.prompts import is_collection
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
-from src.core.topics import Trend, standings
+from src.core.topics import TOPIC_FAMILY, Trend, standings
 from src.storage.conversation import SQLiteConversation
 from src.storage.topics import SQLiteTopicStore
 
@@ -87,7 +87,7 @@ class Conversationalist:
 
     async def reply(self, incoming: Incoming, now: datetime) -> Optional[str]:
         if incoming.is_action:
-            return self._react(incoming.action)
+            return self._react(incoming.action, now)
 
         text = incoming.text.strip()
         head = text.split()[0].lower() if text else ""
@@ -106,21 +106,28 @@ class Conversationalist:
             "/topics  내가 너에 대해 아는 것(주제 나무)"
         )
 
-    def _react(self, action: str) -> str:
+    def _react(self, action: str, now: datetime) -> str:
         """버튼. 모르는 버튼을 삼키면 눌렀는데 아무 일도 안 일어난 것처럼 보이므로 그대로 말한다."""
         parsed = parse(action)
         if parsed is None or self.speech is None:
             return "그 버튼은 아직 안 붙었어."
         value, token = parsed
-        record = self.speech.rate(token, value)
+        record = self.speech.rate(token, value, now)
         if record is None:
             # 표가 기억에 없다(기록 전에 눌렸거나 DB 가 바뀜). 남긴 척하지 않는다.
             logger.warning("반응을 남길 말이 없다: %s", action)
             return "그 말은 내 기억에 없어서 반응을 못 남겼어."
         if value > 0:
             return f"{REACTIONS[1]} 고마워. 이런 얘기 계속할게."
-        if record.trigger.startswith("topic:"):
-            return f"{REACTIONS[-1]} 알겠어. 이 관심사는 한 달 동안 먼저 안 꺼낼게."
+        if record.trigger.startswith(f"{TOPIC_FAMILY}:"):
+            return f"{REACTIONS[-1]} 알겠어. 이 관심사(와 그 아래 가지)는 한 달 동안 안 꺼낼게."
+        if is_collection(record.trigger):
+            # 수집 경고는 👎 로 재우지 않는다 — 끊김이 길어질수록 조용해지는 감시견이 된다
+            # (2026-08-29 사고). 이 👎 의 뜻은 사용자가 정한다(BACKLOG).
+            return (
+                f"{REACTIONS[-1]} 남겨 뒀어. 다만 수집 경고는 끊김이 이어지면 계속 알려야 해서"
+                " 바로 줄이진 않아."
+            )
         return f"{REACTIONS[-1]} 알겠어. 이런 얘기는 줄일게."
 
     def _status(self, now: datetime) -> str:

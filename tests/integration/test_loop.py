@@ -601,7 +601,7 @@ def test_엄지_아래를_받은_관심사는_다음_차례에서_빠진다(tmp_
     asyncio.run(loop.run_once())
     said = loop.agent.gate.log.last_spoken_in("topic")
     assert said is not None and said.token is not None
-    loop.agent.gate.log.rate(said.token, -1)
+    loop.agent.gate.log.rate(said.token, -1, AFTERNOON + timedelta(minutes=5))
 
     # 다음 날 한국 10:00 — 줄기 간격(12시간)이 지났고 깨어 있는 시간이다.
     candidate = loop._topic(AFTERNOON + timedelta(hours=19))
@@ -613,3 +613,114 @@ def test_자는_시간에는_관심사_얘기를_꺼내지_않는다(tmp_path: P
     dawn = datetime(2026, 11, 4, 20, 43, tzinfo=timezone.utc)  # 한국 05:43 — 회고 직후 첫 주기
     assert asyncio.run(_topic_loop(tmp_path, channel, dawn).run_once()) == 0
     assert channel.sent == []
+
+
+@dataclass
+class CountingSkipper:
+    """매번 말 안 걸기로 하고, 몇 번 물었는지 센다."""
+
+    calls: int = 0
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.calls += 1
+        return '{"speak": false}'
+
+
+def _tree_loop(tmp_path: Path, reasoner: object, now: datetime) -> tuple:
+    """빈 나무와 관심사 신호를 단 루프. (루프, 흔적 저장소, 주제 저장소)."""
+    db = tmp_path / "t.db"
+    gate = Gate(log=SQLiteSpeechLog(db), family_cooldowns={"topic": timedelta(hours=6)})
+    topics = SQLiteTopicStore(db)
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[],
+        agent=JarvisAgent(reasoner=reasoner, gate=gate),  # type: ignore[arg-type]
+        channel=RecordingChannel(),
+        topic_watch=TopicWatch(),
+        topics=topics,
+        clock=lambda: now,
+    )
+    return loop, SQLiteTraceStore(db), topics
+
+
+def _grow_topic(
+    traces: SQLiteTraceStore,
+    topics: SQLiteTopicStore,
+    name: str,
+    days_ago: Sequence[float],
+    now: datetime,
+    parent: Optional[int] = None,
+    into: Optional[int] = None,
+) -> int:
+    """흔적을 쓰고 회고처럼 새 주제로 만들거나(`into` 없음) 있는 주제에 붙인다. 주제 번호."""
+    texts = [f"{name}-{d}" for d in days_ago]
+    traces.write(
+        [
+            Trace(source="mac_chrome", kind="web_visit", text=t, at=now - timedelta(days=d))
+            for t, d in zip(texts, days_ago)
+        ]
+    )
+    ids = [
+        t.id
+        for t in traces.recent("web_visit", now - timedelta(days=60))
+        if t.text in texts and t.id is not None
+    ]
+    op = (
+        Op("attach", topic=into, evidence=tuple(ids))
+        if into is not None
+        else Op("create", name=name, parent=parent, evidence=tuple(ids))
+    )
+    topics.apply(plan(topics.load(), [op], set(ids), now), now)
+    return into if into is not None else max(n.id for n in topics.load().live())
+
+
+def test_더_이른_근거가_나중에_붙어도_같은_깨어남은_다시_보내지_않는다(tmp_path: Path) -> None:
+    """회고가 다음 날 더 이른 흔적을 붙이면 깨어난 때가 앞당겨진다.
+
+    글자만 보면 다시 보냈다(리뷰 재현).
+    """
+    day1 = datetime(2026, 11, 5, 1, 0, tzinfo=timezone.utc)  # 한국 10:00
+    loop, traces, topics = _tree_loop(tmp_path, FakeReasoner(), day1)
+    topic = _grow_topic(traces, topics, "자격증", (1.5, 0.5), day1)
+    assert asyncio.run(loop.run_once()) == 1
+
+    day2 = day1 + timedelta(days=1)
+    _grow_topic(traces, topics, "자격증이전", (4.5,), day2, into=topic)  # 11-01 흔적을 붙임
+    loop.clock = lambda: day2
+    assert asyncio.run(loop.run_once()) == 0
+
+
+def test_한_주기에는_관심사_하나만_판단한다(tmp_path: Path) -> None:
+    """후보가 여럿이어도 LLM 은 한 번 — 말 안 걸기로 하면 다음 후보는 다음 주기에."""
+    now = datetime(2026, 11, 5, 1, 0, tzinfo=timezone.utc)
+    skipper = CountingSkipper()
+    loop, traces, topics = _tree_loop(tmp_path, skipper, now)
+    _grow_topic(traces, topics, "자격증", (0.5, 1.5), now)
+    _grow_topic(traces, topics, "해커톤", (0.5, 1.5, 2.5), now)
+
+    asyncio.run(loop.run_once())
+    assert skipper.calls == 1
+    loop.clock = lambda: now + timedelta(minutes=30)
+    asyncio.run(loop.run_once())
+    assert skipper.calls == 2
+    loop.clock = lambda: now + timedelta(hours=1)
+    asyncio.run(loop.run_once())
+    assert skipper.calls == 2  # 둘 다 판단했다
+
+
+def test_줄기에_엄지_아래를_받으면_새_가지로도_다시_안_온다(tmp_path: Path) -> None:
+    """회사마다 가지가 는다 — 줄기 👎 가 그 가지 하나만 막으면 같은 얘기가 새 가지로 온다."""
+    day1 = datetime(2026, 11, 5, 1, 0, tzinfo=timezone.utc)
+    loop, traces, topics = _tree_loop(tmp_path, FakeReasoner(), day1)
+    trunk = _grow_topic(traces, topics, "취업", (0.5, 1.5), day1)
+    assert asyncio.run(loop.run_once()) == 1
+    said = loop.agent.gate.log.last_spoken_in("topic")
+    assert said is not None and said.token is not None
+    loop.agent.gate.log.rate(said.token, -1, day1 + timedelta(minutes=5))
+
+    # 열흘 뒤(👎 30일 안): 새 회사 가지가 뜬다. 가지는 줄기와 다른 신호라 판단 기록도 없다 —
+    # 막는 건 👎 뿐이다.
+    later = day1 + timedelta(days=10)
+    _grow_topic(traces, topics, "금융결제원", (0.5, 1.5), later, parent=trunk)
+    loop.clock = lambda: later
+    assert asyncio.run(loop.run_once()) == 0

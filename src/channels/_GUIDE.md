@@ -14,10 +14,10 @@
 ```python
 class Channel(Protocol):
     name: str
-    async def send(self, text: str) -> None: ...
+    async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None: ...
 ```
 **이유**: 지금은 텔레그램이지만 iOS 푸시로 갈아탈 예정이고, 그때 위층
-(`runtime/loop.py`)은 한 줄도 바뀌면 안 된다.
+(`runtime/loop.py`)은 한 줄도 바뀌면 안 된다. 버튼(👍👎, JAR-025)은 덤이다 — 못 다는 채널은 글만 보낸다.
 
 ### 프레임워크를 붙이지 않는다
 **이유**: 텔레그램 Bot API 는 HTTP POST 하나라 `httpx` 로 충분하다.

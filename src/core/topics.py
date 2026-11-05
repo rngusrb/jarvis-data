@@ -43,6 +43,8 @@ RETIRE_AFTER = timedelta(days=60)
 # 새 주제의 최소 근거. 흔적 하나짜리는 관심사가 아니라 스쳐간 호기심이다(옛 회고 규칙).
 MIN_EVIDENCE = 2
 MAX_NAME = 40
+# 관심사 신호의 줄기 이름. 트리거는 `topic:<번호>` — 게이트·대화·신호가 같이 쓴다.
+TOPIC_FAMILY = "topic"
 # 나무 모양을 바꾸는 연산. 모델이 이걸 매일 내면 나무를 믿을 수 없다(3단계 끝 기준).
 RESHAPING = ("rename", "move", "merge", "retire")
 # 누가 바꿨나. 오래 잠잠해 코드가 접은 것을 모델의 구조 변경으로 세면 변경 빈도가 부풀려진다.
@@ -301,6 +303,9 @@ class Standing:
     since: Optional[datetime] = None
     # 맨 처음 근거. since 보다 앞이면 "다시" 깨어난 것이다.
     first: Optional[datetime] = None
+    # 가지까지 합친 최근 근거(최근 것부터 몇 개). 줄기의 직접 근거(`own`)는 옛것일 수 있다 — 줄기를
+    # 깨운 건 가지의 새 근거인데 "최근 근거"로 6주 전 것이 나갔다(JAR-024 리뷰 재현).
+    latest: Tuple[Ground, ...] = ()
 
 
 def awakened(times: Sequence[datetime], now: datetime) -> Optional[datetime]:
@@ -346,6 +351,7 @@ def standings(tree: Tree, grounds: Sequence[Ground], now: datetime) -> List[Stan
                 own=tuple(sorted(own.get(node.id, []), key=lambda g: g.at, reverse=True)),
                 since=awakened(times, now),
                 first=min(times) if times else None,
+                latest=tuple(sorted(merged.values(), key=lambda g: g.at, reverse=True)[:5]),
             )
         )
         for kid in tree.children(node.id):

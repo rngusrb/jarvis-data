@@ -44,8 +44,10 @@ class SpeechRecord:
     about: Optional[datetime] = None
     # 먼저 건 말에 붙인 짧은 표. 👍👎 버튼이 이걸 들고 돌아온다. 말 안 건 판단에는 없다.
     token: Optional[str] = None
-    # 사용자의 반응: 1(👍), -1(👎), 0(없음). 나중에 누른 게 이긴다.
+    # 사용자의 반응: 1(👍), -1(👎), 0(없음). 나중에 누른 게 이긴다. 누른 때도 남긴다 — 👎 의 30일은
+    # 거기서 센다.
     feedback: int = 0
+    rated_at: Optional[datetime] = None
 
 
 class SpeechLog(Protocol):
@@ -63,8 +65,15 @@ class SpeechLog(Protocol):
 
     def last(self, trigger: str) -> Optional[SpeechRecord]: ...
 
-    def judged(self, trigger: str, about: datetime) -> bool:
-        """이 트리거로 이 신호(`about`)를 판단한 적이 있나 — 마지막 기록만이 아니라 전부에서."""
+    def judged_since(self, trigger: str, about: datetime) -> bool:
+        """이 트리거로 이 신호를 판단한 적이 있나 — 같은 `about` 이거나, 그보다 뒤에 판단한 기록.
+
+        마지막 기록만이 아니라 전부에서 본다(주제 A, B, 다시 A). "이후에 판단"까지 보는 건
+        신호의 `at` 이 앞당겨질 수 있어서다 — 회고가 더 이른 근거를 다음 날 붙이면 관심사의
+        깨어난 때가 당겨지고, 글자가 같은지만 보면 같은 깨어남을 다시 묻는다(JAR-024 리뷰 재현).
+        밤·아침 사건처럼 `at` 이 판단보다 앞서는 신호는 둘이 같은 답을 내고, 판단 시각을 `at`
+        으로 쓰는 신호(수집 감시)는 늘 새 신호다.
+        """
         ...
 
     def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
@@ -75,12 +84,12 @@ class SpeechLog(Protocol):
         """``moment`` 이후 **실제로 한 말**만. 맥락 제공자가 쓴다."""
         ...
 
-    def rate(self, token: str, value: int) -> Optional[SpeechRecord]:
-        """표가 가리키는 말에 반응을 남긴다. 그런 말이 없으면 None."""
+    def rate(self, token: str, value: int, at: datetime) -> Optional[SpeechRecord]:
+        """표가 가리키는 말에 반응을 남긴다(`at` 은 누른 때). 그런 말이 없으면 None."""
         ...
 
     def rated(self, moment: datetime) -> List[SpeechRecord]:
-        """``moment`` 이후에 한 말 중 반응(👍👎)이 붙은 것, 시간순."""
+        """``moment`` 이후에 **누른** 반응(👍👎)이 붙은 말, 누른 순."""
         ...
 
 
@@ -112,8 +121,8 @@ class InMemorySpeechLog:
         entries = self._by_trigger.get(trigger)
         return entries[-1] if entries else None
 
-    def judged(self, trigger: str, about: datetime) -> bool:
-        return any(r.about == about for r in self._by_trigger.get(trigger, []))
+    def judged_since(self, trigger: str, about: datetime) -> bool:
+        return any(r.about == about or r.at > about for r in self._by_trigger.get(trigger, []))
 
     def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
         found = [
@@ -126,13 +135,19 @@ class InMemorySpeechLog:
         return max(found, key=lambda r: r.at) if found else None
 
     def rated(self, moment: datetime) -> List[SpeechRecord]:
-        return [r for r in self.since(moment) if r.feedback]
+        found = [
+            r
+            for records in self._by_trigger.values()
+            for r in records
+            if r.feedback and r.rated_at is not None and r.rated_at >= moment
+        ]
+        return sorted(found, key=lambda r: r.rated_at or r.at)
 
-    def rate(self, token: str, value: int) -> Optional[SpeechRecord]:
+    def rate(self, token: str, value: int, at: datetime) -> Optional[SpeechRecord]:
         for records in self._by_trigger.values():
             for i, r in enumerate(records):
                 if r.token == token:
-                    records[i] = replace(r, feedback=value)
+                    records[i] = replace(r, feedback=value, rated_at=at)
                     return records[i]
         return None
 

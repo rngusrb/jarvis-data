@@ -92,6 +92,12 @@ class Event:
     received_at: Optional[datetime] = None
 
 
+# 수집 감시의 트리거 이름. 판단 지시문과 `/status` 가 "수집 경고인가"를 이걸로
+# 가른다. 이름이 두 곳에 살면 한쪽만 바뀌는 날 수집 경고가 사람 얘기용 지시를
+# 받는다(조용히). 감시(triggers/collection.py)도 이걸 쓴다.
+COLLECTION_TRIGGER = "collection"
+
+
 @dataclass(frozen=True)
 class Insight:
     """자비스가 사용자에게 말할 수 있는 "후보".

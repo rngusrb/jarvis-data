@@ -86,3 +86,51 @@ def test_a_muted_topic_stays_quiet() -> None:
 def test_muted_reads_only_thumbs_down_on_topics() -> None:
     reactions = [("topic:3", -1), ("topic:4", 1), ("late_sleep", -1), ("topic:x", -1)]
     assert muted(reactions) == {3}
+
+
+def _family(*specs: tuple) -> list:
+    """(번호, 부모, 근거 며칠 전들) — 줄기와 가지가 있는 나무의 지금 모습."""
+    nodes = {i: Node(i, f"주제{i}", parent, NOW - timedelta(days=90)) for i, parent, _ in specs}
+    grounds: List[Ground] = []
+    trace = 500
+    for i, _, days in specs:
+        for d in days:
+            trace += 1
+            grounds.append(Ground(i, trace, NOW - timedelta(days=d), f"흔적{trace}"))
+    return standings(Tree(nodes=nodes, links={i: set() for i in nodes}), grounds, NOW)
+
+
+def test_a_trunk_woken_by_its_branch_leaves_the_talk_to_the_branch() -> None:
+    """같은 근거로 줄기와 가지가 둘 다 뜨면 같은 얘기를 두 번 한다.
+
+    리뷰 재현: '공부' 를 말하고 다음 날 '공부 › 자격증'.
+    """
+    board = _family((1, None, [40, 41]), (2, 1, [0.5, 1.5, 2.5]))
+    assert [i.trigger for i in _check(board)] == ["topic:2"]
+
+
+def test_thumbs_down_on_a_trunk_quiets_its_branches() -> None:
+    """줄기를 👎 했는데 새 가지(새 회사)로 같은 얘기가 다시 오면 안 된다."""
+    board = _family((1, None, [40, 41]), (2, 1, [0.5, 1.5, 2.5]))
+    assert _check(board, quiet={1}) == []
+
+
+def test_a_trunks_summary_shows_the_branch_evidence_that_woke_it() -> None:
+    """줄기의 직접 근거는 옛것일 수 있다 — 6주 전 것이 '최근 근거'로 나갔다(리뷰 재현)."""
+    board = _family((1, None, [1.5, 42]), (2, 1, [0.5]))  # 가지는 하루뿐이라 안 뜬다
+    [insight] = _check(board)
+    assert insight.trigger == "topic:1"
+    recent = insight.summary.split("최근 근거: ")[1]
+    assert recent.startswith(f"{(NOW - timedelta(days=0.5)).strftime('%m-%d %H:%M')} 흔적")
+
+
+def test_the_thumbs_down_window_counts_from_the_press() -> None:
+    """27일 전 말에 오늘 👎 를 눌렀으면 사흘 뒤에도 조용하다 — 30일은 누른 때부터."""
+    from src.brain.memory import InMemorySpeechLog
+
+    log = InMemorySpeechLog()
+    log.record("topic:5", NOW - timedelta(days=27), "요즘 자격증 보네", token="t")
+    log.rate("t", -1, NOW)
+    later = NOW + timedelta(days=3)
+    rated = log.rated(later - TopicWatch().mute_for)
+    assert muted((r.trigger, r.feedback) for r in rated) == {5}

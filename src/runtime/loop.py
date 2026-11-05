@@ -124,6 +124,8 @@ class JarvisLoop:
     def _topic(self, now: datetime) -> Optional[Insight]:
         """뜨는 관심사 중 게이트를 통과하는 첫 것 하나. 한 주기에 관심사 얘기는 하나만 판단한다."""
         assert self.topic_watch is not None and self.topics is not None
+        if not self.topic_watch.awake(now):
+            return None  # 시간대 밖이면 나무를 읽지도 않는다(수집 훅마다 돈다)
         board = standings(self.topics.load(), self.topics.grounds(), now)
         notes = {
             topic: [n.text for n in found] for topic, found in self.topics.latest_notes(1).items()

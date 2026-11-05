@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Mapping, Optional, Sequence
 
-from src.core.models import Insight, Severity
+from src.core.models import COLLECTION_TRIGGER, Insight, Severity
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class Watched:
 @dataclass
 class CollectionWatch:
     sources: Sequence[Watched]
-    name: str = "collection"
+    name: str = COLLECTION_TRIGGER
     # 이만큼 끊기면 심각하다고 본다.
     urgent_after: timedelta = timedelta(days=3)
     # 마지막 수신 시각들이 이 안에 모여 있으면 "한꺼번에 끊겼다"고 본다. 수면처럼
