@@ -65,6 +65,36 @@ def test_the_instructions_say_how_to_read_the_records() -> None:
     assert f"새벽 {DAY_STARTS.hour}시" in READING and "일어난" in READING
     # 텔레그램은 마크다운을 안 그린다 — ** 와 # 가 날글로 보였다.
     assert "마크다운을 그리지 않는다" in SYSTEM_PROMPT
+    # 실데이터로 써 보니 "~함" 개조식으로 썼다(2026-11-05).
+    assert '"~함", "~음"으로 끝내는 개조식은 쓰지 않는다' in SYSTEM_PROMPT
+
+
+def test_the_instructions_name_the_retired_wording_the_status_block_uses() -> None:
+    """접은 지표(출퇴근 시각·걸음수)를 "모르는 것"으로 적었다(2026-11-05 실데이터).
+
+    지시문은 수집 현황의 문구를 글자 그대로 가리킨다. 현황 쪽 문구가 바뀌면 이 규칙은 아무것도 못
+    가리키게 되므로, 두 쪽을 같이 본다.
+    """
+    from datetime import timedelta
+    from typing import Dict
+
+    from src.brain.providers import CollectionStatusProvider
+    from src.core.metrics import Fold, Metric
+
+    @dataclass
+    class Seen:
+        at: Dict[str, datetime]
+
+        def last_seen(self) -> Dict[str, datetime]:
+            return self.at
+
+    # collector 가 없으면 일부러 접은 지표다. 마지막 값은 한참 전.
+    retired = Metric(kind="step_count", label="걸음수", fold=Fold.SUM)
+    seen = Seen({"step_count": NOW - timedelta(days=60)})
+    block = CollectionStatusProvider(catalog=seen, cards=[retired]).fetch(None, NOW)
+
+    assert block is not None and "되살릴 필요 없다" in block.body
+    assert '"되살릴 필요 없다"는 일부러 그만 모은 것' in SYSTEM_PROMPT
 
 
 def test_a_failure_still_answers_the_user(caplog: object) -> None:
