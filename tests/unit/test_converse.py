@@ -242,3 +242,47 @@ def test_상태에_먼저_건_말을_사람_얘기와_수집_경고로_센다(tm
 
     answer = _ask(c, "/status") or ""
     assert "최근 7일 내가 먼저 건 말: 사람 얘기 1 · 수집 경고 2 · 👍 1 👎 0" in answer
+
+
+def test_report는_쓰는_중이라고_먼저_답하고_나중에_보고서를_낸다(tmp_path: Path) -> None:
+    """1분 동안 듣기 루프를 막지 않는다.
+
+    쓰는 중에 또 부르면 하나 더 쓰지 않는다(리뷰 재현: 두 통).
+    """
+    from src.brain.converse import Later
+
+    @dataclass
+    class FakeReporter:
+        calls: List[datetime] = field(default_factory=list)
+
+        async def write(self, now: datetime) -> str:
+            self.calls.append(now)
+            return "1. 요즘의 너"
+
+    c = _build(tmp_path)
+    assert "아직 안 붙었어" in str(_ask(c, "/report"))
+    reporter = FakeReporter()
+    c.reporter = reporter  # type: ignore[assignment]
+
+    first = asyncio.run(c.reply(Incoming(text="/report", at=NOW, cursor=1), NOW))
+    assert isinstance(first, Later) and "쓰는 중" in first.now
+    again = asyncio.run(c.reply(Incoming(text="/report", at=NOW, cursor=2), NOW))
+    assert again == "이미 쓰는 중이야. 끝나면 보낼게."
+
+    async def finish() -> str:
+        assert isinstance(first, Later)
+        return await first.then
+
+    assert asyncio.run(finish()) == "1. 요즘의 너" and reporter.calls == [NOW]
+    # 다 썼으면 다시 쓸 수 있다.
+    third = asyncio.run(c.reply(Incoming(text="/report", at=NOW, cursor=3), NOW))
+    assert isinstance(third, Later)
+    asyncio.run(finish_later(third))
+    assert "/report" in str(_ask(c, "/help"))
+
+
+async def finish_later(later: object) -> str:
+    from src.brain.converse import Later
+
+    assert isinstance(later, Later)
+    return await later.then

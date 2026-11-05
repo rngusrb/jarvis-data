@@ -163,3 +163,69 @@ def test_버튼_응답이_거절되면_새_메시지로라도_답한다(tmp_path
     )
     assert asyncio.run(loop.run_once()) == 1
     assert speaker.sent == ["받았어: "]
+
+
+def test_오래_걸리는_답을_쓰는_동안에도_다른_말에_먼저_답한다(tmp_path: Path) -> None:
+    """보고서를 그 자리에서 기다리면 /status 도 버튼도 1분씩 밀렸다(리뷰 재현)."""
+    from src.brain.converse import Later
+
+    async def scenario() -> List[str]:
+        gate = asyncio.Event()
+
+        async def slow() -> str:
+            await gate.wait()
+            return "1. 요즘의 너"
+
+        @dataclass
+        class Mixed:
+            async def reply(self, incoming: Incoming, now: datetime) -> object:
+                if incoming.text == "/report":
+                    return Later(now="쓰는 중이야. 1분쯤 걸려.", then=slow())
+                return f"받았어: {incoming.text}"
+
+        speaker = RecordingSpeaker()
+        log = SQLiteConversation(tmp_path / "t.db")
+        loop = ListenLoop(
+            source=ScriptedSource([[_incoming(1, "/report"), _incoming(2, "/status")]]),
+            responder=Mixed(),  # type: ignore[arg-type]
+            speaker=speaker,
+            log=log,
+        )
+        await loop.run_once()
+        before = list(speaker.sent)
+        gate.set()
+        await asyncio.gather(*loop._pending)
+        return before + ["|"] + speaker.sent[len(before) :]
+
+    assert asyncio.run(scenario()) == [
+        "쓰는 중이야. 1분쯤 걸려.",
+        "받았어: /status",
+        "|",
+        "1. 요즘의 너",
+    ]
+
+
+def test_나중_답이_터져도_사용자에게는_말한다(tmp_path: Path) -> None:
+    from src.brain.converse import Later
+
+    async def scenario() -> List[str]:
+        async def broken() -> str:
+            raise RuntimeError("두뇌 없음")
+
+        @dataclass
+        class Broken:
+            async def reply(self, incoming: Incoming, now: datetime) -> object:
+                return Later(now="쓰는 중이야.", then=broken())
+
+        speaker = RecordingSpeaker()
+        loop = ListenLoop(
+            source=ScriptedSource([[_incoming(1, "/report")]]),
+            responder=Broken(),  # type: ignore[arg-type]
+            speaker=speaker,
+            log=SQLiteConversation(tmp_path / "t.db"),
+        )
+        await loop.run_once()
+        await asyncio.gather(*loop._pending)
+        return speaker.sent
+
+    assert asyncio.run(scenario()) == ["쓰는 중이야.", "미안, 하던 걸 마치지 못했어."]

@@ -7,6 +7,7 @@
 대신 싼 길과 비싼 길을 가른다.
 
     /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
+    /report                        넓게 모아 → LLM 이 보고서를 쓴다(1분쯤)
     그 밖의 말                     맥락 조립 → LLM
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
@@ -20,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
-from typing import Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 from src.brain.client import Reasoner
 from src.brain.context import ContextProvider, assemble, render
@@ -28,6 +29,7 @@ from src.brain.feedback import MARKS as REACTIONS
 from src.brain.feedback import parse
 from src.brain.memory import SpeechLog
 from src.brain.prompts import is_collection
+from src.brain.report import Reporter
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
@@ -45,8 +47,8 @@ SYSTEM_PROMPT = """너는 사용자의 개인 비서다. 사용자가 너에게 
 - 숫자를 나열하지 말고 그래서 어떻다는 것을 말한다.
 - 사용자가 네 판단을 부정하면 받아들인다. 우기지 않는다."""
 
-# 텔레그램은 한 메시지에 4,096자까지 받는다. 넘으면 거절돼 사용자는 아무 답도 못 받는다
-# (리뷰 측정: 주제 150개면 5,094자).
+# `/topics` 답의 길이. 텔레그램 채널이 긴 말을 나눠 보내긴 하지만, 나무 전체를 여러 통으로 받는 건
+# 명령의 즉답이 아니다 — 한 통에 들어가게 자르고 "외 N개"로 (리뷰 측정: 주제 150개면 5,094자).
 REPLY_LIMIT = 3500
 
 MARKS = {
@@ -56,6 +58,23 @@ MARKS = {
     Trend.FADING: "▽",
     Trend.QUIET: "·",
 }
+
+
+@dataclass(frozen=True)
+class Later:
+    """지금 보낼 말과, 시간이 걸려 나중에 보낼 말.
+
+    듣기 루프는 한 건씩 차례로 처리한다. 보고서(1분쯤)를 그 자리에서 기다리면 그동안 `/status` 도
+    버튼도 밀리고, 기다리다 한 번 더 누르면 보고서가 두 통 온다(JAR-027 리뷰 재현). 그래서 "쓰는
+    중"을 먼저 보내고 보고서는 따로 기다려 보낸다.
+    """
+
+    now: str
+    then: Awaitable[str]
+
+
+# 보고서를 쓰는 중이라고 보는 최대 시간. 쓰다가 죽어 표시가 남아도 이만큼 지나면 다시 쓸 수 있다.
+WRITING_FOR = timedelta(minutes=15)
 
 
 @dataclass
@@ -73,6 +92,10 @@ class Conversationalist:
     commands: Dict[str, Callable[[datetime], str]] = field(default_factory=dict)
     # 자비스가 먼저 건 말의 기억(게이트와 같은 것). 👍👎 를 남기고 `/status` 가 센다.
     speech: Optional[SpeechLog] = None
+    # `/report` 를 쓰는 쪽. 없으면 그 명령은 안 붙었다고 답한다.
+    reporter: Optional[Reporter] = None
+    # 보고서를 쓰기 시작한 때. 쓰는 중에 또 부르면 하나 더 쓰지 않는다.
+    _writing_since: Optional[datetime] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.commands = {
@@ -85,12 +108,15 @@ class Conversationalist:
             "/start": self._help,
         }
 
-    async def reply(self, incoming: Incoming, now: datetime) -> Optional[str]:
+    async def reply(self, incoming: Incoming, now: datetime) -> Union[str, Later, None]:
         if incoming.is_action:
             return self._react(incoming.action, now)
 
         text = incoming.text.strip()
         head = text.split()[0].lower() if text else ""
+        if head == "/report":
+            # 명령어 꼴이지만 생각을 시키는 요청이다 — DB 조회로 답이 안 나온다(brain/_GUIDE).
+            return self._report(now)
         if head in self.commands:
             return self.commands[head](now)
 
@@ -103,8 +129,23 @@ class Conversationalist:
             "뭐든 물어봐. 명령어도 있어.\n"
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
-            "/topics  내가 너에 대해 아는 것(주제 나무)"
+            "/topics  내가 너에 대해 아는 것(주제 나무)\n"
+            "/report  요즘의 너 — 보고서(1분쯤 걸려)"
         )
+
+    def _report(self, now: datetime) -> Union[str, Later]:
+        if self.reporter is None:
+            return "보고서는 아직 안 붙었어."
+        if self._writing_since is not None and now - self._writing_since < WRITING_FOR:
+            return "이미 쓰는 중이야. 끝나면 보낼게."
+        self._writing_since = now
+        return Later(now="쓰는 중이야. 1분쯤 걸려.", then=self._write(self.reporter, now))
+
+    async def _write(self, reporter: Reporter, now: datetime) -> str:
+        try:
+            return await reporter.write(now)
+        finally:
+            self._writing_since = None
 
     def _react(self, action: str, now: datetime) -> str:
         """버튼. 모르는 버튼을 삼키면 눌렀는데 아무 일도 안 일어난 것처럼 보이므로 그대로 말한다."""

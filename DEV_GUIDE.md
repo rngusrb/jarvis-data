@@ -85,6 +85,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 회고 시각 | `app/main.py` — `REFLECT_AT` (되감기도 같은 시각) |
 | 관심사로 먼저 말 거는 조건·시간대 | `src/triggers/topics.py` — `TopicWatch` |
 | 관심사 얘기 간격(줄기) | `app/main.py` — `family_cooldowns` |
+| `/report` 보고서의 재료·지시문 | `app/main.py` — `build_reporter`, `src/brain/report.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
 | 감지 기준 바꾸기 | `src/triggers/` — 백테스트 수치를 근거로 |
@@ -103,7 +104,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |---------|------|------|
 | `Channel` | 텔레그램 | iOS 푸시 |
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
-| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 | 캘린더 · 프로필 |
+| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 · 최근 사건 | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
 | `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 | 쇼핑 |
 | `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 (위치 사건) | 앱·웹 사건 |

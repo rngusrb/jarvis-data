@@ -65,6 +65,15 @@ probe = Insight(trigger="대화", severity=Severity.INFO, ...)
 맥락은 "신호에 대한 맥락"이 아니라 **"이 사람에 대한 맥락"**이다. 신호는 선택이다.
 타입을 속이면 거짓말이 아래로 전파된다.
 
+### ❌ 플랫폼 지시문에 섹터의 사실을 적지 않는다
+```python
+# ❌ 금지 — SYSTEM_PROMPT = "... 하루는 새벽 5시에 바뀐다 ..."   # interest 섹터의 DAY_STARTS
+# ✅ 대신 — 그 기록의 카드가 읽는 법을 들고 온다(TraceKind.reading), 지시문은 "읽는 법을 따른다"만
+```
+**사고 이력**: 2026-11-05 JAR-027 리뷰. 보고서 지시문에 하루 요약의 날 경계(새벽 5시)를 적었다. 섹터가 경계를
+바꾸면 지시문만 조용히 틀린다 — 모델은 바뀐 요약을 옛 경계로 읽는다. 같은 리뷰에서 사건 이름(`wallet`)의 뜻도
+플랫폼이 짐작해 "교통카드 탭"으로 적었는데 실제 설정은 모든 결제였다(낮 결제 7건) — 뜻은 사건 카드(`labels`)에 있다.
+
 ### ❌ 수집 현황만 주고 값을 빼먹지 않는다
 **이유**: `CollectionStatusProvider` 는 "뭐가 수집 중인가"를 알려주고 값은 안 준다.
 그것만 있으면 자비스가 자기 데이터를 두고도 판단을 못 한다. `RecentValuesProvider`
@@ -78,6 +87,7 @@ probe = Insight(trigger="대화", severity=Severity.INFO, ...)
 ### ❌ 명령어 답에 LLM 을 쓰지 않는다
 **이유**: "지금 뭘 알고 있나"는 자비스가 생각할 필요가 없는 질문이다.
 DB 조회로 즉답이 나오는데 3090 을 데우고 기다릴 이유가 없다.
+`/report` 는 명령어 꼴이지만 이 규칙의 대상이 아니다 — DB 조회로 답이 안 나오고 생각을 시키는 요청이다(1분쯤).
 
 ### ❌ 말 안 걸기로 한 판정을 버리지 않는다
 ```python
@@ -205,6 +215,8 @@ tests:
   - tests/unit/test_trace_digest_provider.py
   - tests/unit/test_topic_provider.py
   - tests/unit/test_feedback.py
+  - tests/unit/test_report.py
+  - tests/unit/test_event_digest_provider.py
 ```
 
 ```bash
@@ -217,12 +229,13 @@ python scripts/harness.py src/brain/
 
 | 파일 | 책임 |
 |------|------|
-| `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
+| `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어. 연결부터 안 된 실패인지(`unreachable`) — 꺼짐과 거절은 사용자에게 할 말이 다르다 |
 | `reflect.py` | 회고. 나무와 아직 안 붙은 흔적(번호와 함께)을 보여주고 연산을 받아 검사·적용한다. 오래 잠잠한 주제는 먼저 접고, 못 읽은 응답은 시끄럽게 실패(기록은 남긴다). 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
 | `gate.py` | 싼 필터. severity 임계값 + 같은 신호는 한 번(그 트리거의 모든 기록에서, 신호의 때보다 뒤의 판단까지) + 줄기 간격(`topic:*` 를 묶어, 말한 것만) + 트리거별 쿨다운 |
 | `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지, 먼저 건 말의 표와 👍👎 |
+| `report.py` | `/report` — 넓게 모아(잠잠 빼고 나무·하루 요약 14일·값 90일·사건 14일) "요즘의 너"를 쓴다. 읽는 법은 재료 묶음이 들고 온다(섹터가 적음), 지시문엔 일반 규칙만. 실패해도 늘 답한다(닿지 않음과 거절을 나눠서) |
 | `feedback.py` | 👍👎 — 버튼 모양(한 곳에만), 사람 얘기에 대한 반응을 판단 맥락으로(`FeedbackProvider`, 누른 때부터 30일) |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |
-| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약·요즘 관심사(주제 나무)) |
+| `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약·요즘 관심사(주제 나무)·최근 사건(날마다 한 줄, 이름의 뜻은 카드에서)) |
 | `prompts.py` | 프롬프트 템플릿 + SKIP 파싱 |

@@ -180,7 +180,7 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 
 | 파일 | 책임 |
 |------|------|
-| `traces.py` | 흔적 카드 + 레지스트리. 지표 카드의 텍스트판. 하루 요약(`digest`) 자리 — 요약 방법은 섹터가 단다 |
+| `traces.py` | 흔적 카드 + 레지스트리. 지표 카드의 텍스트판. 하루 요약(`digest`) 자리와 그 요약을 읽는 법(`reading`) — 둘 다 섹터가 단다 |
 | `topics.py` | 주제 나무 — 노드·연결, LLM 연산 검사(`plan`: 보여준 흔적만 근거, 이름·자리·합치기·접기는 이유가 있어야), 하이라이트(`trend`: 근거가 있던 날의 분포), 오래 잠잠하면 접기(`stale`), 이번에 깨어난 때(`awakened` → `Standing.since`), 가지까지 합친 최근 근거(`latest`), 관심사 줄기 이름(`TOPIC_FAMILY`) |
 | `models.py` | `Observation`·`Insight`·`Severity` + 저장소 프로토콜. 수집 감시의 트리거 이름(`COLLECTION_TRIGGER` — 판단 지시문·`/status` 가 같이 쓴다) |
 | `metrics.py` | 지표 카드(`Metric`)와 레지스트리 |
@@ -188,5 +188,5 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `config.py` | 환경변수 기반 설정. 비밀값은 `.env` 로만 |
 | `clock.py` | 시각 규칙 두 가지 — 저장·비교용 UTC 표기(`stamp`), 보여줄 한국 시간(`KST`, `local`). LLM 에게 알려줄 지금(`shown`, 요일까지 — `WEEKDAYS`) |
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다 |
-| `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다) |
+| `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다). 사건 이름의 뜻(`labels`·`describe` — 섹터가 단다) |
 | `places.py` | 장소 계산 — 거리, 반경 안 가장 가까운 곳, 중심 옮기기. 번호가 바뀌지 않게 하나씩 붙인다 |

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from src.core.traces import TraceKind
-from src.sectors.interest.digest import app_days, web_days
+from src.sectors.interest.digest import READING, app_days, web_days
 
 WEB_VISIT = TraceKind(
     kind="web_visit",
@@ -30,6 +30,7 @@ WEB_VISIT = TraceKind(
     # 회고는 낱줄로 훑는다(reflect). 반응·대화의 맥락에는 하루 요약으로 — 민감한 것까지 넣을지는
     # 조립하는 곳(app/main.py)이 정한다.
     digest=web_days,
+    reading=READING,
 )
 
 # 무엇을 알아보는지(웹)와 함께 무엇을 하며 시간을 보내는지(앱)도 관심의 한 면이다.
@@ -44,6 +45,7 @@ MAC_APP = TraceKind(
     # 회고(7일)와 자비스의 맥락(어제·오늘)이 같은 요약을 읽는다.
     reflect=False,
     digest=app_days,
+    reading=READING,
     # 민감하지 않다고 봤다 — 앱 이름과 쓴 시간뿐이다. 요약이 반응·대화의 맥락에 들어가 텔레그램
     # 답에 앱 이름이 나올 수 있다는 걸 알고 정했다(JAR-019). 싫으면 True 로 — 맥락에서 빠진다.
     sensitive=False,

@@ -91,3 +91,10 @@ def test_길이_한도에서_잘린_답은_돌려주되_남긴다(caplog: Any) -
     with caplog.at_level("WARNING", logger="src.brain.client"):
         assert asyncio.run(_client(reply).ask("나무")) == '{"ops": [{"op": "no'
     assert "max_tokens" in caplog.text and "8192" in caplog.text
+
+
+def test_연결은_따로_짧게_기다린다() -> None:
+    """데스크탑이 꺼져 패킷이 버려지면 연결 시도가 보고서 한도(10분)를 다 썼다(리뷰 재현)."""
+    client = VLLMClient("http://vllm", timeout=600.0)
+    timeout = client._client.timeout
+    assert timeout.connect == 10.0 and timeout.read == 600.0

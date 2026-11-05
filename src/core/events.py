@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from src.core.models import Event
 
@@ -29,10 +29,20 @@ class EventKind:
     # 표본 모양으로 올 때 value 칸이 뜻하는 것(meta 에 이 이름으로 남긴다). 플랫폼이
     # "value 는 GPS 정확도"를 박아두면 두 번째 사건 종류의 값이 조용히 정확도가 된다.
     value_as: Optional[str] = None
+    # 사건 이름(label)이 사람 말로 무엇인가 — ("leave_home", "집을 나섬"). 맥락과 보고서가 쓴다.
+    # 섹터가 단다. 플랫폼이 "wallet 은 교통카드 탭"을 알면 섹터를 아는 것이다.
+    labels: Tuple[Tuple[str, str], ...] = ()
 
     @property
     def active(self) -> bool:
         return self.collector is not None
+
+    def describe(self, label: str) -> str:
+        """사건 이름의 뜻. 카드가 모르는 이름은 그대로 둔다 — 조용히 빼면 그런 사건이 없었던 것처럼
+        보인다. 이름이 없는 사건(2026-10 전 옛 기록)은 종류 이름으로."""
+        if not label:
+            return self.label
+        return dict(self.labels).get(label, label)
 
 
 class EventSource(Protocol):

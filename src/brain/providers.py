@@ -1,18 +1,21 @@
 """실제 맥락 제공자들.
 
-지금은 이미 손에 있는 정보(관측치 추이, 최근 발화, 흔적 요약, 주제 나무)만 쓴다. 캘린더 파서와
-저장소가 생기면 ScheduleProvider, ProfileProvider 같은 게 여기 늘어난다.
+지금은 이미 손에 있는 정보(관측치 추이와 최근 값, 최근 발화, 수집 현황, 흔적 하루 요약,
+주제 나무, 최근 사건)만 쓴다. 반응·대화·보고서가 같은 제공자를 창 크기만 달리해 쓴다 —
+보고서 쪽 조립은 `app/main.py` 의 `build_reporter`. 캘린더 파서와 저장소가 생기면
+ScheduleProvider 같은 게 여기 늘어난다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Protocol, Sequence
+from datetime import date, datetime, time, timedelta
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
 from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
-from src.core.clock import local
+from src.core.clock import KST, WEEKDAYS, local
+from src.core.events import EventKind, EventSource
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
 from src.core.topics import RECENT_DAYS, Ground, Tree, Trend, standings
@@ -100,6 +103,10 @@ class CollectionStatusProvider:
     # 되거나 목록에서 사라져, 자비스가 위치를 모으고 있다는 것 자체를 모른다.
     cards: Sequence[Collected]
     name: str = "collection_status"
+    # 일부러 접은 카드도 보인다 — 반응·대화가 접은 지표를 되살리라고 조르지 않게(아래). 보고서는
+    # 끈다: "수집 중단"을 빈 곳으로 읽어 접은 지표(걸음수, 출퇴근 시각)를 "모르는 것"에 적었다.
+    # 지시문에 "접은 것"이라고 적어도 3번 중 2번 그랬다(2026-11-05 실데이터).
+    retired: bool = True
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         last_seen = self.catalog.last_seen()
@@ -109,6 +116,8 @@ class CollectionStatusProvider:
         for kind in sorted(set(known) | set(last_seen)):
             metric = known.get(kind)
             at = last_seen.get(kind)
+            if metric is not None and not metric.active and not self.retired:
+                continue
 
             if metric is None:
                 state = "수집기 없음 — 아직 만들지 않았다"
@@ -171,7 +180,10 @@ class RecentValuesProvider:
 
         if not chunks:
             return None
-        return ContextBlock(label=f"최근 {self.window.days}일 값", body="\n".join(chunks))
+        # 몇 개까지 보이는지도 이름에 적는다 — "최근 90일 값"에 14개만 나오면 석 달 중 14일만 기록된
+        # 것으로 읽힌다(JAR-027 리뷰 재현).
+        label = f"최근 {self.window.days}일 값(지표마다 최근 {self.max_points}개까지)"
+        return ContextBlock(label=label, body="\n".join(chunks))
 
 
 class RecentTraces(Protocol):
@@ -209,7 +221,9 @@ class TraceDigestProvider:
                 continue
             days = card.digest(self.source.recent(card.kind, since), since, now)
             if days:
-                chunks.append(f"- {card.label}:\n" + "\n".join(f"  {day}" for day in days))
+                # 읽는 법은 요약을 만드는 섹터가 적는다(하루가 언제 바뀌나 등).
+                how = f" — 읽는 법: {card.reading}" if card.reading else ""
+                chunks.append(f"- {card.label}{how}:\n" + "\n".join(f"  {day}" for day in days))
 
         if not chunks:
             return None
@@ -235,14 +249,21 @@ class TopicProvider:
 
     회고가 매일 가꾸는 나무를 반응·대화가 읽는 자리다. 옛 믿음은 대화만 읽었고 먼저 말 거는 쪽은
     안 읽었다. "어젯밤 늦게 잠들었다" 옆에 "요즘 자소서를 쓴다"가 있어야 말이 사람 얘기가 된다.
+
+    보고서는 더 넓게 본다 — `trends` 에 시드는 중·처음 보임까지, `detail` 로 근거 수와 근거가
+    있던 날.
     """
 
     topics: TopicSource
     name: str = "topics"
+    trends: Tuple[Trend, ...] = AWAKE
+    detail: bool = False
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         board = [
-            s for s in standings(self.topics.load(), self.topics.grounds(), now) if s.trend in AWAKE
+            s
+            for s in standings(self.topics.load(), self.topics.grounds(), now)
+            if s.trend in self.trends
         ]
         if not board:
             return None
@@ -253,8 +274,64 @@ class TopicProvider:
                 f"- {' › '.join(s.path)} — {s.trend.value}"
                 f"(최근 {RECENT_DAYS}일 중 {s.recent_days}일)"
             )
+            if self.detail and s.last is not None:
+                # "근거가 있던 날"이라고 쓴다 — "N일"만 쓰면 모델이 연속 일수로 읽었다
+                # (2026-11-05 보고서 "43일째 꾸준").
+                line += (
+                    f", 근거 {s.count}개 · 근거가 있던 날 {s.days}일 · 마지막 {local(s.last):%m-%d}"
+                )
             latest = notes.get(s.node.id)
             if latest:
                 line += f": {latest[0].text}"
             lines.append(line)
         return ContextBlock(label="요즘 관심사(주제 나무)", body="\n".join(lines))
+
+
+@dataclass
+class EventDigestProvider:
+    """최근 사건(위치 등)을 날마다 한 줄로 — 언제 어디를 벗어났고 어디서 탭했나.
+
+    사건은 출근 트리거만 보고 맥락에는 없었다. 그래서 "어제 몇 시에 나갔지?"에 답할 재료가 없었다.
+    사건 이름의 뜻은 카드가 들고 온다(`EventKind.describe`) — 플랫폼은 "wallet"이 뭔지 모른다.
+
+    날은 **자정**에 바뀌고 온전한 날만 보인다(오늘은 지금까지). 시각으로 창을 자르면 첫날이 잘린 채
+    온전한 하루처럼 보여 "그저께 몇 시에 나갔지?"에 틀린 답을 준다. 사건이 없는 날은 "기록 없음" —
+    줄을 빼면 그날을 건너뛴 걸 모른다(JAR-028 리뷰 재현).
+    """
+
+    events: EventSource
+    kinds: Sequence[EventKind]
+    name: str = "event_digest"
+    # 어제와 오늘. 보고서는 2주를 본다.
+    days: int = 2
+
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        today = local(now).date()
+        first = today - timedelta(days=self.days - 1)
+        since = datetime.combine(first, time(0), tzinfo=KST)
+        lines: List[str] = []
+        for card in self.kinds:
+            if not card.active:
+                continue
+            found = sorted(
+                (e for e in self.events.recent(card.kind, since) if since <= e.at <= now),
+                key=lambda e: e.at,
+            )
+            if not found:
+                continue
+            by_day: Dict[date, List[str]] = {}
+            for e in found:
+                when = local(e.at)
+                place = f"(장소 #{e.place_id})" if e.place_id is not None else ""
+                by_day.setdefault(when.date(), []).append(
+                    f"{when:%H:%M} {card.describe(e.label)}{place}"
+                )
+            for offset in range(self.days):
+                day = first + timedelta(days=offset)
+                items = by_day.get(day)
+                body = " · ".join(items) if items else "기록 없음"
+                lines.append(f"- {card.label} {day:%m-%d}({WEEKDAYS[day.weekday()]}): {body}")
+        if not lines:
+            return None
+        label = f"최근 {self.days}일 사건(날은 자정에 바뀐다, 오늘은 지금까지)"
+        return ContextBlock(label=label, body="\n".join(lines))
