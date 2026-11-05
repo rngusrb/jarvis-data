@@ -18,6 +18,7 @@ from src.core.topics import (
     Op,
     Tree,
     Trend,
+    awakened,
     churn,
     plan,
     stale,
@@ -417,3 +418,13 @@ def test_a_ref_that_lands_on_an_existing_topic_says_where_it_went() -> None:
     tree = _tree(_node(1, "취업"), _node(2, "여행"))
     p = plan(tree, [Op("create", ref="1", name="여행", evidence=(100,))], SHOWN, NOW)
     assert any("이 응답에서 1 는 #2다" in n for n in p.notices)
+
+
+def test_awakened_is_the_first_evidence_after_the_last_long_quiet() -> None:
+    times = _days_ago(60, 59, 20, 3, 1)
+    # 59 → 20 은 39일 쉼(28일 이상) → 20일 전부터 깨어남. 20 → 3 은 17일이라 이어진다.
+    assert awakened(times, NOW) == NOW - timedelta(days=20)
+    assert awakened(_days_ago(5, 4), NOW) == NOW - timedelta(days=5)
+    assert awakened([], NOW) is None
+    # 지금 뒤의 근거는 안 본다.
+    assert awakened([NOW + timedelta(days=1)], NOW) is None

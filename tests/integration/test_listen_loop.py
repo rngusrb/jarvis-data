@@ -119,3 +119,25 @@ def test_듣기_실패가_루프를_죽이지_않는다(tmp_path: Path) -> None:
         log=SQLiteConversation(tmp_path / "t.db"),
     )
     assert asyncio.run(loop.run_once()) == 0
+
+
+def test_버튼을_누르면_빙글이를_먼저_멈춘다(tmp_path: Path) -> None:
+    """텔레그램은 답을 기다리며 버튼에 빙글이를 돌린다. 받았다고 먼저 알려준다."""
+
+    @dataclass
+    class ButtonSource(ScriptedSource):
+        acked: List[str] = field(default_factory=list)
+
+        async def ack(self, callback_id: str) -> None:
+            self.acked.append(callback_id)
+
+    press = Incoming(text="", at=NOW, cursor=1, action="fb:+:t1", meta={"callback_id": "cb-9"})
+    source = ButtonSource([[press]])
+    loop = ListenLoop(
+        source=source,
+        responder=EchoResponder(),
+        speaker=RecordingSpeaker(),
+        log=SQLiteConversation(tmp_path / "t.db"),
+    )
+    asyncio.run(loop.run_once())
+    assert source.acked == ["cb-9"]

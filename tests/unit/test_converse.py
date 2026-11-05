@@ -18,6 +18,7 @@ from src.channels.base import Incoming
 from src.core.models import Observation, Trace
 from src.core.topics import Op, plan
 from src.storage.conversation import SQLiteConversation
+from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
@@ -59,6 +60,7 @@ def _build(tmp_path: Path, reasoner: Optional[CountingReasoner] = None) -> Conve
         source=store,
         history=SQLiteConversation(db),
         providers=(TopicProvider(topics=SQLiteTopicStore(db)),),
+        speech=SQLiteSpeechLog(db),
     )
 
 
@@ -195,3 +197,40 @@ def test_topics_fits_in_one_telegram_message(tmp_path: Path) -> None:
 
     assert answer is not None and len(answer) <= 4096
     assert answer.splitlines()[-1].startswith("… 외 ")
+
+
+def _press(c: Conversationalist, action: str) -> Optional[str]:
+    return asyncio.run(c.reply(Incoming(text="", at=NOW, cursor=1, action=action), NOW))
+
+
+def test_엄지를_누르면_그_말에_반응이_남는다(tmp_path: Path) -> None:
+    c = _build(tmp_path)
+    assert c.speech is not None
+    c.speech.record("topic:7", NOW, "요즘 정보처리기사 보네", token="t7")
+    c.speech.record("late_sleep", NOW, "어젯밤 늦게 잤네", token="s1")
+
+    assert "이 관심사는 한 달 동안 먼저 안 꺼낼게" in (_press(c, "fb:-:t7") or "")
+    assert "계속할게" in (_press(c, "fb:+:s1") or "")
+    assert [(r.trigger, r.feedback) for r in c.speech.rated(NOW - timedelta(days=1))] == [
+        ("topic:7", -1),
+        ("late_sleep", 1),
+    ]
+
+
+def test_기억에_없는_말의_엄지는_남긴_척하지_않는다(tmp_path: Path) -> None:
+    assert "반응을 못 남겼어" in (_press(_build(tmp_path), "fb:+:없는표") or "")
+
+
+def test_상태에_먼저_건_말을_사람_얘기와_수집_경고로_센다(tmp_path: Path) -> None:
+    """4단계 끝 기준: 사람에 대한 말이 수집 경고보다 많아짐."""
+    c = _build(tmp_path)
+    assert c.speech is not None
+    c.speech.record("collection", NOW - timedelta(days=1), "폰 데이터가 끊겼어", token="a")
+    c.speech.record("stale_data:sleep_hours", NOW - timedelta(days=2), "수면이 안 와", token="b")
+    c.speech.record("topic:3", NOW - timedelta(hours=3), "요즘 자격증 보네", token="c")
+    c.speech.record("late_sleep", NOW - timedelta(days=9), "옛날 얘기", token="d")
+    c.speech.record("topic:4", NOW, "말 안 걸기로 함", spoken=False)
+    c.speech.rate("c", 1)
+
+    answer = _ask(c, "/status") or ""
+    assert "최근 7일 내가 먼저 건 말: 사람 얘기 1 · 수집 경고 2 · 👍 1 👎 0" in answer

@@ -82,3 +82,36 @@ def test_무엇에_대한_판단인지_모르는_옛_기록은_쿨다운만_본�
     insight = _insight(Severity.NOTABLE)
     gate.log.record(insight.trigger, NOW, "어젯밤 잘 못 잤네")
     assert gate.allows(insight, NOW + timedelta(hours=7)) is True
+
+
+def test_같은_신호는_다른_신호가_끼어든_뒤에도_다시_묻지_않는다() -> None:
+    """주제 A, B, 다시 A — 마지막 기록만 보면 A 를 또 묻는다."""
+    gate = Gate(cooldown=timedelta(0))
+    first = Insight(trigger="topic", summary="A", severity=Severity.NOTABLE, at=NOW)
+    second = Insight(trigger="topic", summary="B", severity=Severity.NOTABLE, at=NOW + timedelta(1))
+    gate.log.record("topic", NOW, "A 얘기", about=first.at)
+    gate.log.record("topic", NOW + timedelta(hours=1), "B 얘기", about=second.at)
+    assert gate.allows(first, NOW + timedelta(days=3)) is False
+
+
+def test_줄기로_마지막에_말한_뒤엔_다른_주제도_기다린다() -> None:
+    """뜨는 주제 열 개가 한 주기에 열 번 말하지 않게. 줄기는 트리거 이름의 앞부분이다."""
+    gate = Gate(family_cooldowns={"topic": timedelta(hours=12)})
+    gate.log.record("topic:1", NOW, "자격증 얘기", spoken=True, about=NOW - timedelta(days=2))
+    other = Insight(trigger="topic:2", summary="B", severity=Severity.NOTABLE, at=NOW)
+    assert gate.allows(other, NOW + timedelta(hours=1)) is False
+    assert gate.allows(other, NOW + timedelta(hours=13)) is True
+
+
+def test_말_안_걸기로_한_판단은_줄기_간격을_쓰지_않는다() -> None:
+    """초기엔 수다스럽게 — A 를 넘겼다고 B 까지 반나절 기다리지 않는다."""
+    gate = Gate(family_cooldowns={"topic": timedelta(hours=12)})
+    gate.log.record("topic:1", NOW, "말 안 걸기로 함", spoken=False, about=NOW)
+    other = Insight(trigger="topic:2", summary="B", severity=Severity.NOTABLE, at=NOW)
+    assert gate.allows(other, NOW + timedelta(minutes=30)) is True
+
+
+def test_줄기가_없는_트리거는_줄기_간격과_상관없다() -> None:
+    gate = Gate(family_cooldowns={"topic": timedelta(hours=12)})
+    gate.log.record("topic:1", NOW, "자격증 얘기", spoken=True, about=NOW)
+    assert gate.allows(_insight(Severity.NOTABLE, "topic"), NOW + timedelta(hours=1)) is True

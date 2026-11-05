@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from src.brain.agent import JarvisAgent
 from src.brain.client import VLLMClient
 from src.brain.converse import Conversationalist
+from src.brain.feedback import FeedbackProvider
 from src.brain.gate import Gate
 from src.brain.providers import (
     Collected,
@@ -54,6 +55,8 @@ from src.storage.sqlite import SQLiteStore
 from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
 from src.triggers.collection import CollectionWatch, Watched
+from src.triggers.topics import FAMILY as TOPIC_FAMILY
+from src.triggers.topics import TopicWatch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
@@ -177,6 +180,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 통과시킨다. late_sleep 에 16시간을 줬을 땐 그날 밤 한 번 더 물으면서 다음 날 아침의
             # 새 밤까지 오후로 밀었다(JAR-018 리뷰 재현).
         },
+        # 관심사 얘기는 주제마다 트리거가 따로라(`topic:12`) 묶어서 센다 — 말한 뒤 반나절. 초기엔
+        # 수다스럽게(하루 두 번까지 — 말 걸 시간대가 10~21시), 줄이는 건 👍👎 로.
+        family_cooldowns={TOPIC_FAMILY: timedelta(hours=12)},
     )
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
@@ -197,6 +203,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             TraceDigestProvider(source=traces, kinds=trace_kinds.all(), include_sensitive=True),
             # 회고가 매일 가꾸는 주제 나무에서 뜨는 중·꾸준한 주제. 대화도 같은 것을 본다.
             TopicProvider(topics=SQLiteTopicStore(settings.db_path)),
+            # 내가 먼저 건 말에 사용자가 👍👎 한 것. 줄이는 판단을 모델이 먼저 읽는다.
+            FeedbackProvider(log=gate.log),
         ),
     )
 
@@ -216,6 +224,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         snapshot=catalog.last_seen,
         event_triggers=event_triggers,
         events=events,
+        # 회고가 가꾸는 나무에서 요즘 뜨는 관심사로 먼저 말을 건다(한 주기에 하나).
+        topic_watch=TopicWatch(),
+        topics=SQLiteTopicStore(settings.db_path),
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis
@@ -253,6 +264,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 history=conversation,
                 providers=agent.providers,
                 stale_after={c.kind: c.stale_after for c in cards},
+                # 게이트와 같은 기억 — 👍👎 를 남기고 /status 가 먼저 건 말을 센다.
+                speech=gate.log,
             ),
             speaker=channel,
             log=conversation,

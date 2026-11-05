@@ -69,6 +69,14 @@ class ListenLoop:
                 incoming.action or incoming.text,
                 meta={"action": incoming.action} if incoming.is_action else None,
             )
+            callback = incoming.meta.get("callback_id")
+            ack = getattr(self.source, "ack", None)
+            if callback and ack is not None:
+                # 버튼을 누르면 텔레그램이 답을 기다리며 빙글이를 돌린다. 받았다고 먼저 알려준다.
+                try:
+                    await ack(str(callback))
+                except Exception:
+                    logger.exception("버튼 응답(ack) 실패 — 답은 그대로 보낸다")
             try:
                 answer = await self.responder.reply(incoming, datetime.now(timezone.utc))
             except Exception:

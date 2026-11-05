@@ -185,6 +185,7 @@ tests:
   - tests/unit/test_reflect.py
   - tests/unit/test_trace_digest_provider.py
   - tests/unit/test_topic_provider.py
+  - tests/unit/test_feedback.py
 ```
 
 ```bash
@@ -200,8 +201,9 @@ python scripts/harness.py src/brain/
 | `client.py` | `Reasoner` 프로토콜 + vLLM 구현. `<think>` 제거, null content 방어 |
 | `reflect.py` | 회고. 나무와 아직 안 붙은 흔적(번호와 함께)을 보여주고 연산을 받아 검사·적용한다. 오래 잠잠한 주제는 먼저 접고, 못 읽은 응답은 시끄럽게 실패(기록은 남긴다). 낱줄로 안 훑는 종류(앱 사용)는 카드의 하루 요약으로 |
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정 |
-| `gate.py` | 싼 필터. severity 임계값 + 같은 신호(`insight.at`)는 한 번 + 트리거별 쿨다운 |
-| `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지 |
+| `gate.py` | 싼 필터. severity 임계값 + 같은 신호(`insight.at`)는 한 번(그 트리거의 모든 기록에서) + 줄기 간격(`topic:*` 를 묶어, 말한 것만) + 트리거별 쿨다운 |
+| `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지, 먼저 건 말의 표와 👍👎 |
+| `feedback.py` | 👍👎 — 버튼 모양(한 곳에만), 반응을 판단 맥락으로(`FeedbackProvider`) |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |
 | `providers.py` | 실제 맥락 제공자 (관측 추이·최근 발화·수집 현황·최근 값·흔적 하루 요약·요즘 관심사(주제 나무)) |
 | `prompts.py` | 프롬프트 템플릿 + SKIP 파싱 |

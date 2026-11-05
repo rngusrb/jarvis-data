@@ -36,6 +36,8 @@ DAY = timedelta(days=1)
 # 쏟아진 검색 쉰 개가 꾸준한 관심으로 읽히지 않게 하려는 것이다.
 RECENT_DAYS = 7
 BEFORE_DAYS = 21
+# 이만큼 근거가 없으면 잠잠이다(하이라이트의 두 창을 합친 길이). 다시 보이면 새로 깨어난 것이다.
+QUIET_GAP = timedelta(days=RECENT_DAYS + BEFORE_DAYS)
 # 이만큼 근거가 없으면 코드가 접는다. 줄이는 쪽이 없으면 몇 달 뒤 옛 관심사가 프롬프트를 채운다.
 RETIRE_AFTER = timedelta(days=60)
 # 새 주제의 최소 근거. 흔적 하나짜리는 관심사가 아니라 스쳐간 호기심이다(옛 회고 규칙).
@@ -294,6 +296,23 @@ class Standing:
     last: Optional[datetime]
     # 이 주제에 **직접** 붙은 근거, 최근 것부터.
     own: Tuple[Ground, ...]
+    # 이번에 깨어난 때 — 잠잠(28일 넘게 근거 없음)했다가 다시 보인 첫 근거. 안 쉬었으면 첫 근거.
+    # 관심사로 먼저 말 걸기가 "같은 깨어남은 한 번만" 판단하려고 본다.
+    since: Optional[datetime] = None
+    # 맨 처음 근거. since 보다 앞이면 "다시" 깨어난 것이다.
+    first: Optional[datetime] = None
+
+
+def awakened(times: Sequence[datetime], now: datetime) -> Optional[datetime]:
+    """근거 사이가 잠잠의 길이(28일) 이상 벌어진 마지막 자리 뒤의 첫 근거. 근거가 없으면 None."""
+    seen = sorted(t for t in times if t <= now)
+    if not seen:
+        return None
+    start = seen[0]
+    for before, after in zip(seen, seen[1:]):
+        if after - before >= QUIET_GAP:
+            start = after
+    return start
 
 
 def standings(tree: Tree, grounds: Sequence[Ground], now: datetime) -> List[Standing]:
@@ -325,6 +344,8 @@ def standings(tree: Tree, grounds: Sequence[Ground], now: datetime) -> List[Stan
                 recent_days=sum(1 for a in ages if a < RECENT_DAYS),
                 last=max(times) if times else None,
                 own=tuple(sorted(own.get(node.id, []), key=lambda g: g.at, reverse=True)),
+                since=awakened(times, now),
+                first=min(times) if times else None,
             )
         )
         for kid in tree.children(node.id):

@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Sequence
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
 
 import pytest
 
 from src.brain.agent import JarvisAgent
 from src.brain.gate import Gate
-from src.core.models import Event, Insight, Observation, Severity
+from src.core.models import Event, Insight, Observation, Severity, Trace
+from src.core.topics import Op, plan
 from src.runtime.loop import JarvisLoop
 from src.sectors.health.triggers import LateSleepTrigger, SleepDropTrigger
+from src.storage.speech import SQLiteSpeechLog
+from src.storage.topics import SQLiteTopicStore
+from src.storage.traces import SQLiteTraceStore
+from src.triggers.topics import TopicWatch
 
 BASE = datetime(2026, 8, 1, tzinfo=timezone.utc)
 KST = timezone(timedelta(hours=9))
@@ -28,11 +34,13 @@ class RecordingChannel:
     name: str = "recording"
     sent: List[str] = field(default_factory=list)
     delay: float = 0.0
+    buttons: List[List[Dict[str, str]]] = field(default_factory=list)
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
         if self.delay:
             await asyncio.sleep(self.delay)
         self.sent.append(text)
+        self.buttons.append(buttons or [])
 
 
 @dataclass
@@ -110,7 +118,7 @@ def test_발송이_터져도_루프는_살아있다() -> None:
     class BrokenChannel:
         name: str = "broken"
 
-        async def send(self, text: str) -> None:
+        async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
             raise RuntimeError("텔레그램 죽음")
 
     loop = JarvisLoop(
@@ -252,7 +260,7 @@ def test_send_failure_still_retries() -> None:
     class BrokenChannel:
         name: str = "broken"
 
-        async def send(self, text: str) -> None:
+        async def send(self, text: str, buttons: Optional[List[Dict[str, str]]] = None) -> None:
             raise ConnectionError("발송 실패")
 
     reasoner = FakeReasoner()
@@ -526,3 +534,82 @@ def test_같은_밤은_한_번만_묻고_다음_밤은_들어오자마자_묻는
         for day, times in enumerate(judged.values()):
             arrived = first + timedelta(days=day, hours=arrivals[day])
             assert times[0] - arrived < timedelta(minutes=30), (trigger.name, day, times)
+
+
+# ── 관심사로 먼저 말 걸기 (JAR-024·025) ──────────────────────────────
+
+
+def _topic_loop(tmp_path: Path, channel: RecordingChannel, now: datetime) -> JarvisLoop:
+    """요즘 뜨는 주제 둘(사흘·나흘)이 있는 나무와, 관심사 얘기를 반나절에 한 번 하는 게이트."""
+    db = tmp_path / "t.db"
+    traces = SQLiteTraceStore(db)
+    traces.write(
+        [
+            Trace(
+                source="mac_chrome", kind="web_visit", text=f"{who}{d}", at=now - timedelta(days=d)
+            )
+            for who, days in (("자격증", (0.5, 1.5, 2.5)), ("해커톤", (0.5, 1.5, 2.5, 3.5)))
+            for d in days
+        ]
+    )
+    found = traces.recent("web_visit", now - timedelta(days=10))
+    ids = {t.text: t.id for t in found if t.id is not None}
+    topics = SQLiteTopicStore(db)
+    ops = [
+        Op(
+            "create",
+            name=name,
+            evidence=tuple(i for text, i in ids.items() if text.startswith(name)),
+        )
+        for name in ("자격증", "해커톤")
+    ]
+    topics.apply(plan(topics.load(), ops, set(ids.values()), now), now)
+    gate = Gate(log=SQLiteSpeechLog(db), family_cooldowns={"topic": timedelta(hours=12)})
+    return JarvisLoop(
+        source=FakeSource([]),
+        triggers=[],
+        agent=JarvisAgent(reasoner=FakeReasoner(), gate=gate),
+        channel=channel,
+        topic_watch=TopicWatch(),
+        topics=topics,
+        clock=lambda: now,
+    )
+
+
+AFTERNOON = datetime(2026, 11, 5, 6, 0, tzinfo=timezone.utc)  # 한국 15:00
+
+
+def test_뜨는_관심사로_한_번에_하나만_먼저_말을_건다(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    loop = _topic_loop(tmp_path, channel, AFTERNOON)
+
+    assert asyncio.run(loop.run_once()) == 1
+    assert [b["text"] for b in channel.buttons[0]] == ["👍", "👎"]
+    said = loop.agent.gate.log.last_spoken_in("topic")
+    assert said is not None and said.trigger == "topic:2"  # 나흘째인 해커톤이 먼저
+    # 표가 버튼과 기록에 같이 남는다 — 누르면 이 말을 찾아간다.
+    assert said.token is not None and said.token in channel.buttons[0][0]["action"]
+
+    # 30분 뒤: 다른 주제(자격증)도 뜨지만 관심사 얘기는 반나절에 한 번이다.
+    loop.clock = lambda: AFTERNOON + timedelta(minutes=30)
+    assert asyncio.run(loop.run_once()) == 0
+
+
+def test_엄지_아래를_받은_관심사는_다음_차례에서_빠진다(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    loop = _topic_loop(tmp_path, channel, AFTERNOON)
+    asyncio.run(loop.run_once())
+    said = loop.agent.gate.log.last_spoken_in("topic")
+    assert said is not None and said.token is not None
+    loop.agent.gate.log.rate(said.token, -1)
+
+    # 다음 날 한국 10:00 — 줄기 간격(12시간)이 지났고 깨어 있는 시간이다.
+    candidate = loop._topic(AFTERNOON + timedelta(hours=19))
+    assert candidate is not None and candidate.trigger == "topic:1"
+
+
+def test_자는_시간에는_관심사_얘기를_꺼내지_않는다(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    dawn = datetime(2026, 11, 4, 20, 43, tzinfo=timezone.utc)  # 한국 05:43 — 회고 직후 첫 주기
+    assert asyncio.run(_topic_loop(tmp_path, channel, dawn).run_once()) == 0
+    assert channel.sent == []

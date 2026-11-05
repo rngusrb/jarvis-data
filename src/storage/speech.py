@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS speech (
     -- 맥락 제공자는 1 만 본다.
     spoken  INTEGER NOT NULL DEFAULT 1,
     -- 무엇에 대한 판단이었나(신호의 at). 게이트가 같은 밤을 두 번 묻지 않으려고 본다.
-    about   TEXT
+    about   TEXT,
+    -- 먼저 건 말에 붙인 짧은 표(👍👎 버튼이 들고 온다)와 사용자의 반응(1·-1·0).
+    token    TEXT,
+    feedback INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_speech_trigger_at ON speech (trigger, at);
 """
@@ -44,9 +47,16 @@ class SQLiteSpeechLog:
             # 이미 만들어진 DB에는 spoken·about 이 없다. 조용히 빼먹으면 게이트가
             # 다시 새므로 여기서 메꾼다.
             columns = {row[1] for row in conn.execute("PRAGMA table_info(speech)")}
-            for column in ("spoken INTEGER NOT NULL DEFAULT 1", "about TEXT"):
+            for column in (
+                "spoken INTEGER NOT NULL DEFAULT 1",
+                "about TEXT",
+                "token TEXT",
+                "feedback INTEGER NOT NULL DEFAULT 0",
+            ):
                 if column.split()[0] not in columns:
                     conn.execute(f"ALTER TABLE speech ADD COLUMN {column}")
+            # 표는 ALTER 뒤에야 칸이 있다. 이 색인은 버튼이 돌아왔을 때 그 말을 찾는다.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_speech_token ON speech (token)")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -64,19 +74,44 @@ class SQLiteSpeechLog:
         text: str,
         spoken: bool = True,
         about: Optional[datetime] = None,
+        token: Optional[str] = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO speech (trigger, at, text, spoken, about) VALUES (?, ?, ?, ?, ?)",
-                (trigger, stamp(at), text, 1 if spoken else 0, stamp(about) if about else None),
+                "INSERT INTO speech (trigger, at, text, spoken, about, token)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    trigger,
+                    stamp(at),
+                    text,
+                    1 if spoken else 0,
+                    stamp(about) if about else None,
+                    token,
+                ),
             )
 
     def last(self, trigger: str) -> Optional[SpeechRecord]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT trigger, at, text, spoken, about FROM speech "
-                "WHERE trigger = ? ORDER BY at DESC LIMIT 1",
+                f"SELECT {_COLUMNS} FROM speech WHERE trigger = ? ORDER BY at DESC LIMIT 1",
                 (trigger,),
+            ).fetchone()
+        return _to_record(row) if row else None
+
+    def judged(self, trigger: str, about: datetime) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM speech WHERE trigger = ? AND about = ? LIMIT 1",
+                (trigger, stamp(about)),
+            ).fetchone()
+        return row is not None
+
+    def last_spoken_in(self, family: str) -> Optional[SpeechRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM speech WHERE trigger LIKE ? AND spoken = 1"
+                " ORDER BY at DESC LIMIT 1",
+                (f"{family}:%",),
             ).fetchone()
         return _to_record(row) if row else None
 
@@ -85,20 +120,41 @@ class SQLiteSpeechLog:
         했다고 착각한다."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT trigger, at, text, spoken, about FROM speech "
-                "WHERE at >= ? AND spoken = 1 ORDER BY at",
+                f"SELECT {_COLUMNS} FROM speech WHERE at >= ? AND spoken = 1 ORDER BY at",
                 (stamp(moment),),
             ).fetchall()
         return [_to_record(row) for row in rows]
 
+    def rated(self, moment: datetime) -> List[SpeechRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_COLUMNS} FROM speech WHERE at >= ? AND spoken = 1 AND feedback != 0"
+                " ORDER BY at",
+                (stamp(moment),),
+            ).fetchall()
+        return [_to_record(row) for row in rows]
+
+    def rate(self, token: str, value: int) -> Optional[SpeechRecord]:
+        with self._connect() as conn:
+            changed = conn.execute(
+                "UPDATE speech SET feedback = ? WHERE token = ?", (value, token)
+            ).rowcount
+            row = conn.execute(
+                f"SELECT {_COLUMNS} FROM speech WHERE token = ? LIMIT 1", (token,)
+            ).fetchone()
+        return _to_record(row) if changed and row else None
+
+
+_COLUMNS = "trigger, at, text, spoken, about, token, feedback"
+
 
 def _to_record(row: Sequence[object]) -> SpeechRecord:
-    # 옛 DB에서 읽은 행은 spoken 칸이 없을 수 있다. 그때는 실제로 한 말로
-    # 본다 — SKIP 을 저장하기 전에 쌓인 기록이라 전부 발화였다.
     return SpeechRecord(
         trigger=str(row[0]),
         at=datetime.fromisoformat(str(row[1])),
         text=str(row[2]),
-        spoken=bool(row[3]) if len(row) > 3 else True,
-        about=datetime.fromisoformat(str(row[4])) if len(row) > 4 and row[4] else None,
+        spoken=bool(row[3]),
+        about=datetime.fromisoformat(str(row[4])) if row[4] else None,
+        token=str(row[5]) if row[5] else None,
+        feedback=int(str(row[6] or 0)),
     )

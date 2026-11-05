@@ -23,10 +23,14 @@ from datetime import datetime, timezone
 from typing import Callable, Mapping, Optional, Sequence
 
 from src.brain.agent import JarvisAgent
+from src.brain.feedback import buttons, new_token
+from src.brain.providers import TopicSource
 from src.channels.base import Channel
 from src.core.events import EventSource
 from src.core.models import Insight, ObservationSource
+from src.core.topics import standings
 from src.triggers.base import EventTrigger, Trigger, Watch
+from src.triggers.topics import TopicWatch, muted
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,11 @@ class JarvisLoop:
     # 사건(위치 등)을 보는 트리거와 그 재료.
     event_triggers: Sequence[EventTrigger] = ()
     events: Optional[EventSource] = None
+    # 관심사 신호와 그 재료(회고가 가꾸는 주제 나무).
+    topic_watch: Optional[TopicWatch] = None
+    topics: Optional[TopicSource] = None
+    # 지금. 관심사 신호는 시간대(깨어 있는 시간)를 보므로 시험에서 정할 수 있어야 한다.
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
     # 말하게 된다 — 게이트는 **발송에 성공한 뒤에야** 쿨다운을 기록하므로,
     # 나란히 달리는 두 실행은 둘 다 게이트를 통과해버린다.
@@ -53,6 +62,8 @@ class JarvisLoop:
         if self.event_triggers and self.events is None:
             # 조용히 건너뛰면 트리거가 등록돼 있는데 영영 안 울린다.
             raise ValueError("사건 트리거가 있는데 사건 저장소를 안 넘겼다")
+        if self.topic_watch is not None and self.topics is None:
+            raise ValueError("관심사 신호가 있는데 주제 나무를 안 넘겼다")
 
     async def run_once(self) -> int:
         """한 주기를 돈다. 실제로 발송한 메시지 수를 돌려준다."""
@@ -60,7 +71,7 @@ class JarvisLoop:
             return await self._cycle()
 
     async def _cycle(self) -> int:
-        now = datetime.now(timezone.utc)
+        now = self.clock()
         sent = 0
 
         for trigger in self.triggers:
@@ -86,6 +97,15 @@ class JarvisLoop:
                 if insight is not None:
                     sent += await self._speak(insight, now)
 
+        if self.topic_watch is not None and self.topics is not None:
+            try:
+                insight = self._topic(now)
+            except Exception:
+                logger.exception("관심사 신호 실패 — 건너뛴다")
+                insight = None
+            if insight is not None:
+                sent += await self._speak(insight, now)
+
         if self.watches and self.snapshot is not None:
             try:
                 seen = self.snapshot()
@@ -100,6 +120,18 @@ class JarvisLoop:
                         sent += await self._speak(insight, now)
 
         return sent
+
+    def _topic(self, now: datetime) -> Optional[Insight]:
+        """뜨는 관심사 중 게이트를 통과하는 첫 것 하나. 한 주기에 관심사 얘기는 하나만 판단한다."""
+        assert self.topic_watch is not None and self.topics is not None
+        board = standings(self.topics.load(), self.topics.grounds(), now)
+        notes = {
+            topic: [n.text for n in found] for topic, found in self.topics.latest_notes(1).items()
+        }
+        rated = self.agent.gate.log.rated(now - self.topic_watch.mute_for)
+        quiet = muted((r.trigger, r.feedback) for r in rated)
+        candidates = self.topic_watch.check(board, notes, now, quiet)
+        return self.agent.first_allowed(candidates, now)
 
     async def _speak(self, insight: Insight, now: datetime) -> int:
         """신호 하나를 판단하고, 말하기로 하면 보낸다. 보냈으면 1."""
@@ -121,14 +153,16 @@ class JarvisLoop:
             logger.debug("말 안 걸기로 함: %s", insight.trigger)
             return 0
 
+        # 먼저 건 말에는 👍👎 를 단다. 표는 보내기 전에 지어 두고, 보내기에 성공한 뒤에만 기록한다.
+        token = new_token()
         try:
-            await self.channel.send(message)
+            await self.channel.send(message, buttons=buttons(token))
         except Exception:
             # 발송 실패는 루프를 죽이지 않는다. 다음 기회에 다시 시도된다.
             logger.exception("발송 실패 (%s): %s", self.channel.name, insight.trigger)
             return 0
 
-        self.agent.confirm_spoken(insight, now, message)
+        self.agent.confirm_spoken(insight, now, message, token=token)
         return 1
 
     async def run_forever(self, interval_sec: int) -> None:
