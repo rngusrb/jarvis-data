@@ -79,7 +79,8 @@ PAGES = {
 </body></html>""",
     "/noticepop": """<html><head><title>공지 있음</title></head><body>
 <main><p>공지가 뜨는 페이지.</p>
-</main><script>window.open('/popup?n=a'); window.open('/popup?n=b');</script></body></html>""",
+</main><script>window.open('/popup?n=a'); window.open('/popup?n=b');</script>
+<script src="/slow.js"></script></body></html>""",
     "/pushy": """<html><head><title>바뀌는 주소</title></head><body><main><p>주소를 계속 바꾼다.</p>
 </main><script>let k = 0;
 setInterval(() => history.pushState({}, '', '/pushy?n=' + (k++)), 5);</script></body></html>""",
@@ -92,6 +93,48 @@ for (let i = 0; i < 20000; i++) {
   d.setAttribute('data-' + (i % 50), word); box.appendChild(d);
 }
 </script></body></html>""",
+    "/tampered": """<html><head><title>바꾼 페이지</title></head><body>
+<main><p>바꾼 함수의 페이지.</p>
+<div id="box"></div></main><script>
+const box = document.getElementById('box');
+const word = 'x'.repeat(1000);
+for (let i = 0; i < 20000; i++) {
+  const d = document.createElement('div');
+  d.setAttribute('data-' + (i % 50), word); box.appendChild(d);
+}
+String.prototype.slice = function () { return String(this); };
+String.prototype.lastIndexOf = function () { return -1; };
+</script></body></html>""",
+    "/getter": """<html><head><title>가짜 HTML</title></head><body>
+<main><p>짧은 본문.</p></main><script>
+const huge = 'y'.repeat(20000000);
+Object.defineProperty(Element.prototype, 'outerHTML', {get() { return huge; }});
+</script></body></html>""",
+    "/stringify": """<html><head><title>가짜 JSON</title></head><body><main><p>본문.</p></main>
+<button>버튼</button><script>
+const huge = 'z'.repeat(20000000);
+JSON.stringify = () => huge;
+</script></body></html>""",
+    "/longtitle": """<html><head><title>짧게</title></head><body>
+<main><p>제목만 긴 페이지의 본문이다.</p></main>
+<script>document.title = 'T'.repeat(20000000);</script></body></html>""",
+    "/throwing": """<html><head><title>던지는 페이지</title></head><body>
+<main><p>본문.</p></main><script>
+Object.defineProperty(Element.prototype, 'outerHTML', {get() { throw new Error('안 줌'); }});
+</script></body></html>""",
+    "/oddtext": """<html><head><title>이상한 길이</title></head><body>
+<main><p>본문은 멀쩡하다.</p></main><script>
+const big = new Array(100000).fill('w'.repeat(100));
+Object.defineProperty(HTMLElement.prototype, 'innerText', {get() { return {length: big}; }});
+</script></body></html>""",
+    "/dlflood": """<html><head><title>쏟는 페이지</title></head><body>
+<main><p>내려받기를 쏟는다.</p></main>
+<script>setTimeout(() => {
+  for (let i = 0; i < 260; i++) {
+    const f = document.createElement('iframe'); f.style.display = 'none';
+    f.src = '/file.pdf?n=' + i; document.body.appendChild(f);
+  }
+}, 100);</script></body></html>""",
     "/tabs": """<html><head><title>연간 일정</title></head><body><main>
 <ul><li id="pro" style="cursor:pointer">기술사</li>
 <li id="eng" style="cursor:pointer">기사</li></ul>
@@ -709,3 +752,124 @@ def test_the_chrome_folders_parent_must_not_be_ours_either(tmp_path: Any) -> Non
             _safe_folder(str(chrome))
     finally:
         os.chmod(chrome, 0o755)
+
+
+def _peak(port: int, url: str) -> Tuple[str, int, Any]:
+    """그 페이지를 열고 화면을 볼 때 자비스(파이썬)의 최고 할당과 결과(화면 또는 거절)."""
+    import tracemalloc
+
+    async def run() -> Tuple[str, int, Any]:
+        async with _browser(port).session() as session:
+            tracemalloc.start()
+            try:
+                try:
+                    view = await session.open(url)
+                    outcome: Any = view
+                    said = ""
+                except Refused as error:
+                    outcome, said = None, str(error)
+                return said, tracemalloc.get_traced_memory()[1], outcome
+            finally:
+                tracemalloc.stop()
+
+    return asyncio.run(run())
+
+
+def test_a_page_that_rewrites_builtins_cannot_push_its_dom_into_jarvis(
+    site: Tuple[int, List[str]], caplog: pytest.LogCaptureFixture
+) -> None:
+    """JS 안의 자르기는 페이지가 slice·lastIndexOf 를 바꾸면 없어진다 — 자비스 1.3GB·드라이버
+    1GB(3차 리뷰 재현). 받기 전에 원시 문자열의 길이를 보고, 넘으면 받지 않는다(메인 화면이면
+    시끄럽게)."""
+    port, _ = site
+    said, peak, _ = _peak(port, "http://site.example/tampered")
+    assert "이상한 값" in said and peak < 8_000_000
+    assert "페이지가 이상한 값을 줘 받지 않았다" in caplog.text
+
+
+def test_a_fake_outer_html_is_still_cut_inside_chrome(site: Tuple[int, List[str]]) -> None:
+    """outerHTML 을 20MB 글로 바꾼 페이지 — 크롬 안의 자르기가 2MB 로 잘라 화면은 나오고, 넘어온
+    양도 작다."""
+    port, _ = site
+    said, peak, view = _peak(port, "http://site.example/getter")
+    assert said == "" and peak < 8_000_000 and view is not None
+
+
+def test_a_fake_json_is_not_taken(site: Tuple[int, List[str]]) -> None:
+    """JSON.stringify 를 20MB 글로 바꾼 페이지 — 누를 것 목록을 넘겨받지 않는다(메인 화면이라
+    거절)."""
+    port, _ = site
+    said, peak, _ = _peak(port, "http://site.example/stringify")
+    assert "이상한 값" in said and peak < 8_000_000
+
+
+def test_a_huge_title_is_left_out(site: Tuple[int, List[str]]) -> None:
+    """page.title() 은 상한이 없어 100MB 제목 하나로 자비스가 1.4GB 가 됐다(3차 리뷰 재현)."""
+    port, _ = site
+    said, peak, view = _peak(port, "http://site.example/longtitle")
+    assert said == "" and peak < 8_000_000
+    assert (
+        view.title == "" and "제목이 이상해 뺐다" in view.note and "제목만 긴 페이지" in view.text
+    )
+
+
+def test_a_main_page_that_cannot_be_read_is_said(site: Tuple[int, List[str]]) -> None:
+    """메인 화면을 못 읽으면 알림 없이 "본문 글이 없다"였다(3차 리뷰) — 시끄럽게 거절한다."""
+    port, _ = site
+    said, _, _ = _peak(port, "http://site.example/throwing")
+    assert "읽지 못했다" in said or "이상한 값" in said
+
+
+def test_odd_text_lengths_do_not_cross_over(site: Tuple[int, List[str]]) -> None:
+    """누른 뒤 기다릴 때 재는 글 길이도 숫자만 받는다 — innerText 를 큰 값으로 바꾼 페이지."""
+    port, _ = site
+    said, peak, view = _peak(port, "http://site.example/oddtext")
+    assert said == "" and peak < 8_000_000 and "본문은 멀쩡하다" in view.text
+
+
+def test_a_flood_of_downloads_closes_the_page(site: Tuple[int, List[str]]) -> None:
+    """받지 않아도 내려받기마다 주소가 넘어온다 — 쏟아내는 페이지는 닫는다."""
+    port, _ = site
+
+    async def run() -> str:
+        async with _browser(port).session() as session:
+            try:
+                await session.open("http://site.example/dlflood")
+                for _ in range(40):
+                    if session.flooded:
+                        break
+                    await asyncio.sleep(0.25)
+                await session.view()
+            except Refused as error:
+                return str(error)
+            return "보였다"
+
+    assert "쏟아내 닫았다" in asyncio.run(run())
+
+
+def test_controls_from_the_page_are_checked_again() -> None:
+    """누를 것 목록은 페이지가 바꾼 함수로 만든 값일 수 있다 — 꼴·번호·이름·항목을 파이썬에서 다시
+    거른다."""
+    import json
+
+    from src.brain.browser import _items, _Unfit
+
+    raw = json.dumps(
+        [
+            {"ref": 1, "role": "link", "name": "가" * 500, "search": True, "options": []},
+            {"ref": True, "role": "link", "name": "참 번호"},
+            {"ref": "2", "role": "link", "name": "글 번호"},
+            {"ref": 3, "role": "로켓", "name": "모르는 역할", "search": "yes"},
+            {"ref": 4, "role": "select", "name": "연도", "options": ["2026"] * 30 + [7]},
+            "그냥 글",
+        ]
+    )
+    items = _items(raw)
+    assert [c.ref for c in items] == [1, 3, 4]
+    assert len(items[0].name) == 60 and items[0].search is True
+    assert items[1].role == "clickable" and items[1].search is False
+    assert items[2].options == ("2026",) * 12
+    with pytest.raises(_Unfit):
+        _items("{깨진")
+    with pytest.raises(_Unfit):
+        _items('{"ref": 1}')

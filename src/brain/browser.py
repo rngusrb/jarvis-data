@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -52,17 +53,32 @@ TYPED = 40
 HTML_CAP = 2_000_000
 _HTML_JS = r"""
 (cap) => {
-  const root = document.documentElement;
-  if (!root) return '';
+  // body 만 — 머리(head)의 큰 스크립트·스타일이 2MB 를 먼저 채워 본문이 비었다(3차 리뷰).
+  const root = document.body || document.documentElement;
+  if (!root) return {s: ''};
   let html = root.outerHTML;
+  if (typeof html !== 'string') return {s: ''};
   if (html.length > cap) {
     html = html.slice(0, cap);
     const end = html.lastIndexOf('>');  // 태그 중간에서 끊으면 조각("<div d")이 본문에 섞였다
     if (end > 0) html = html.slice(0, end + 1);
   }
-  return html;
+  return {s: html};  // 객체로 감싼다 — 원시 글이면 손잡이를 만들 때 값이 통째로 넘어온다(_bounded)
 }
 """
+# 페이지 세계에서 돈 JS 의 결과를 받기 전에 본다 — 원시 문자열이고 이 길이 안일 때만 받는다.
+# 페이지는 자기 세계의 내장 함수(slice·lastIndexOf·outerHTML)를 바꿀 수 있어 JS 안의 자르기를 믿을
+# 수 없다 — 바꿔 둔 페이지 하나가 자르기를 없애 자비스 1.3GB·드라이버 1GB 를 채웠다(3차 리뷰 재현).
+# 원시 문자열의 typeof·length 는 페이지가 못 바꾼다.
+_SIZE_JS = (
+    "(o) => (o !== null && typeof o === 'object' && typeof o.s === 'string') ? o.s.length : -1"
+)
+# 누를 것 목록(JSON 글 하나)과 제목의 상한(자).
+CONTROLS_CAP = 300_000
+TITLE_CAP = 2_000
+# 손이 안 누른 내려받기가 이만큼 넘게 쏟아지면 그 페이지를 닫는다 — 받지 않아도 내려받기마다 주소가
+# 크롬에서 자비스로 넘어온다(주소 하나가 최대 2MB).
+FLOOD = 200
 # 브라우저 이동 로그 — 초당 한 줄, 세션당 이만큼까지. pushState 를 돌리는 페이지 하나가 20초에
 # 33만 줄을 찍어 journald 가 넘친 줄(감사 줄까지)을 버렸다(2차 리뷰 재현).
 MOVES = 60
@@ -169,7 +185,7 @@ _CONTROLS_JS = r"""
     out.push({ref: n, role, name, search, options});
     if (out.length >= 300) break;
   }
-  return out;
+  return {s: JSON.stringify(out)};  // 글 하나로, 객체로 감싸 — 받기 전에 길이를 본다(_bounded)
 }
 """
 
@@ -225,6 +241,7 @@ class Session:
     # 손이 안 누른 내려받기·새 창(버렸다).
     ignored: int = 0
     crashed: bool = False
+    flooded: bool = False
     _acting: bool = False
     # 손이 누르는 동작 중(누르기·검색·고르기) — 새 창은 이때 하나만 받는다(열기 중에는 안 받는다).
     _clicking: bool = False
@@ -288,6 +305,10 @@ class Session:
         url = urldefrag(str(download.url))[0]
         if not self._acting or (self._only is not None and url != self._only):
             self.ignored += 1
+            if self.ignored > FLOOD and not self.flooded:
+                self.flooded = True
+                logger.warning("손이 안 누른 내려받기가 %d개를 넘어 그 페이지를 닫는다", FLOOD)
+                asyncio.ensure_future(_close(self.page))
             logger.info(
                 "손이 누르지 않은 내려받기는 버린다(%d번째): %s", self.ignored, short(url, 120)
             )
@@ -342,6 +363,8 @@ class Session:
             self._acting = self._clicking = False
 
     def _alive(self) -> None:
+        if self.flooded:
+            raise Refused("페이지가 내려받기를 쏟아내 닫았다 — 본 것으로 정리한다")
         if self.crashed:
             raise Refused("페이지가 죽었다(메모리를 너무 썼거나 크롬 오류) — 본 것으로 정리한다")
 
@@ -452,10 +475,8 @@ class Session:
         missed = 0
         for index, frame in enumerate(list(self.page.frames)[:FRAMES]):
             try:
-                found = await asyncio.wait_for(
-                    frame.evaluate(_CONTROLS_JS, len(controls)), timeout=ASK
-                )
-                html = await asyncio.wait_for(frame.evaluate(_HTML_JS, HTML_CAP), timeout=ASK)
+                found = _items(await _bounded(frame, _CONTROLS_JS, len(controls), CONTROLS_CAP))
+                html = await _bounded(frame, _HTML_JS, HTML_CAP, HTML_CAP)
             except asyncio.TimeoutError:
                 if index == 0:
                     raise Refused(
@@ -463,23 +484,40 @@ class Session:
                     ) from None
                 missed += 1
                 continue
-            except Exception:
+            except _Unfit as error:
+                # 상한을 넘거나 이상한 값 — 받지 않는다. 메인 화면이면 볼 것이 없다(시끄럽게).
+                logger.warning(
+                    "페이지가 이상한 값을 줘 받지 않았다: %s (%s)",
+                    error,
+                    short(str(frame.url), 120),
+                )
+                if index == 0:
+                    raise Refused(
+                        f"페이지가 이상한 값을 줬다({error}) — 본 것으로 정리한다"
+                    ) from None
+                missed += 1
+                continue
+            except Exception as error:
+                if index == 0:
+                    # 메인 화면을 못 읽었다 — 빈 화면으로 넘기지 않는다(3차 리뷰: 알림 없이 "본문
+                    # 글이 없다").
+                    logger.warning(
+                        "메인 화면을 못 읽었다: %s — %s",
+                        type(error).__name__,
+                        short(str(frame.url), 120),
+                    )
+                    raise Refused(
+                        f"페이지를 읽지 못했다({type(error).__name__}) — 본 것으로 정리한다"
+                    ) from None
                 # 떼어지는 중인 프레임(광고·추적)은 건너뛴다 — 본 화면은 나머지로 충분하다.
                 logger.debug(
                     "프레임을 못 읽어 건너뜀: %s", short(str(frame.url), 120), exc_info=True
                 )
                 continue
-            for item in found:
-                control = Control(
-                    ref=int(item["ref"]),
-                    role=str(item["role"]),
-                    name=str(item["name"]),
-                    search=bool(item["search"]),
-                    options=tuple(str(o) for o in item.get("options") or ()),
-                )
+            for control in found:
                 controls.append(control)
                 refs[control.ref] = (frame, control)
-            heading, body = await asyncio.to_thread(extract, str(html or "")[:HTML_CAP])
+            heading, body = await asyncio.to_thread(extract, html[:HTML_CAP])
             if index == 0:
                 title = heading
                 texts.append(body)
@@ -487,7 +525,15 @@ class Session:
                 texts.append(f"[프레임: {urlsplit(str(frame.url)).hostname or ''}]\n{body}")
         text = "\n".join(t for t in texts if t)
         try:
-            title = await asyncio.wait_for(self.page.title(), timeout=2.0) or title
+            # 제목도 같은 길로 — page.title() 은 상한이 없어 100MB 제목 하나로 자비스가 1.4GB 가
+            # 됐다.
+            title = (
+                await _bounded(self.page.main_frame, "() => ({s: document.title})", None, TITLE_CAP)
+                or title
+            )
+        except _Unfit as error:
+            note = (note + " " if note else "") + "제목이 이상해 뺐다."
+            logger.warning("제목이 이상해 받지 않았다: %s", error)
         except Exception:
             logger.debug("제목을 못 읽음", exc_info=True)
         if missed:
@@ -529,7 +575,10 @@ class Session:
         while loop.time() - start < most:
             try:
                 size = await asyncio.wait_for(
-                    self.page.evaluate("() => document.body ? document.body.innerText.length : 0"),
+                    self.page.evaluate(
+                        "() => { const n = document.body ? document.body.innerText.length : 0;"
+                        " return typeof n === 'number' ? n : -1; }"
+                    ),
                     timeout=2.0,
                 )
             except Exception:
@@ -542,6 +591,71 @@ class Session:
             elif now - still >= quiet and now - start >= least:
                 return
             await asyncio.sleep(0.25)
+
+
+class _Unfit(ValueError):
+    """페이지가 준 값이 상한을 넘거나 꼴이 이상하다 — 받지 않는다."""
+
+
+async def _bounded(frame: Any, script: str, arg: Any, cap: int) -> str:
+    """페이지 세계에서 `script` 를 돌린 결과 `{s: 글}` 의 글 — 원시 문자열이고 `cap` 자 안일 때만
+    받는다.
+
+    결과는 손잡이(handle)로 크롬에 둔 채 typeof·length 만 먼저 묻는다 — 페이지가 바꿀 수 없는
+    것들이다. 넘으면 넘겨받지 않는다(크롬 안에서 버린다). 객체로 감싸는 까닭: 원시 글을 손잡이로
+    받으면 크롬 원격 규약(CDP)이 값을 통째로 실어 보낸다 — 20MB 글 손잡이 하나에 파이썬 60MB,
+    감싸면 0.3MB(실측).
+    """
+    handle = await asyncio.wait_for(frame.evaluate_handle(script, arg), timeout=ASK)
+    try:
+        size = await asyncio.wait_for(handle.evaluate(_SIZE_JS), timeout=ASK)
+        if not isinstance(size, int) or size < 0:
+            raise _Unfit("글이 아니다")
+        if size > cap:
+            raise _Unfit(f"{size}자 — 상한 {cap}자")
+        value = await asyncio.wait_for(handle.evaluate("(o) => o.s"), timeout=ASK)
+    finally:
+        try:
+            await handle.dispose()
+        except Exception:
+            logger.debug("손잡이를 못 놓음(페이지가 넘어감)", exc_info=True)
+    if not isinstance(value, str) or len(value) > cap:
+        raise _Unfit("받은 값이 글이 아니거나 너무 길다")
+    return value
+
+
+def _items(raw: str) -> List[Control]:
+    """누를 것 목록(JSON 글)을 다시 거른다 — 페이지가 바꾼 함수로 만든 값일 수 있다(번호·이름·항목
+    상한)."""
+    try:
+        data = json.loads(raw)
+    except ValueError as error:
+        raise _Unfit("누를 것 목록을 못 읽었다") from error
+    if not isinstance(data, list):
+        raise _Unfit("누를 것 목록이 목록이 아니다")
+    out: List[Control] = []
+    for item in data[:300]:
+        if not isinstance(item, dict):
+            continue
+        ref = item.get("ref")
+        if not isinstance(ref, int) or isinstance(ref, bool) or not 0 < ref < 1_000_000:
+            continue
+        role = item.get("role")
+        role = role if isinstance(role, str) and role in _ROLES else "clickable"
+        name = item.get("name")
+        options = item.get("options")
+        out.append(
+            Control(
+                ref=ref,
+                role=role,
+                name=name[:60] if isinstance(name, str) else "",
+                search=item.get("search") is True,
+                options=tuple(o[:40] for o in options[:12] if isinstance(o, str))
+                if isinstance(options, list)
+                else (),
+            )
+        )
+    return out
 
 
 async def _close(page: Any) -> None:
