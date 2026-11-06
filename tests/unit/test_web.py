@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import httpcore
@@ -611,3 +611,106 @@ def test_text_answers_like_json_get_the_small_cap() -> None:
     )
     got = asyncio.run(page.read("https://api.example/big.csv"))
     assert got.kind == "text" and len(got.text) <= 3000
+
+
+def test_content_inside_a_page_wide_form_is_kept() -> None:
+    """한국 공공 사이트는 페이지 전체를 form 으로 감싼다 — 버렸더니 큐넷 연간 시험일정이
+    44자였다(실측)."""
+    html = (
+        "<html><body><form name='f'><h3>연간 국가기술자격 시험일정</h3>"
+        "<table><tr><td>2026년 제3회</td><td>2026.09.21 - 2026.09.28</td></tr></table>"
+        "<select><option>기사</option></select><button>검색</button></form></body></html>"
+    )
+    _, text = extract(html)
+    assert "2026년 제3회 | 2026.09.21 - 2026.09.28" in text
+    assert "기사" not in text.replace("국가기술자격", "") and "검색" not in text
+
+
+def test_line_breaks_inside_a_cell_keep_the_row_on_one_line() -> None:
+    """칸 안의 줄바꿈으로 행이 여러 줄로 쪼개지자 발표일을 시험일로 읽었다(큐넷 연간 시험일정,
+    실측)."""
+    html = (
+        "<main><table><tr><th>회별</th><th>원서접수</th><th>시험</th><th>발표</th></tr>"
+        "<tr><td>2026년/<br>제3회</td><td>2026.09.21<br>- 2026.09.23,<br>2026.09.28</td>"
+        "<td>2026.10.24<br>- 2026.11.13</td><td>2026.12.11,<br>2026.12.18</td></tr></table>"
+        "<p>원서접수 시간은 첫날 10:00부터.</p></main>"
+    )
+    lines = extract(html)[1].split("\n")
+    assert lines[1] == (
+        "2026년/ 제3회 | 2026.09.21 - 2026.09.23, 2026.09.28 | 2026.10.24 - 2026.11.13 | "
+        "2026.12.11, 2026.12.18"
+    )
+    assert lines[2] == "원서접수 시간은 첫날 10:00부터."
+
+
+def test_layout_tables_keep_their_lines() -> None:
+    """칸 안에서 블록까지 공백으로 바꿨더니, 페이지 전체가 바깥 칸 안에 있는 표 레이아웃에서
+    메뉴·본문· 안쪽 표가 한 줄로 뭉쳤다(JAR-036 리뷰 재현). 칸 안에서도 블록(p·li·tr)은 줄을
+    나눈다."""
+    menu = "".join(f'<li><a href="/m{i}">메뉴 {i}</a></li>' for i in range(1, 9))
+    html = (
+        f"<html><body><table><tr><td><ul>{menu}</ul></td><td>"
+        "<h3>2026년 제3회 기사 실기 시험 공고</h3>"
+        "<p>원서접수 기간과 시험 일정은 아래와 같습니다.</p>"
+        "<table><tr><th>구분</th><th>원서접수</th><th>시험</th></tr>"
+        "<tr><td>기사 3회</td><td>2026.09.21 ~ 09.28</td><td>2026.10.24 ~ 11.13</td></tr></table>"
+        "<p>빈자리 접수: 2026.10.18 ~ 10.19</p></td></tr></table></body></html>"
+    )
+    lines = extract(html)[1].split("\n")
+    assert "메뉴 1" not in "\n".join(lines)  # 메뉴 덩어리는 걷힌다
+    assert "구분 | 원서접수 | 시험" in lines
+    assert "기사 3회 | 2026.09.21 ~ 09.28 | 2026.10.24 ~ 11.13" in lines
+    assert "빈자리 접수: 2026.10.18 ~ 10.19" in lines
+
+
+def test_the_homes_public_address_is_learned_kept_and_failed_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """묻는 곳의 이상한 답(사설 주소·글)은 버리고 다음 곳에 묻는다. 다시 못 물으면 마지막으로 안
+    것을, 한 번도 모르면 None(그땐 `checked` 가 아무 데도 안 붙는다)."""
+    from src.brain import web
+
+    answers = {
+        "api.ipify.org": httpx.Response(200, text="192.168.55.1"),
+        "ipv4.icanhazip.com": httpx.Response(200, text="<html>막힘</html>"),
+        "checkip.amazonaws.com": httpx.Response(200, text="58.226.32.160\n"),
+    }
+    real = httpx.AsyncClient
+
+    def client(**options: Any) -> httpx.AsyncClient:
+        return real(
+            transport=httpx.MockTransport(lambda r: answers[r.url.host]),
+            **{k: v for k, v in options.items() if k != "transport"},
+        )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", client)
+    own = web.OwnAddress(fresh=0.0, keep=3600.0)
+    assert asyncio.run(own.get()) == "58.226.32.160"
+
+    answers["checkip.amazonaws.com"] = httpx.Response(503)
+    assert asyncio.run(own.get()) == "58.226.32.160"  # 다시 못 물었다 — 마지막으로 안 것
+    assert asyncio.run(web.OwnAddress(fresh=0.0).get()) is None  # 한 번도 모름
+
+
+def test_a_failed_lookup_of_the_public_address_is_remembered() -> None:
+    """실패를 기억하지 않았더니 묻는 곳 장애 때 연결 하나하나가 차례로 15초씩 줄을 섰다(2차 리뷰
+    재현)."""
+    from src.brain import web
+
+    asked: List[int] = []
+
+    class Down(web.OwnAddress):
+        async def _ask(self) -> Optional[str]:
+            asked.append(1)
+            return None
+
+    own = Down(fresh=0.0, retry=60.0)
+
+    async def three() -> list:
+        return [await own.get() for _ in range(3)]
+
+    assert asyncio.run(three()) == [None, None, None] and len(asked) == 1
+    known = Down(fresh=0.0, retry=60.0)
+    known.address, known.learned = "58.226.32.160", __import__("time").monotonic()
+    assert asyncio.run(known.get()) == "58.226.32.160"  # 다시 못 물었다 — 마지막 것
+    assert asyncio.run(known.get()) == "58.226.32.160" and len(asked) == 2  # 바로, 안 묻고
