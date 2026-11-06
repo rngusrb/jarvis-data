@@ -335,6 +335,45 @@ def test_attachments_of_a_read_page_can_be_read_but_not_altered() -> None:
     assert "검색 결과에 나온 주소만" in client.asked[3]["messages"][-1]["content"]
 
 
+def test_links_are_collected_one_hop_only() -> None:
+    """첨부로 읽은 페이지의 링크는 더 모으지 않는다.
+
+    링크 글을 "일정.pdf"로 쓴 블로그 글이 다른 글로, 그 글이 또 다른 글로 허용 목록을 넓혀 갈 수
+    있었다(재리뷰). 첨부는 검색 결과로 읽은 페이지에서만, 한 단계만.
+    """
+    from src.brain.web import Link
+
+    hop1 = "https://www.q-net.or.kr/b/1"
+    hop2 = "https://www.q-net.or.kr/b/2"
+
+    @dataclass
+    class Chained(FakeReader):
+        async def read(self, url: str) -> Page:
+            self.urls.append(url)
+            nxt = {"https://www.q-net.or.kr/a?x=1": hop1, hop1: hop2}.get(url)
+            links = (Link(url=nxt, name="일정.pdf"),) if nxt else ()
+            return Page(url=url, title="글", text="본문 " * 100, cut=False, links=links)
+
+    reader = Chained()
+    loop, client, _, _ = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a?x=1"),)),
+            Turn(content="", calls=(_call("read_page", 3, url=hop1),)),
+            Turn(content="", calls=(_call("read_page", 4, url=hop2),)),
+            Turn(content="됐어."),
+        ],
+        reader=reader,
+        reads=3,
+    )
+    asyncio.run(loop.run(ASK))
+
+    assert reader.urls == ["https://www.q-net.or.kr/a?x=1", hop1]
+    assert "첨부·문서 링크" not in client.asked[3]["messages"][-1]["content"]
+    tool_results = [m["content"] for m in client.asked[4]["messages"] if m.get("role") == "tool"]
+    assert "검색 결과에 나온 주소만" in tool_results[-1]
+
+
 def test_trailing_slashes_cannot_carry_a_value() -> None:
     """정규화하면 같은 주소라 허용됐는데 요청은 모델이 쓴 그대로 나갔다.
 

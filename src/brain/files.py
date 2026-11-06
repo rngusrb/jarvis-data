@@ -10,6 +10,8 @@
     서버 메모리를 다 썼다(JAR-035 리뷰 재현: 0.3MB HWP 가 666MB, 9KB OLE 가 2.5GB 상한까지).
   - 그 안에서도 푸는 크기를 센다 — HWP 는 조금씩 풀며, zip 은 안전한 압축 방식만 조금씩 읽으며,
     OLE 는 크기를 먼저 보고. zip 의 "풀면 몇 바이트"는 파일이 스스로 적은 값이라 믿지 않는다.
+  - 자식에서 나오는 통로(글·오류 출력)도 남의 입력이다 — 글은 상한까지만 받고, 오류 출력은 끝만
+    남긴다. 자식이 쏟은 경고를 다 모았더니 87KB PDF 하나에 본체 메모리가 1.4GB 가 됐다(재리뷰 재현).
   - 자식 프로세스에는 비밀값이 든 환경변수를 넘기지 않는다.
 
 종류는 내용의 첫 바이트로 먼저 본다 — 큐넷은 PDF 를 `application/octet-stream` 으로 준다.
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import struct
@@ -28,9 +31,11 @@ import zipfile
 import zlib
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
+
+logger = logging.getLogger(__name__)
 
 # 읽는 종류.
 PDF, HWP, HWPX, DOCX, XLSX, PPTX, TEXT, HTML = (
@@ -64,12 +69,19 @@ PDF_PAGES = 30
 SHEET_ROWS = 300
 # 자식 프로세스가 돌려줄 글의 상한. 읽는 쪽이 어차피 4천 자로 자른다.
 TEXT_CAP = 50_000
-# 자식 프로세스의 상한(리눅스에서 걸린다). 서버는 가용 메모리 4.7GB, 스왑 99%(리뷰 실측).
+# 자식에게서 받는 양. 글(TEXT_CAP 자)은 JSON 으로도 이 안이다 — 넘으면 자식을 끝낸다.
+STDOUT_CAP = 1_000_000
+# 자식의 오류 출력은 끝만 남긴다(왜 멈췄는지는 보통 마지막 줄에 있다).
+STDERR_TAIL = 4_000
+# 자식 프로세스의 상한(메모리는 리눅스에서만 걸린다). 서버는 가용 메모리 4.7GB, 스왑 99%(리뷰
+# 실측) — 자식 둘(SLOTS)에 본체까지 `jarvis` 유닛의 MemoryMax(3G) 안에 든다.
 CHILD_MEMORY = 1_000_000_000
 CHILD_CPU = 30
 # 한꺼번에 띄우는 자식 수. 대화·관심사 준비·보고서가 겹쳐도 둘을 넘지 않게.
 SLOTS = 2
 _slots: Optional[asyncio.Semaphore] = None
+# 자식이 상한을 못 걸었다고 하면 한 번 남긴다(맥은 메모리 상한을 못 건다 — 서버에서 나오면 사고다).
+_warned_limits = False
 # zip 꼴 문서에서 받는 압축 방식. bzip2·lzma 는 풀 길이를 정할 수 없어 받지 않는다(리뷰 재현).
 _ZIP_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
 
@@ -152,27 +164,31 @@ async def extract(
     if _slots is None:
         _slots = asyncio.Semaphore(SLOTS)
     async with _slots:
-        argv = list(command) if command else [sys.executable, str(Path(__file__).resolve()), kind]
+        # -I: 자식의 모듈 경로에 이 파일의 폴더(src/brain)를 넣지 않는다 — 같은 이름의 파일이 표준
+        # 모듈을 가리지 않게(재리뷰).
+        argv = (
+            list(command)
+            if command
+            else [sys.executable, "-I", str(Path(__file__).resolve()), kind]
+        )
         child = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             # 비밀값(봇 토큰 등)이 든 환경을 넘기지 않는다 — 남이 만든 파일을 여는 쪽이다.
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "LANG": "C.UTF-8",
-                "PYTHONIOENCODING": "utf-8",
-            },
+            env={"PATH": os.environ.get("PATH", ""), "LANG": "C.UTF-8"},
         )
         try:
-            out, err = await asyncio.wait_for(child.communicate(data), timeout=timeout)
+            out, err, over = await asyncio.wait_for(_talk(child, data), timeout=timeout)
         except asyncio.TimeoutError:
             raise Unreadable(f"글을 뽑는 데 {timeout:.0f}초를 넘겨 멈췄다") from None
         finally:
             if child.returncode is None:
                 child.kill()
                 await child.wait()
+    if over:
+        raise Unreadable(f"글을 뽑는 쪽이 {STDOUT_CAP}바이트를 넘게 돌려줘 멈췄다")
     if child.returncode != 0 or not out:
         tail = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
         raise Unreadable(f"글을 뽑다 멈췄다(종료 {child.returncode}): {tail[0][:200]}")
@@ -180,27 +196,106 @@ async def extract(
         result = json.loads(out.decode("utf-8"))
     except ValueError as error:
         raise Unreadable(f"자식이 이상한 답을 줬다: {error}") from error
+    _note_limits(result.get("unlimited"))
     if "error" in result:
         raise Unreadable(str(result["error"]))
     return str(result["text"])
 
 
+async def _talk(child: asyncio.subprocess.Process, data: bytes) -> Tuple[bytes, bytes, bool]:
+    """파일을 넣고, 글은 상한까지만 받고, 오류 출력은 끝만 남긴다. 돌려주는 것: 글, 오류 끝, 넘쳤나.
+
+    셋을 함께 한다 — 하나씩 하면 자식이 가득 찬 파이프에 막혀 서로 기다린다. `communicate()` 는
+    오류 출력을 끝까지 다 모았다: pypdf 가 깨진 줄마다 그 줄을 통째로 경고로 찍어 87KB PDF 하나에
+    본체 메모리가 1.4GB, 90KB 는 2GB 를 넘었다(JAR-035 재리뷰 재현).
+    """
+    stdin, stdout, stderr = child.stdin, child.stdout, child.stderr
+    if stdin is None or stdout is None or stderr is None:
+        raise Unreadable("자식 프로세스의 통로가 없다")
+    over = False
+
+    async def feed() -> None:
+        try:
+            stdin.write(data)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # 자식이 먼저 끝났다 — 왜인지는 종료 코드와 오류 출력에 있다
+        finally:
+            stdin.close()
+
+    async def take() -> bytes:
+        nonlocal over
+        got = bytearray()
+        while True:
+            chunk = await stdout.read(1 << 16)
+            if not chunk:
+                return bytes(got)
+            if len(got) + len(chunk) > STDOUT_CAP:
+                over = True
+                child.kill()
+                return b""
+            got.extend(chunk)
+
+    async def tail() -> bytes:
+        kept = b""
+        while True:
+            chunk = await stderr.read(1 << 16)
+            if not chunk:
+                return kept
+            kept = (kept + chunk)[-STDERR_TAIL:]
+
+    _, out, err = await asyncio.gather(feed(), take(), tail())
+    await child.wait()
+    return out, err, over
+
+
+def _note_limits(unlimited: object) -> None:
+    global _warned_limits
+    if unlimited and not _warned_limits:
+        _warned_limits = True
+        logger.warning("파일 분석 자식에 상한을 못 걸었다(시간 상한은 남는다): %s", unlimited)
+
+
 def _child() -> None:
     """자식 프로세스: 상한을 걸고, 표준입력의 파일에서 글을 뽑아 JSON 으로 돌려준다."""
+    import warnings
+
+    # 라이브러리 경고를 찍지 않는다 — 부모는 끝만 받지만, 애초에 쏟지 않게(재리뷰 재현: 25KB PDF
+    # 하나가 0.8초에 60MB 를 찍었다).
+    logging.disable(logging.CRITICAL)
+    warnings.simplefilter("ignore")
+    unlimited: List[str] = []
     try:
         import resource
-
-        resource.setrlimit(resource.RLIMIT_AS, (CHILD_MEMORY, CHILD_MEMORY))
-        resource.setrlimit(resource.RLIMIT_CPU, (CHILD_CPU, CHILD_CPU + 1))
-    except (ImportError, ValueError, OSError) as error:
-        # 맥은 RLIMIT_AS 를 안 받는다 — 시간 상한(부모가 끝낸다)만 남는다. 서버는 리눅스다.
-        print(f"상한을 못 걸었다: {error}", file=sys.stderr)
+    except ImportError as error:
+        unlimited.append(f"resource: {error}")
+    else:
+        # 따로 건다 — 같이 걸었더니 맥에서 메모리 상한이 실패하자 CPU 상한까지 건너뛰었다(재리뷰).
+        limits = (
+            ("RLIMIT_AS", CHILD_MEMORY, CHILD_MEMORY),
+            ("RLIMIT_CPU", CHILD_CPU, CHILD_CPU + 1),
+        )
+        for name, soft, hard in limits:
+            try:
+                resource.setrlimit(getattr(resource, name), (soft, hard))
+            except (ValueError, OSError) as error:
+                unlimited.append(f"{name}: {error}")
     data = sys.stdin.buffer.read()
+    result: Dict[str, object]
     try:
-        result = {"text": text_of(data, sys.argv[1])[:TEXT_CAP]}
+        result = {"text": _plain(text_of(data, sys.argv[1])[:TEXT_CAP])}
     except Unreadable as error:
-        result = {"error": str(error)}
-    sys.stdout.write(json.dumps(result, ensure_ascii=False))
+        result = {"error": _plain(str(error))}
+    if unlimited:
+        result["unlimited"] = unlimited
+    sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
+def _plain(text: str) -> str:
+    """짝 맞는 서로게이트는 한 글자로, 짝 없는 것은 �로. pypdf 는 ToUnicode 의 <D800> 을 짝 없는
+    서로게이트로 돌려준다 — 그대로 utf-8 로 쓰다 자식이 죽어 그 파일 전체를 못 읽었다(재리뷰)."""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def text_of(data: bytes, kind: str) -> str:
@@ -255,6 +350,12 @@ def _hwp(data: bytes) -> str:
 
     # 잘못된 구조(자기 자신을 가리키는 FAT 등)는 바로 실패하게 — 기본값은 넘겨 버린다(리뷰 재현).
     with olefile.OleFileIO(io.BytesIO(data), raise_defects=olefile.DEFECT_INCORRECT) as ole:
+        # 작은 스트림들은 Root Entry 가 담는 한 덩어리에서 읽는다 — 그 덩어리를 처음 열 때 통째로
+        # 읽으니, 구역 크기만 보면 이 길은 못 막는다(재리뷰 재현: 6.6KB HWP 가 Root Entry 를
+        # 300MB 로 적고 FAT 를 제자리로 돌려 728MB).
+        root = ole.root.size if ole.root is not None else 0
+        if root > UNZIPPED:
+            raise Unreadable(f"한글 파일의 작은 스트림 칸이 너무 크다: {root}바이트")
         if not ole.exists("FileHeader"):
             raise Unreadable("한글 파일이 아니다(FileHeader 없음)")
         header = _stream(ole, ["FileHeader"], 4096)
@@ -408,8 +509,9 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-# 글 조각, 공백이 되는 것(탭·줄바꿈), 표(행·칸). DOCX(w:)·HWPX(hp:)·PPTX(a:) 모두 이름이 같다.
-_TEXT, _BREAKS, _TABLE, _ROW, _CELL, _PARA = "t", ("tab", "br"), "tbl", "tr", "tc", "p"
+# 글 조각, 공백이 되는 것(탭·줄바꿈·빈칸), 표(행·칸). DOCX(w:)·HWPX(hp:)·PPTX(a:) 모두 이름이 같다.
+_TEXT, _TABLE, _ROW, _CELL, _PARA = "t", "tbl", "tr", "tc", "p"
+_BREAKS = ("tab", "br", "lineBreak", "nbSpace", "fwSpace")
 
 
 def _lines(root: ElementTree.Element) -> str:
@@ -429,6 +531,13 @@ def _lines(root: ElementTree.Element) -> str:
                 continue
             if tag == _TEXT:
                 parts.append(child.text or "")
+                # 한글 OWPML 은 줄바꿈·탭·형광펜 표시가 글 조각 *안의* 요소이고, 그 뒤 글은 요소의
+                # 꼬리(tail)에 있다 — .text 만 읽었더니 "11. 14.(토)" 뒤 시각이 사라졌다(재리뷰,
+                # korea.kr 보도자료 HWPX 17곳 중 12곳).
+                for inner in child:
+                    if _local(inner.tag) in _BREAKS:
+                        parts.append(" ")
+                    parts.append(inner.tail or "")
             elif tag in _BREAKS:
                 parts.append(" ")
             else:
@@ -465,7 +574,7 @@ def _xlsx(names: List[str], xml: Callable[[str], ElementTree.Element]) -> str:
     if "xl/sharedStrings.xml" in names:
         for si in xml("xl/sharedStrings.xml"):
             shared.append("".join(t.text or "" for t in si.iter() if _local(t.tag) == _TEXT))
-    dates = _date_styles(xml("xl/styles.xml")) if "xl/styles.xml" in names else set()
+    times = _time_styles(xml("xl/styles.xml")) if "xl/styles.xml" in names else {}
     sheets = sorted((n for n in names if re.match(r"xl/worksheets/sheet\d+\.xml$", n)), key=_number)
     out: List[str] = []
     for i, name in enumerate(sheets, 1):
@@ -477,7 +586,7 @@ def _xlsx(names: List[str], xml: Callable[[str], ElementTree.Element]) -> str:
             for c in row:
                 if _local(c.tag) == "c":
                     column = _column(c.get("r"), max(cells) + 1 if cells else 0)
-                    cells[column] = _cell(c, shared, dates).strip()
+                    cells[column] = _cell(c, shared, times).strip()
             if cells:
                 line = " | ".join(cells.get(j, "") for j in range(max(cells) + 1))
                 if line.strip(" |"):
@@ -489,7 +598,7 @@ def _xlsx(names: List[str], xml: Callable[[str], ElementTree.Element]) -> str:
     return "\n".join(out)
 
 
-def _cell(c: ElementTree.Element, shared: List[str], dates: Set[int]) -> str:
+def _cell(c: ElementTree.Element, shared: List[str], times: Dict[int, str]) -> str:
     kind = c.get("t")
     if kind == "inlineStr":
         return "".join(t.text or "" for t in c.iter() if _local(t.tag) == _TEXT)
@@ -497,45 +606,71 @@ def _cell(c: ElementTree.Element, shared: List[str], dates: Set[int]) -> str:
     if kind == "s":
         return shared[int(value)] if value.isdigit() and int(value) < len(shared) else ""
     style = c.get("s", "0")
-    if kind in (None, "n") and value and style.isdigit() and int(style) in dates:
-        return _serial(value)
+    if kind in (None, "n") and value and style.isdigit() and int(style) in times:
+        return _serial(value, times[int(style)])
     return value
 
 
-def _date_styles(styles: ElementTree.Element) -> Set[int]:
-    """날짜 서식인 셀 스타일 번호들. 날짜는 일련번호(46286 = 2026-09-21)로 적혀 있다(리뷰 재현)."""
+# 엑셀이 번호로만 아는 서식: 날짜(14~17), 날짜와 시각(22), 시각(18~21, 45~47).
+_BUILTIN_TIMES = {
+    **{n: "date" for n in (14, 15, 16, 17, 22)},
+    **{n: "time" for n in (18, 19, 20, 21, 45, 46, 47)},
+}
+
+
+def _time_styles(styles: ElementTree.Element) -> Dict[int, str]:
+    """날짜·시각 서식인 셀 스타일 번호 → "date" 또는 "time".
+
+    날짜는 일련번호(46286 = 2026-09-21)로 적혀 있다(리뷰 재현). 시각 서식까지 날짜로 보면 09:30 이
+    "1899-12-30 09:29"가 됐다(재리뷰).
+    """
     custom: Dict[str, str] = {}
     for fmt in styles.iter():
         if _local(fmt.tag) == "numFmt":
             custom[fmt.get("numFmtId", "")] = fmt.get("formatCode", "")
-    found: Set[int] = set()
+    found: Dict[int, str] = {}
     xfs = next((n for n in styles.iter() if _local(n.tag) == "cellXfs"), None)
     for index, xf in enumerate(list(xfs) if xfs is not None else []):
         fid = xf.get("numFmtId", "0")
-        code = re.sub(r'"[^"]*"|\[[^\]]*\]', "", custom.get(fid, "")).lower()
-        builtin = fid.isdigit() and (14 <= int(fid) <= 22 or 45 <= int(fid) <= 47)
-        if builtin or any(ch in code for ch in "yd"):
-            found.add(index)
+        if fid.isdigit() and int(fid) in _BUILTIN_TIMES:
+            found[index] = _BUILTIN_TIMES[int(fid)]
+            continue
+        # 따옴표 글·대괄호(색·통화)·이스케이프는 빼고 본다. 단 [h]·[mm]·[ss] 는 누적 시각이다.
+        code = re.sub(r'"[^"]*"|\[(?![hHmMsS]+\])[^\]]*\]|\\.', "", custom.get(fid, "")).lower()
+        if any(ch in code for ch in "yd"):
+            found[index] = "date"
+        elif any(ch in code for ch in "hs"):
+            found[index] = "time"
     return found
 
 
-def _serial(value: str) -> str:
+def _serial(value: str, kind: str) -> str:
+    """엑셀 일련번호를 날짜·시각 글로. 초 단위로 반올림한다 — 0.3958333333(= 09:30)을 그냥 자르면
+    09:29 가 됐다(재리뷰)."""
     try:
-        moment = datetime(1899, 12, 30) + timedelta(days=float(value))
+        seconds = round(float(value) * 86400)
+        moment = datetime(1899, 12, 30) + timedelta(seconds=seconds)
     except (ValueError, OverflowError):
         return value
+    if kind == "time":
+        return moment.strftime("%H:%M:%S" if moment.second else "%H:%M")
     return moment.strftime("%Y-%m-%d %H:%M" if moment.hour or moment.minute else "%Y-%m-%d")
+
+
+# 엑셀의 마지막 열(XFD). 셀 주소 하나("ZZZZZZZZZZ1")로 열 번호가 수십억이 되면 빈 칸을 그만큼
+# 만들다 메모리를 다 썼다(재리뷰 재현: 0.3KB 파일로 1GB).
+_COLUMNS = 16_384
 
 
 def _column(ref: Optional[str], fallback: int) -> int:
     """셀 주소("C3")의 열 번호(0부터). 빈 칸은 행에 안 적혀 있어서, 순서로 세면 열이 밀린다."""
     letters = re.match(r"[A-Z]+", ref or "")
-    if not letters:
+    if not letters or len(letters.group(0)) > 3:
         return fallback
     number = 0
     for ch in letters.group(0):
         number = number * 26 + (ord(ch) - 64)
-    return number - 1
+    return number - 1 if number <= _COLUMNS else fallback
 
 
 def _number(name: str) -> int:

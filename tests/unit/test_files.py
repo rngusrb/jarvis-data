@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
+import json
 import struct
 import zipfile
 import zlib
+from pathlib import Path
 from typing import Dict
 
 import pytest
@@ -341,25 +344,126 @@ def test_encrypted_pdfs_open_only_with_an_empty_password() -> None:
 def test_the_child_sets_memory_and_cpu_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     """서버(리눅스)에서 자식은 메모리·CPU 상한을 걸고 시작한다.
 
-    폭탄 하나가 서버 메모리를 다 쓰지 않게.
+    폭탄 하나가 서버 메모리를 다 쓰지 않게. 자식 둘에 본체까지 `jarvis` 의 MemoryMax(3G) 안에
+    든다. 라이브러리 경고는 찍지 않는다 — 부모가 끝만 받아도, 애초에 쏟지 않게.
     """
+    import logging
     import resource
     import sys
+    import warnings
 
     calls: list = []
-    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append(which))
+    quiet: list = []
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append((which, limits)))
+    # 이 시험 프로세스의 로깅·경고 설정은 건드리지 않는다(뒤 시험의 caplog 가 비었다).
+    monkeypatch.setattr(logging, "disable", lambda level: quiet.append(level))
+    monkeypatch.setattr(warnings, "simplefilter", lambda action, *a, **k: quiet.append(action))
+    monkeypatch.setattr(files, "TEXT_CAP", 7)
+
+    class In:
+        buffer = io.BytesIO(_pdf("Exam 2026.09.21"))
+
+    class Out:
+        buffer = io.BytesIO()
+
+    monkeypatch.setattr(sys, "stdin", In())
+    monkeypatch.setattr(sys, "stdout", Out())
+    monkeypatch.setattr(sys, "argv", ["files.py", "pdf"])
+    files._child()
+
+    assert (resource.RLIMIT_AS, (files.CHILD_MEMORY, files.CHILD_MEMORY)) in calls
+    assert (resource.RLIMIT_CPU, (files.CHILD_CPU, files.CHILD_CPU + 1)) in calls
+    assert files.CHILD_MEMORY * files.SLOTS <= 2_000_000_000 and files.CHILD_CPU <= 30
+    assert quiet == [logging.CRITICAL, "ignore"]
+    # 글은 TEXT_CAP 자까지만 돌려준다.
+    assert json.loads(Out.buffer.getvalue()) == {"text": "[1쪽]\nEx"}
+
+
+def test_the_child_reports_limits_it_could_not_set(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """맥은 메모리 상한을 못 건다. 같이 걸었더니 그 실패에 CPU 상한까지 건너뛰었고, 못 건 사실은
+    오류 출력에 묻혔다(재리뷰) — 따로 걸고, 못 건 것은 답에 담아 부모가 한 번 남긴다."""
+    import logging
+    import resource
+    import sys
+    import warnings
+
+    calls: list = []
+
+    def refuse_memory(which: int, limits: tuple) -> None:
+        if which == resource.RLIMIT_AS:
+            raise ValueError("current limit exceeds maximum limit")
+        calls.append(which)
+
+    monkeypatch.setattr(resource, "setrlimit", refuse_memory)
+    monkeypatch.setattr(logging, "disable", lambda level: None)
+    monkeypatch.setattr(warnings, "simplefilter", lambda action, *a, **k: None)
 
     class In:
         buffer = io.BytesIO(_pdf("Exam"))
 
-    out = io.StringIO()
+    class Out:
+        buffer = io.BytesIO()
+
     monkeypatch.setattr(sys, "stdin", In())
-    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stdout", Out())
     monkeypatch.setattr(sys, "argv", ["files.py", "pdf"])
     files._child()
 
-    assert resource.RLIMIT_AS in calls and resource.RLIMIT_CPU in calls
-    assert "Exam" in out.getvalue()
+    result = json.loads(Out.buffer.getvalue())
+    assert calls == [resource.RLIMIT_CPU] and result["unlimited"][0].startswith("RLIMIT_AS")
+
+    monkeypatch.setattr(files, "_warned_limits", False)
+    with caplog.at_level(logging.WARNING, logger="src.brain.files"):
+        files._note_limits(result["unlimited"])
+        files._note_limits(result["unlimited"])
+    assert caplog.text.count("상한을 못 걸었다") == 1
+
+
+def test_odd_surrogates_from_a_parser_do_not_kill_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pypdf 는 ToUnicode 의 <D800> 을 짝 없는 서로게이트로 준다 — utf-8 로 쓰다 자식이 죽어 그 파일
+    전체를 못 읽었다(재리뷰). 짝은 한 글자로, 짝 없는 것은 �로."""
+    import logging
+    import sys
+    import warnings
+
+    monkeypatch.setattr(logging, "disable", lambda level: None)
+    monkeypatch.setattr(warnings, "simplefilter", lambda action, *a, **k: None)
+    monkeypatch.setattr(files, "text_of", lambda data, kind: "a\ud800b \ud83d\ude00")
+
+    class In:
+        buffer = io.BytesIO(b"")
+
+    class Out:
+        buffer = io.BytesIO()
+
+    monkeypatch.setattr(sys, "stdin", In())
+    monkeypatch.setattr(sys, "stdout", Out())
+    monkeypatch.setattr(sys, "argv", ["files.py", "pdf"])
+    files._child()
+    assert json.loads(Out.buffer.getvalue())["text"] == "a\ufffdb 😀"
+
+
+_SECTOR, _END, _FREE, _FAT, _NONE = 512, 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFF
+
+
+def _entry(
+    name: str, kind: int, right: int = _NONE, child: int = _NONE, start: int = _END, size: int = 0
+) -> bytes:
+    raw = name.encode("utf-16-le") + b"\x00\x00"
+    out = raw.ljust(64, b"\x00") + struct.pack("<HBB", len(raw), kind, 1)
+    out += struct.pack("<III", _NONE, right, child) + b"\x00" * 36
+    return out + struct.pack("<IQ", start, size)
+
+
+def _ole_head(directory: int, minifat: int, minifat_count: int, fat_at: int) -> bytes:
+    head = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 16
+    head += struct.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6) + b"\x00" * 6
+    head += struct.pack("<9I", 0, 1, directory, 0, 0x1000, minifat, minifat_count, _END, 0)
+    return head + struct.pack("<109I", fat_at, *([_FREE] * 108))
 
 
 def _cfb(header: bytes, section: bytes) -> bytes:
@@ -368,44 +472,52 @@ def _cfb(header: bytes, section: bytes) -> bytes:
     시험용 최소 작성기다(리뷰 재현 도구를 옮김). 스트림은 4096 바이트 이상으로 채워 작은
     스트림 칸을 안 쓴다.
     """
-    sector, end, free, fat_mark, none = 512, 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD, 0xFFFFFFFF
-
-    def entry(
-        name: str, kind: int, right: int = none, child: int = none, start: int = end, size: int = 0
-    ) -> bytes:
-        raw = name.encode("utf-16-le") + b"\x00\x00"
-        out = raw.ljust(64, b"\x00") + struct.pack("<HBB", len(raw), kind, 1)
-        out += struct.pack("<III", none, right, child) + b"\x00" * 36
-        return out + struct.pack("<IQ", start, size)
-
     streams = [header.ljust(4096, b"\x00"), section.ljust(4096, b"\x00")]
     sectors: list = []
     starts: list = []
     fat: list = []
     for data in streams:
-        count = -(-len(data) // sector)
+        count = -(-len(data) // _SECTOR)
         starts.append(len(sectors))
-        padded = data.ljust(count * sector, b"\x00")
+        padded = data.ljust(count * _SECTOR, b"\x00")
         for i in range(count):
-            sectors.append(padded[i * sector : (i + 1) * sector])
-            fat.append(len(sectors) if i < count - 1 else end)
+            sectors.append(padded[i * _SECTOR : (i + 1) * _SECTOR])
+            fat.append(len(sectors) if i < count - 1 else _END)
     directory = len(sectors)
     sectors.append(
-        entry("Root Entry", 5, child=1)
-        + entry("FileHeader", 2, right=2, start=starts[0], size=len(streams[0]))
-        + entry("BodyText", 1, child=3)
-        + entry("Section0", 2, start=starts[1], size=len(streams[1]))
+        _entry("Root Entry", 5, child=1)
+        + _entry("FileHeader", 2, right=2, start=starts[0], size=len(streams[0]))
+        + _entry("BodyText", 1, child=3)
+        + _entry("Section0", 2, start=starts[1], size=len(streams[1]))
     )
-    fat.append(end)
+    fat.append(_END)
     fat_at = len(sectors)
-    fat.append(fat_mark)
-    fat.extend([free] * (128 - len(fat)))
+    fat.append(_FAT)
+    fat.extend([_FREE] * (128 - len(fat)))
     sectors.append(struct.pack("<128I", *fat))
-    head = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 16
-    head += struct.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6) + b"\x00" * 6
-    head += struct.pack("<9I", 0, 1, directory, 0, 0x1000, end, 0, end, 0)
-    head += struct.pack("<109I", fat_at, *([free] * 108))
-    return head + b"".join(sectors)
+    return _ole_head(directory, _END, 0, fat_at) + b"".join(sectors)
+
+
+def _mini_hwp(text: str, root: int, loop: bool = False) -> bytes:
+    """본문(Section0)이 작은 스트림 칸에 든 한글 파일(재리뷰 재현의 꼴).
+
+    `root` 는 Root Entry 가 적은 칸 크기, `loop` 면 그 칸의 FAT 가 제자리를 가리킨다.
+    """
+    header = b"HWP Document File".ljust(32, b"\x00") + struct.pack("<II", 0x05000300, 0)
+    header = header.ljust(4096, b"\x00")
+    section = _record(67, text.encode("utf-16-le"))
+    sectors = [header[i : i + _SECTOR] for i in range(0, 4096, _SECTOR)]  # 0~7 FileHeader
+    sectors.append(section.ljust(_SECTOR, b"\x00"))  # 8 작은 스트림 칸
+    sectors.append(struct.pack("<128I", _END, *([_FREE] * 127)))  # 9 MiniFAT
+    sectors.append(  # 10 디렉터리
+        _entry("Root Entry", 5, child=1, start=8, size=root)
+        + _entry("FileHeader", 2, right=2, start=0, size=4096)
+        + _entry("BodyText", 1, child=3)
+        + _entry("Section0", 2, start=0, size=len(section))
+    )
+    fat = [1, 2, 3, 4, 5, 6, 7, _END, 8 if loop else _END, _END, _END, _FAT]
+    sectors.append(struct.pack("<128I", *fat, *([_FREE] * (128 - len(fat)))))  # 11 FAT
+    return _ole_head(10, 9, 1, 11) + b"".join(sectors)
 
 
 def _hwp_file(text: str, flags: int) -> bytes:
@@ -455,3 +567,193 @@ def test_only_the_first_pages_and_rows_are_read(monkeypatch: pytest.MonkeyPatch)
         }
     )
     assert text_of(xlsx, files.XLSX) == "[시트 1]\n1행\n2행"
+
+
+def test_small_streams_cannot_hide_a_huge_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """작은 스트림은 Root Entry 의 한 덩어리에서 읽는다 — 구역 크기만 봐서는 못 막는다.
+
+    6.6KB HWP 가 그 덩어리를 300MB 로 적고 FAT 를 제자리로 돌려 728MB 를 썼다(재리뷰 재현). 구조
+    검사(`DEFECT_INCORRECT`)가 덩어리가 FAT 보다 크다는 걸 잡고, 덩어리 크기도 먼저 본다.
+    """
+    assert text_of(_mini_hwp("3회 접수", 64), files.HWP) == "3회 접수"
+    # FAT(128칸)보다 큰 덩어리를 제자리 고리로 — 구조 검사가 없으면 고리를 돌며 읽어 "ok"였다.
+    with pytest.raises(Unreadable):
+        text_of(_mini_hwp("3회 접수", 100_000, loop=True), files.HWP)
+    # 구조는 멀쩡해도 덩어리가 상한보다 크면 열기 전에.
+    monkeypatch.setattr(files, "UNZIPPED", 32)
+    with pytest.raises(Unreadable, match="작은 스트림"):
+        text_of(_mini_hwp("3회 접수", 64), files.HWP)
+
+
+def test_hwp_caps_count_across_sections_and_uncompressed_too() -> None:
+    """구역마다 따로 세면 구역을 늘려 상한을 넘긴다. 압축 안 된 본문도 같은 상한."""
+    record = _record(67, "가나".encode("utf-16-le"))
+    with pytest.raises(Unreadable):
+        hwp_text([record * 10], compressed=False, limit=len(record))
+    with pytest.raises(Unreadable):
+        hwp_text([record, record], compressed=False, limit=len(record) + 4)
+
+    def deflated(raw: bytes) -> bytes:
+        deflate = zlib.compressobj(wbits=-15)
+        return deflate.compress(raw) + deflate.flush()
+
+    with pytest.raises(Unreadable):
+        hwp_text([deflated(record), deflated(record)], compressed=True, limit=len(record) + 4)
+    assert hwp_text([record, record], compressed=False, limit=2 * len(record)) == "가나\n가나"
+
+
+def test_zip_members_are_read_only_up_to_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """다 읽고 나서 크기를 보면 실패는 해도 메모리는 이미 쓴 뒤다. 문서 전체에서 누적으로 센다."""
+    import tracemalloc
+
+    big = _zip({"word/document.xml": f"<w:document {W}>" + " " * 20_000_000 + "</w:document>"})
+    monkeypatch.setattr(files, "UNZIPPED", 1_000)
+    tracemalloc.start()
+    try:
+        with pytest.raises(Unreadable):
+            text_of(big, files.DOCX)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 5_000_000
+
+    section = f"<hs {HP}><hp:p><hp:run><hp:t>" + "가" * 200 + "</hp:t></hp:run></hp:p></hs>"
+    two = _zip({"Contents/section0.xml": section, "Contents/section1.xml": section})
+    with pytest.raises(Unreadable):
+        text_of(two, files.HWPX)
+
+
+def test_hwpx_text_after_line_breaks_and_marks_is_kept() -> None:
+    """한글 OWPML 은 줄바꿈·탭·형광펜이 글 조각 안의 요소이고, 뒤 글은 그 꼬리에 있다.
+
+    .text 만 읽었더니 korea.kr 보도자료에서 17곳 중 12곳이 빠졌다 — 날짜 뒤 시각이 사라졌다(재리뷰).
+    """
+    hwpx = _zip(
+        {
+            "Contents/section0.xml": f"<hs {HP}><hp:p><hp:run><hp:t>11. 14.(토)<hp:lineBreak/>"
+            "13:00~14:30(북토크)<hp:lineBreak/>15:00~16:30(워크숍)</hp:t></hp:run></hp:p>"
+            '<hp:p><hp:run><hp:t><hp:markpenBegin color="#FFFF00"/>상수동 골목 일대'
+            "<hp:markpenEnd/>에서<hp:tab/>열린다</hp:t></hp:run></hp:p></hs>"
+        }
+    )
+    assert text_of(hwpx, files.HWPX) == (
+        "11. 14.(토) 13:00~14:30(북토크) 15:00~16:30(워크숍)\n상수동 골목 일대에서 열린다"
+    )
+
+
+def test_excel_times_are_times_and_odd_cell_addresses_stay_small() -> None:
+    """시각 서식까지 날짜로 보면 09:30 이 "1899-12-30 09:29"가 됐다(재리뷰 — 자르지 말고 반올림).
+
+    셀 주소 하나("ZZZZZZZZZZ1")로 빈 칸을 수십억 개 만들다 1GB 를 썼다 — 엑셀의 마지막 열까지만.
+    """
+    xlsx = _zip(
+        {
+            "xl/workbook.xml": f"<workbook {S}/>",
+            "xl/styles.xml": f"<styleSheet {S}><numFmts>"
+            '<numFmt numFmtId="164" formatCode="yyyy\\-mm\\-dd"/>'
+            '<numFmt numFmtId="165" formatCode="[h]:mm"/></numFmts>'
+            '<cellXfs><xf numFmtId="0"/><xf numFmtId="20"/><xf numFmtId="164"/>'
+            '<xf numFmtId="165"/></cellXfs></styleSheet>',
+            "xl/worksheets/sheet1.xml": f"<worksheet {S}><sheetData><row>"
+            '<c r="A1" s="1"><v>0.3958333333</v></c><c r="B1" s="2"><v>46286</v></c>'
+            '<c r="C1" s="3"><v>0.5</v></c>'
+            '<c r="ZZZZZZZZZZ1" t="inlineStr"><is><t>멀리</t></is></c>'
+            "</row></sheetData></worksheet>",
+        }
+    )
+    assert text_of(xlsx, files.XLSX) == "[시트 1]\n09:30 | 2026-09-21 | 12:00 | 멀리"
+
+
+def _child_script(body: str) -> list:
+    import sys
+
+    return [sys.executable, "-c", "import sys\nsys.stdin.buffer.read()\n" + body]
+
+
+def test_a_flood_on_the_error_output_stays_in_the_child() -> None:
+    """자식의 오류 출력은 끝만 남긴다. 다 모았더니 87KB PDF 하나에 본체 메모리가 1.4GB 가 됐다
+
+    (pypdf 가 깨진 줄마다 그 줄을 통째로 경고로 찍었다 — 재리뷰 재현). 왜 멈췄는지는 끝에 있다.
+    """
+    import tracemalloc
+
+    from src.brain.files import extract
+
+    flood = _child_script(
+        "for _ in range(320):\n    sys.stderr.buffer.write(b'x' * 65536)\n"
+        "sys.stderr.buffer.write('\\n끝에 남은 이유'.encode())\nsys.exit(3)\n"
+    )
+    tracemalloc.start()
+    try:
+        with pytest.raises(Unreadable, match="종료 3.*끝에 남은 이유"):
+            asyncio.run(extract(b"x", "pdf", command=flood))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 5_000_000  # 20MB 를 쏟아도
+
+
+def test_too_much_text_from_the_child_is_cut_off() -> None:
+    from src.brain.files import extract
+
+    chatty = _child_script("sys.stdout.buffer.write(b'x' * 5_000_000)\n")
+    with pytest.raises(Unreadable, match="넘게 돌려줘"):
+        asyncio.run(extract(b"x", "pdf", command=chatty))
+
+
+def test_a_child_that_ends_before_reading_everything_still_answers() -> None:
+    """자식이 입력을 다 안 읽고 끝나면 보내던 쪽이 끊긴 파이프를 만난다 — 그래도 답을 받는다."""
+    import sys
+
+    from src.brain.files import extract
+
+    early = [sys.executable, "-c", 'print(\'{"text": "먼저 끝"}\')']
+    assert asyncio.run(extract(b"x" * 5_000_000, "pdf", command=early)) == "먼저 끝"
+
+
+def test_at_most_two_children_run_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """대화·관심사 준비·보고서가 겹쳐도 자식은 둘까지 — 자식마다 1GB 다."""
+    from src.brain.files import extract
+
+    monkeypatch.setattr(files, "_slots", None)  # 이 시험의 루프에서 새로 만든다
+    body = (
+        "import os, time\nstart = time.time()\ntime.sleep(0.3)\n"
+        "open(os.path.join(sys.argv[1], str(os.getpid())), 'w').write(f'{start} {time.time()}')\n"
+        'sys.stdout.write(\'{"text": "ok"}\')\n'
+    )
+    command = _child_script(body) + [str(tmp_path)]
+
+    async def four() -> list:
+        return list(await asyncio.gather(*(extract(b"", "pdf", command=command) for _ in range(4))))
+
+    assert asyncio.run(four()) == ["ok"] * 4
+    events = []
+    for path in tmp_path.iterdir():
+        start, end = map(float, path.read_text().split())
+        events += [(start, 1), (end, -1)]
+    running = most = 0
+    for _, change in sorted(events):
+        running += change
+        most = max(most, running)
+    assert most == 2
+
+
+def test_the_child_starts_isolated_without_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """자식은 `-I` 로 — 이 파일의 폴더(src/brain)가 모듈 경로 맨 앞에 오면 같은 이름의 파일이 표준
+    모듈을 가린다(재리뷰: 리뷰어의 concurrent.py 가 asyncio 를 깨뜨렸다). 환경은 PATH·LANG 만."""
+    import sys
+
+    from src.brain.files import extract
+
+    seen: dict = {}
+
+    async def spawn(*argv: str, **options: object) -> object:
+        seen.update(argv=argv, env=options.get("env"))
+        raise OSError("여기까지만")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(files, "_slots", None)
+    with pytest.raises(OSError):
+        asyncio.run(extract(b"", "pdf"))
+    assert seen["argv"][:2] == (sys.executable, "-I") and seen["argv"][-1] == "pdf"
+    assert set(seen["env"]) == {"PATH", "LANG"}

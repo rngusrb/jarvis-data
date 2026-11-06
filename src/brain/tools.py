@@ -18,8 +18,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Union
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, List, Set, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from src.brain.client import ToolCall, ToolReasoner, Turn
@@ -135,6 +135,8 @@ class _State:
     read: int = 0
     # 읽어도 되는 주소: 정규화한 주소 → 받은 그대로의 주소. 요청은 늘 받은 그대로로 한다.
     seen: Dict[str, str] = field(default_factory=dict)
+    # 검색 결과로 받은 주소(받은 그대로). 첨부는 이 페이지들에서만 모은다 — 한 단계만.
+    found: Set[str] = field(default_factory=set)
     uses: List[Use] = field(default_factory=list)
     pages: List[Page] = field(default_factory=list)
 
@@ -278,6 +280,7 @@ class ToolLoop:
                     "못 찾았다고 말한다."
                 )
             state.seen.update((_norm(f.url), f.url) for f in found)
+            state.found.update(f.url for f in found)
             state.uses.append(Use("search", query, True, f"{len(found)}개", len(found)))
             return render_found(query, found)
         if call.name == "read_page":
@@ -300,9 +303,13 @@ class ToolLoop:
                 state.uses.append(Use("read", url, False, why[:120]))
                 return f"읽기 실패({type(error).__name__}). 다른 결과를 읽거나 요약으로 답한다."
             state.uses.append(Use("read", url, True, f"{len(page.text)}자", len(page.text)))
-            state.pages.append(page)
-            # 읽은 페이지에 그대로 있던 같은 사이트 첨부는 다음 차례에 읽을 수 있다(`links_of`).
+            # 검색 결과로 읽은 페이지의 같은 사이트 첨부는 다음 차례에 읽을 수 있다(`links_of`).
+            # 첨부로 읽은 페이지의 링크는 더 모으지 않는다 — 링크 글을 "일정.pdf"로 쓴 블로그 글이
+            # 다른 글로, 그 글이 또 다른 글로 허용 목록을 넓혀 갈 수 있다(재리뷰).
+            if url not in state.found:
+                page = replace(page, links=())
             state.seen.update((_norm(link.url), link.url) for link in page.links)
+            state.pages.append(page)
             return render_page(page)
         logger.warning("모르는 도구를 불렀다: %s", call.name)
         return f"그런 도구는 없다: {call.name}"

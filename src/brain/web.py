@@ -38,7 +38,7 @@ from typing import (
     Sequence,
     Tuple,
 )
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit
 
 import httpcore
 import httpx
@@ -556,7 +556,9 @@ def _drop_menus(lines: Sequence[Tuple[str, bool]], run: int = 3) -> List[str]:
 # fileDownMan004('경로','이름','번호') 이고, 그 함수는 같은 페이지의 man004.do 를 GET 으로 부른다.
 _QNET = re.compile(r"fileDownMan004\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*\)")
 LINKS = 10
-# 첨부 주소 길이 상한. 긴 주소 하나로 본문 4천 자 상한을 우회해 문맥을 채울 수 있다(리뷰).
+# 첨부 주소 길이 상한 — 풀어 쓴(%-디코딩한) 길이로 잰다. 긴 주소 하나로 본문 4천 자 상한을 우회해
+# 문맥을 채울 수 있다(리뷰). 인코딩된 길이로 쟀더니 한글 1자가 9자라 큐넷 첨부 이름이 34자쯤만
+# 돼도 조용히 빠졌다(재리뷰).
 LINK_LENGTH = 500
 _DOCUMENTS = (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".csv")
 
@@ -601,6 +603,7 @@ def links_of(html: str, base: str) -> List[Link]:
     host = urlsplit(base).hostname
     out: List[Link] = []
     seen = set()
+    too_long = 0
     query = dict(parse_qsl(urlsplit(base).query))
     for href, onclick, text in parser.found:
         url = ""
@@ -637,12 +640,17 @@ def links_of(html: str, base: str) -> List[Link]:
         parts = urlsplit(url)
         if not url or parts.scheme not in ("http", "https") or parts.hostname != host:
             continue
-        if len(url) > LINK_LENGTH or url in seen:
+        if len(unquote(url)) > LINK_LENGTH:
+            too_long += 1
+            continue
+        if url in seen:
             continue
         seen.add(url)
         out.append(Link(url=url, name=name[:80]))
         if len(out) >= LINKS:
             break
+    if too_long:
+        logger.info("첨부 링크 %d개는 주소가 %d자를 넘어 뺐다: %s", too_long, LINK_LENGTH, base)
     return out
 
 

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, List
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import httpcore
 import httpx
@@ -515,3 +515,54 @@ def test_text_pages_and_files_have_different_size_caps() -> None:
     )
     asyncio.run(reader.read("https://big.example/"))
     assert len(seen) <= 4
+
+
+def test_files_from_the_web_go_to_the_child_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """페이지 읽기는 파일을 자식 프로세스(`files.extract`)로 보낸다.
+
+    스레드로 되돌려도 다른 시험이 다 통과했다(재리뷰 돌연변이 N31) — 그 길을 붙든다.
+    """
+    from src.brain import files
+    from tests.unit.test_files import _pdf
+
+    sent: list = []
+
+    async def child(data: bytes, kind: str, timeout: float = 25.0, command: object = None) -> str:
+        sent.append((data[:4], kind, timeout))
+        return "자식이 읽음"
+
+    monkeypatch.setattr(files, "extract", child)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, content=_pdf("Exam")
+        )
+
+    reader = PageReader(_client(handler), resolve=_public("211.115.84.70"), parse_seconds=7)
+    page = asyncio.run(reader.read("https://q.example/a.pdf"))
+    assert sent == [(b"%PDF", "pdf", 7)] and page.text == "자식이 읽음"
+
+
+def test_long_korean_attachment_names_are_kept_and_drops_are_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """주소 길이는 풀어 쓴(%-디코딩한) 길이로 잰다. 그래도 넘쳐서 뺀 것은 남긴다.
+
+    인코딩된 길이로 쟀더니 한글 1자가 9자라 큐넷 첨부 이름이 34자쯤만 돼도 조용히 빠졌다(재리뷰).
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.q-net.or.kr/man004.do?ARTL_SEQ=5276928&BOARD_ID=Q001&gSite=Q&id=man00402"
+    name = (
+        "2026년 정기 기사·산업기사 제3회 실기시험 원서접수 및 시험장 안내"
+        "(수험자 유의사항·준비물 포함).hwp"
+    )
+    html = (
+        f"<button onclick=\"fileDownMan004('bbs/Q001/Q001_1', '{name}', '1')\">다운</button>"
+        f'<a href="/files/{"a" * 600}.pdf">긴 것</a>'
+    )
+    with caplog.at_level(logging.INFO, logger="src.brain.web"):
+        links = links_of(html, base)
+    assert [link.name for link in links] == [name[:80]]
+    assert len(links[0].url) > 500 >= len(unquote(links[0].url))  # 예전 상한이면 빠졌다
+    assert "1개는 주소가 500자를 넘어 뺐다" in caplog.text
