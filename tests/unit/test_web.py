@@ -611,3 +611,33 @@ def test_text_answers_like_json_get_the_small_cap() -> None:
     )
     got = asyncio.run(page.read("https://api.example/big.csv"))
     assert got.kind == "text" and len(got.text) <= 3000
+
+
+def test_content_inside_a_page_wide_form_is_kept() -> None:
+    """한국 공공 사이트는 페이지 전체를 form 으로 감싼다 — 버렸더니 큐넷 연간 시험일정이
+    44자였다(실측)."""
+    html = (
+        "<html><body><form name='f'><h3>연간 국가기술자격 시험일정</h3>"
+        "<table><tr><td>2026년 제3회</td><td>2026.09.21 - 2026.09.28</td></tr></table>"
+        "<select><option>기사</option></select><button>검색</button></form></body></html>"
+    )
+    _, text = extract(html)
+    assert "2026년 제3회 | 2026.09.21 - 2026.09.28" in text
+    assert "기사" not in text.replace("국가기술자격", "") and "검색" not in text
+
+
+def test_line_breaks_inside_a_cell_keep_the_row_on_one_line() -> None:
+    """칸 안의 줄바꿈으로 행이 여러 줄로 쪼개지자 발표일을 시험일로 읽었다(큐넷 연간 시험일정,
+    실측)."""
+    html = (
+        "<main><table><tr><th>회별</th><th>원서접수</th><th>시험</th><th>발표</th></tr>"
+        "<tr><td>2026년/<br>제3회</td><td>2026.09.21<br>- 2026.09.23,<p>2026.09.28</p></td>"
+        "<td>2026.10.24<br>- 2026.11.13</td><td>2026.12.11,<br>2026.12.18</td></tr></table>"
+        "<p>원서접수 시간은 첫날 10:00부터.</p></main>"
+    )
+    lines = extract(html)[1].split("\n")
+    assert lines[1] == (
+        "2026년/ 제3회 | 2026.09.21 - 2026.09.23, 2026.09.28 | 2026.10.24 - 2026.11.13 | "
+        "2026.12.11, 2026.12.18"
+    )
+    assert lines[2] == "원서접수 시간은 첫날 10:00부터."

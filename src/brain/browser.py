@@ -54,6 +54,7 @@ _ROLES = {
     "radio": "고르기",
     "menuitem": "메뉴",
     "option": "항목",
+    "clickable": "누르기",
 }
 
 # 화면의 누를 수 있는 것에 번호를 붙인다(프레임마다 `start` 부터). 숨은 것·끈 것은 뺀다. 비밀번호·
@@ -66,9 +67,19 @@ _CONTROLS_JS = r"""
   for (const old of document.querySelectorAll('[data-jarvis-ref]')) {
     old.removeAttribute('data-jarvis-ref');
   }
+  // 스크립트로 클릭을 단 탭·칸(큐넷 "접수일정" 탭은 onclick 없는 li 였다)은 손가락 커서로 알아본다.
+  // 이미 잡힌 것 안·바깥이거나, 부모도 손가락이면(같은 것의 안쪽) 뺀다.
+  const pointing = (el) => getComputedStyle(el).cursor === 'pointer';
+  const isControl = (el) => {
+    if (el.matches(SEL)) return true;
+    if (!pointing(el) || el.closest(SEL) || el.querySelector(SEL)) return false;
+    const up = el.parentElement;
+    return !(up && up !== document.body && pointing(up));
+  };
   const out = [];
   let n = start;
-  for (const el of document.querySelectorAll(SEL)) {
+  for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+    if (!isControl(el)) continue;
     const box = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     if (box.width < 2 || box.height < 2) continue;
@@ -85,7 +96,8 @@ _CONTROLS_JS = r"""
         role = ['button', 'submit', 'reset', 'image'].includes(type) ? 'button'
           : type === 'checkbox' ? 'checkbox' : type === 'radio' ? 'radio'
           : type === 'search' ? 'searchbox' : 'textbox';
-      } else role = 'button';
+      } else if (el.matches(SEL)) role = 'button';
+      else role = 'clickable';
     }
     const typing = ['searchbox', 'textbox', 'combobox'].includes(role);
     const img = el.querySelector && el.querySelector('img[alt]');
@@ -94,6 +106,7 @@ _CONTROLS_JS = r"""
     const hold = el.getAttribute('placeholder') || el.getAttribute('title') || '';
     const label = el.getAttribute('aria-label') || (typing ? hold : own);
     const name = String(label).replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (role === 'clickable' && !name) continue;
     const hint = [el.getAttribute('name'), el.id, el.getAttribute('placeholder'),
       el.getAttribute('aria-label'), el.getAttribute('title'), String(el.className || '')];
     const looks = /search|query|keyword|srch|kwd|검색|찾기/i.test(hint.join(' '));
@@ -277,9 +290,16 @@ class Session:
             raise Refused(f"[{ref}] 이 지금 화면에 없다 — 가장 최근에 본 목록의 번호를 쓴다")
         return self._refs[ref]
 
-    async def _settle(self) -> None:
-        """누른 뒤 페이지가 자리 잡기를 잠깐 기다린다. 끝없이 받는 페이지(광고·실시간)는 있는 대로
-        본다."""
+    async def _settle(self, quiet: float = 0.75, least: float = 1.2, most: float = 6.0) -> None:
+        """누른 뒤 페이지가 자리 잡기를 기다린다.
+
+        새 페이지면 로드를, 같은 페이지 안의 바뀜(탭·더보기)이면 보이는 글이 `quiet` 초 동안 안
+        바뀔 때까지(최소 `least`, 최대 `most` 초). 로드만 기다렸더니 큐넷 연간 시험일정의 "기사,
+        산업기사" 탭을 누른 직후의 화면(바뀌기 전)을 봤다 — 표는 1~2초 뒤에 채워졌다(2026-11-06
+        실측). 끝없이 바뀌는 페이지(광고·실시간)는 `most` 에서 지금 모습으로 본다.
+        """
+        loop = asyncio.get_running_loop()
+        start = loop.time()
         await asyncio.sleep(0.3)
         for state, wait in (("domcontentloaded", 10_000), ("networkidle", 3_000)):
             try:
@@ -287,6 +307,22 @@ class Session:
             except Exception:
                 # 조용해지지 않는 페이지는 흔하다 — 실패가 아니라 지금 모습으로 본다.
                 logger.debug("페이지가 %s 에 이르지 않음 — 지금 모습으로 봄", state)
+        last, still = -1, loop.time()
+        while loop.time() - start < most:
+            try:
+                size = await self.page.evaluate(
+                    "() => document.body ? document.body.innerText.length : 0"
+                )
+            except Exception:
+                # 페이지가 넘어가는 중이다 — 다음 번에 다시 잰다.
+                logger.debug("글 길이를 못 잼(넘어가는 중) — 다시 잰다")
+                size = -2
+            now = loop.time()
+            if size != last:
+                last, still = size, now
+            elif now - still >= quiet and now - start >= least:
+                return
+            await asyncio.sleep(0.25)
 
 
 @dataclass
@@ -324,6 +360,8 @@ class Browser:
                     browser = await playwright.chromium.launch(
                         headless=True,
                         chromium_sandbox=self.sandbox,
+                        # 루프백도 프록시로(크롬은 기본으로 루프백을 뺀다). Playwright 도 넣지만
+                        # 버전이 바뀌어도 그대로이게 적는다 — 결과는 시험이 지킨다(내부 주소 막힘).
                         proxy={"server": address, "bypass": "<-loopback>"},
                         args=[
                             "--disable-quic",
@@ -380,9 +418,10 @@ def _why(error: Exception) -> str:
 
 
 def _plain(error: Exception) -> Refused:
-    """Playwright 오류를 모델에게 보일 한 줄로(긴 호출 기록은 로그로)."""
-    logger.info("브라우저 동작 실패: %s", error)
+    """Playwright 오류를 모델에게 보일 한 줄로. 로그도 첫 줄만 — 긴 호출 기록은 debug 로."""
     first = str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__
+    logger.info("브라우저 동작 실패: %s", first[:300])
+    logger.debug("브라우저 동작 실패 — 전체: %s", error)
     return Refused(f"하지 못했다: {first[:160]}")
 
 

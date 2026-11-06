@@ -414,9 +414,12 @@ def decode(raw: bytes, content_type: str) -> str:
 
 
 # 본문이 아닌 곳. 메뉴·광고·스크립트가 앞을 채우면 잘린 본문에 정작 내용이 안 남는다.
+# form 은 버리지 않는다 — 한국 공공 사이트는 페이지 전체를 form 으로 감싸는 일이 흔하고(큐넷 연간
+# 시험일정의 표가 form 안에 있었다 — 버렸더니 3천 자가 44자가 됐다, 2026-11-06 JAR-038 실측). form
+# 안의 입력칸은 글이 없고, 고르기(select)·버튼은 따로 뺀다.
 _SKIP = {
     "script", "style", "noscript", "svg", "head", "header", "footer", "nav", "aside",
-    "form", "iframe", "button", "select", "template",
+    "iframe", "button", "select", "template",
 }  # fmt: skip
 # 표의 칸(td·th)은 줄을 나누지 않고 " | "로 잇는다 — 칸마다 줄을 나누면 일정표가 짧은 줄 더미가 되어
 # 메뉴처럼 지워졌다(JAR-031 리뷰 재현: 일정 페이지 다섯 중 넷에서 날짜가 거의 다 빠졌다).
@@ -448,13 +451,20 @@ class _Text(HTMLParser):
         self.parts: List[Tuple[str, bool, bool]] = []
         self.title: List[str] = []
         self.in_title = False
+        # 표의 칸 안인가. 칸 안의 줄바꿈(br·블록)은 공백으로 — 한 행이 한 줄이어야 칸 순서가 맞는다.
+        # 칸 안에서 줄을 나눴더니 큐넷 연간 시험일정의 행이 여러 줄로 쪼개져 발표일을 시험일로
+        # 읽었다(2026-11-06 JAR-038 실측).
+        self.cell = 0
+
+    def _break(self) -> None:
+        self.parts.append(("\n" if not self.cell else " ", False, self.main > 0))
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         if tag == "title":
             self.in_title = True
         if tag in _VOID:
             if tag == "br":
-                self.parts.append(("\n", False, self.main > 0))
+                self._break()
             return
         names = " ".join(v or "" for k, v in attrs if k in ("class", "id"))
         opens = tag in _MAIN_TAGS or any(hint in names for hint in _MAIN_HINTS)
@@ -466,9 +476,10 @@ class _Text(HTMLParser):
         elif tag == "a":
             self.link += 1
         elif tag in _CELL:
+            self.cell += 1
             self.parts.append((" | ", False, self.main > 0))
         elif tag in _BLOCK:
-            self.parts.append(("\n", False, self.main > 0))
+            self._break()
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "title":
@@ -486,8 +497,10 @@ class _Text(HTMLParser):
                 self.skip -= 1
             elif open_tag == "a" and self.link:
                 self.link -= 1
+            elif open_tag in _CELL and self.cell:
+                self.cell -= 1
             elif open_tag in _BLOCK:
-                self.parts.append(("\n", False, self.main > 0))
+                self._break()
             if open_tag == tag:
                 break
 

@@ -45,6 +45,17 @@ PAGES = {
 <a href="/schedule">프레임 링크</a></body></html>""",
     "/alert": """<html><head><title>알림</title></head><body><script>alert('잠깐')</script>
 <main><p>알림 뒤의 본문.</p></main></body></html>""",
+    "/tabs": """<html><head><title>연간 일정</title></head><body><main>
+<ul><li id="pro" style="cursor:pointer">기술사</li>
+<li id="eng" style="cursor:pointer">기사</li></ul>
+<form><div id="table">기술사 일정 표</div></form></main>
+<script>
+document.getElementById('eng').addEventListener('click', () => {
+  setTimeout(() => {
+    document.getElementById('table').innerText = '기사 3회 실기 접수 9.21~9.28';
+  }, 800);
+});
+</script></body></html>""",
 }
 
 
@@ -270,3 +281,22 @@ def test_a_browser_that_cannot_start_says_why(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(BrowserUnavailable, match="AppArmor"):
         asyncio.run(run())
+
+
+def test_script_bound_tabs_are_numbered_and_late_changes_are_waited_for(
+    site: Tuple[int, List[str]],
+) -> None:
+    """onclick 없이 스크립트로 단 탭(손가락 커서)도 누를 것이다. 누른 뒤 0.8초에 채워지는 표도 본다
+    — 로드만 기다렸더니 바뀌기 전 화면을 봤다(큐넷 연간 시험일정, 2026-11-06 실측)."""
+    port, _ = site
+
+    async def run() -> Tuple[Any, Any]:
+        async with _browser(port).session() as session:
+            tabs = await session.open("http://site.example/tabs")
+            after = await session.click(_ref(tabs, "기사"))
+            return tabs, after
+
+    tabs, after = asyncio.run(run())
+    assert {"기술사", "기사"} <= {c.name for c in tabs.controls if c.role == "clickable"}
+    assert "기술사 일정 표" in tabs.text  # form 안의 본문도 보인다
+    assert "기사 3회 실기 접수 9.21~9.28" in after.text
