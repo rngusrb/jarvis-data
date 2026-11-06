@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qsl, urlsplit
 
@@ -403,20 +404,31 @@ def test_attachment_links_are_collected_with_the_qnet_button() -> None:
     assert links[1].url == "https://www.q-net.or.kr/files/guide.hwp"
 
 
-def test_a_big_file_is_parsed_without_stopping_jarvis(monkeypatch: pytest.MonkeyPatch) -> None:
-    """파일 분석은 스레드에서 — 큰 PDF 를 읽는 동안에도 듣기·반응 루프가 돈다."""
-    import time
+def test_files_are_parsed_in_a_separate_process() -> None:
+    """별도 프로세스에서 뽑는다.
 
-    from src.brain import files as files_module
+    스레드로 돌리면 시간 초과가 나도 스레드는 끝까지 돌았다(리뷰 재현).
+    """
+    from src.brain.files import extract
+    from tests.unit.test_files import _pdf
 
-    def slow(data: bytes, kind: str) -> str:
-        time.sleep(0.3)
-        return "다 읽었다"
+    assert "Exam 2026.09.21" in asyncio.run(extract(_pdf("Exam 2026.09.21"), "pdf"))
 
-    monkeypatch.setattr(files_module, "text_of", slow)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4")
+def test_a_parser_that_runs_too_long_is_killed_and_jarvis_keeps_going(tmp_path: Path) -> None:
+    """시간을 넘기면 자식을 끝낸다 — 기다리기만 멈추고 자식이 계속 돌면 스레드 때와 같다(리뷰)."""
+    import os
+    import sys
+
+    from src.brain.files import Unreadable, extract
+
+    pid_file = tmp_path / "pid"
+    hang = [
+        sys.executable,
+        "-c",
+        "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(30)",
+        str(pid_file),
+    ]
 
     async def both() -> tuple:
         ticks = 0
@@ -424,12 +436,82 @@ def test_a_big_file_is_parsed_without_stopping_jarvis(monkeypatch: pytest.Monkey
         async def tick() -> None:
             nonlocal ticks
             for _ in range(5):
-                await asyncio.sleep(0.04)
+                await asyncio.sleep(0.03)
                 ticks += 1
 
-        reader = PageReader(_client(handler), resolve=_public("211.115.84.70"))
-        page, _ = await asyncio.gather(reader.read("https://a.kr/big.pdf"), tick())
-        return page, ticks
+        start = asyncio.get_running_loop().time()
+        outcome, _ = await asyncio.gather(
+            extract(b"x", "pdf", timeout=0.5, command=hang), tick(), return_exceptions=True
+        )
+        return outcome, ticks, asyncio.get_running_loop().time() - start
 
-    page, ticks = asyncio.run(both())
-    assert page.text == "다 읽었다" and ticks == 5
+    outcome, ticks, took = asyncio.run(both())
+    assert isinstance(outcome, Unreadable) and "멈췄다" in str(outcome)
+    assert ticks == 5 and took < 5
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)  # 자식은 이미 없다
+
+
+def test_the_child_gets_no_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """남이 만든 파일을 여는 쪽이다 — 봇 토큰 같은 비밀값이 든 환경을 넘기지 않는다."""
+    import sys
+
+    from src.brain.files import extract
+
+    monkeypatch.setenv("JARVIS_TELEGRAM_BOT_TOKEN", "secret-token")
+    show = [
+        sys.executable,
+        "-c",
+        "import json, os, sys; sys.stdin.buffer.read(); "
+        "print(json.dumps({'text': json.dumps(dict(os.environ))}))",
+    ]
+    env = asyncio.run(extract(b"", "pdf", command=show))
+    assert "secret-token" not in env and "JARVIS" not in env
+
+
+def test_links_stay_on_the_same_site_and_short() -> None:
+    """같은 사이트의 짧은 주소만, 열 개까지.
+
+    남의 사이트 링크를 받으면 글 하나가 공격자 주소 열 개를 허용 목록에 넣는다(리뷰). 긴 주소
+    하나로는 본문 상한을 우회해 문맥을 채운다. 확장자 없는 게시판 첨부는 링크 글이 파일
+    이름이면 받는다.
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.mmu.ac.kr/board/view?id=1"
+    html = (
+        '<a href="https://evil.example/f.pdf">f.pdf</a>'
+        f'<a href="/files/{"a" * 600}.pdf">긴 것</a>'
+        '<a href="/download/89854/60179">2026 일정.xlsx.pdf</a>'
+        '<a href="/files/plan.hwp">plan</a>'
+    )
+    assert [link.url for link in links_of(html, base)] == [
+        "https://www.mmu.ac.kr/download/89854/60179",
+        "https://www.mmu.ac.kr/files/plan.hwp",
+    ]
+    many = "".join(f'<a href="/f{i}.pdf">f{i}</a>' for i in range(12))
+    assert len(links_of(many, base)) == 10
+
+
+def test_a_qnet_button_without_its_article_number_is_skipped() -> None:
+    """페이지 주소에 ARTL_SEQ 가 없으면 만들 수 없다 — 건너뛴다.
+
+    이 조건을 빼면 페이지 읽기가 KeyError 로 실패했다(리뷰).
+    """
+    from src.brain.web import links_of
+
+    html = "<button onclick=\"fileDownMan004('a/b', 'x.pdf', '1')\">다운</button>"
+    assert links_of(html, "https://www.q-net.or.kr/man004.do?id=man00402") == []
+
+
+def test_text_pages_and_files_have_different_size_caps() -> None:
+    """글 페이지는 2MB 에서, 파일은 15MB 까지 받는다. 대소문자가 섞인 종류도 글 페이지다(리뷰)."""
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b"<p>" + b"a" * 1000 + b"</p>"] * 100, seen, kind="Text/HTML")),
+        max_bytes=3000,
+        file_bytes=100_000,
+        resolve=_public("211.115.84.70"),
+    )
+    asyncio.run(reader.read("https://big.example/"))
+    assert len(seen) <= 4

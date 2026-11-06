@@ -1,22 +1,21 @@
 """웹 — 자비스가 스스로 찾아보고 읽는 손.
 
 검색은 데스크탑에 떠 있는 SearXNG 에 묻는다(2026-11-05 사용자 결정 — 무료, 계정 없음). 요청마다
-엔진을
-고른다: 구글(요약에 일정 같은 숫자가 잘 실린다)과 네이버(한국어 공식 공지·블로그).
-덕덕고·스타트페이지는
-캡차, Brave 는 요청 한도에 막혀 있었다(2026-11-05 실측).
+엔진을 고른다: 구글(요약에 일정 같은 숫자가 잘 실린다)과 네이버(한국어 공식 공지·블로그).
+덕덕고·스타트페이지는 캡차, Brave 는 요청 한도에 막혀 있었다(2026-11-05 실측).
 
 **검색어는 밖으로 나간다**(SearXNG 를 거쳐 구글·네이버로) — 사용자가 원한 것이다. 그래서 나가는
-검색어와
-읽는 주소는 전부 로그에 남긴다.
+검색어와 읽는 주소는 전부 로그에 남긴다.
 
 페이지 읽기는 두 겹으로 막는다.
   - 내부 주소(사설·루프백·Tailscale 대역)는 읽지 않는다. 자비스는 vLLM·SearXNG 와 같은 기계에
-  있어서,
-    웹 글에 든 지시가 모델을 시켜 내부 주소를 읽게 하면 그 내용이 말로 새어 나간다. 리다이렉트도
-    한 번씩 본다.
-  - 이번 검색 결과에 나온 주소만 읽는다(`tools.py`). 모델의 맥락에는 사용자의 기록이 있다 —
+    있어서, 웹 글에 든 지시가 모델을 시켜 내부 주소를 읽게 하면 그 내용이 말로 새어 나간다.
+    리다이렉트도 한 번씩 보고, 실제로 막는 건 접속하는 층이다(`PinnedBackend`).
+  - 이번 검색 결과에 나온 주소와, 읽은 페이지에 있던 같은 사이트의 첨부 주소만 읽는다 — 모델이
+    쓴 글자가 아니라 받은 그대로의 주소로(`tools.py`). 모델의 맥락에는 사용자의 기록이 있다 —
     웹 글이 "이 주소를 읽어라(?q=기록)"라고 시켜도 기록이 밖으로 나가지 않게.
+
+받은 파일(PDF·한글·오피스)은 별도 프로세스에서 글만 뽑는다(`files.py`).
 """
 
 from __future__ import annotations
@@ -181,8 +180,9 @@ class PageReader:
     # 서버는 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(JAR-031 리뷰 재현).
     max_bytes: int = MAX_BYTES
     file_bytes: int = MAX_FILE_BYTES
-    # 파일은 받고 나서 글을 뽑는 데도 시간이 든다(스레드에서) — 그만큼 넉넉히.
-    deadline: float = 30.0
+    # 파일은 받고 나서 글을 뽑는 데도 시간이 든다(별도 프로세스에서, `parse_seconds` 안에) — 넉넉히.
+    deadline: float = 40.0
+    parse_seconds: float = 25.0
 
     async def read(self, url: str) -> Page:
         return await asyncio.wait_for(self._read(url), timeout=self.deadline)
@@ -205,7 +205,8 @@ class PageReader:
                 if content_type.lower().startswith(_NEVER):
                     raise ValueError(f"글이 아니다({content_type}): {target}")
                 name = files.name_of(target, response.headers.get("content-disposition", ""))
-                textual = "html" in content_type or content_type.startswith("text/")
+                lowered = content_type.lower()
+                textual = "html" in lowered or lowered.startswith("text/")
                 limit = self.max_bytes if textual else self.file_bytes
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -221,8 +222,9 @@ class PageReader:
             elif kind == files.TEXT:
                 title, text, links = name, _squash_lines(decode(data, content_type)), []
             elif kind:
-                # 파일 분석은 스레드에서 — 큰 PDF 가 자비스 전체(듣기·반응 루프)를 멈추지 않게.
-                text = await asyncio.to_thread(files.text_of, data, kind)
+                # 파일 분석은 별도 프로세스에서 — 메모리·CPU 상한, 시간을 넘기면 끝낸다
+                # (files 머리말).
+                text = await files.extract(data, kind, timeout=self.parse_seconds)
                 title, links = name, []
                 logger.info("파일 읽음(%s, %d바이트): %s", kind, len(data), name)
             else:
@@ -554,6 +556,9 @@ def _drop_menus(lines: Sequence[Tuple[str, bool]], run: int = 3) -> List[str]:
 # fileDownMan004('경로','이름','번호') 이고, 그 함수는 같은 페이지의 man004.do 를 GET 으로 부른다.
 _QNET = re.compile(r"fileDownMan004\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*\)")
 LINKS = 10
+# 첨부 주소 길이 상한. 긴 주소 하나로 본문 4천 자 상한을 우회해 문맥을 채울 수 있다(리뷰).
+LINK_LENGTH = 500
+_DOCUMENTS = (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".csv")
 
 
 class _Anchors(HTMLParser):
@@ -581,13 +586,19 @@ class _Anchors(HTMLParser):
 
 
 def links_of(html: str, base: str) -> List[Link]:
-    """페이지 안의 문서 링크(첨부). 파일 확장자가 붙은 링크와, 아는 사이트의 첨부 버튼."""
+    """페이지 안의 문서 링크(첨부). 같은 사이트의 것만 — 파일 확장자가 붙은 링크, 링크 글이 파일
+    이름인 것(확장자 없는 게시판 첨부), 아는 사이트의 첨부 버튼.
+
+    남의 사이트 링크를 받으면 카페·블로그 글 하나가 공격자 주소 열 개를 허용 목록에 넣는다 —
+    읽기마다 "어느 링크인가"만큼 값이 샌다(JAR-035 리뷰).
+    """
     parser = _Anchors()
     try:
         parser.feed(html)
         parser.close()
     except Exception:
         logger.warning("링크를 끝까지 못 읽었다 — 읽은 데까지 쓴다", exc_info=True)
+    host = urlsplit(base).hostname
     out: List[Link] = []
     seen = set()
     query = dict(parse_qsl(urlsplit(base).query))
@@ -595,7 +606,9 @@ def links_of(html: str, base: str) -> List[Link]:
         url = ""
         name = text
         qnet = _QNET.search(onclick)
-        if qnet and query.get("ARTL_SEQ") and query.get("BOARD_ID"):
+        if qnet:
+            if not (query.get("ARTL_SEQ") and query.get("BOARD_ID")):
+                continue
             path, name, seq = qnet.groups()
             url = urljoin(
                 base,
@@ -615,15 +628,19 @@ def links_of(html: str, base: str) -> List[Link]:
                     }
                 ),
             )
-        elif href and not href.lower().startswith(("javascript:", "#", "mailto:")):
-            absolute = urljoin(base, href)
-            ext = urlsplit(absolute).path.lower().rsplit(".", 1)[-1]
-            if f".{ext}" in (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".csv"):
+        elif href and not href.strip().lower().startswith(("javascript:", "#", "mailto:")):
+            absolute = urljoin(base, href.strip())
+            named = text.lower().endswith(_DOCUMENTS)
+            if urlsplit(absolute).path.lower().endswith(_DOCUMENTS) or named:
                 url = absolute
                 name = text or files.name_of(absolute)
-        if url and urlsplit(url).scheme in ("http", "https") and url not in seen:
-            seen.add(url)
-            out.append(Link(url=url, name=name[:80]))
+        parts = urlsplit(url)
+        if not url or parts.scheme not in ("http", "https") or parts.hostname != host:
+            continue
+        if len(url) > LINK_LENGTH or url in seen:
+            continue
+        seen.add(url)
+        out.append(Link(url=url, name=name[:80]))
         if len(out) >= LINKS:
             break
     return out
