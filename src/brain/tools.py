@@ -425,7 +425,13 @@ def render_page(page: Page, browsable: bool = False) -> str:
     links = _render_links(page)
     if len(page.text) < THIN:
         # 스크립트로 그리는 페이지는 브라우저로 열면 보인다(큐넷 시험일정 — JAR-038).
-        hint = " 브라우저(browse)로 이 페이지를 직접 열어 볼 수 있다." if browsable else ""
+        # 파일(스캔 PDF 등)은 브라우저로 열어도 글이 안 나온다 — 웹 페이지일 때만 알린다(JAR-036
+        # 리뷰).
+        hint = (
+            " 브라우저(browse)로 이 페이지를 직접 열어 볼 수 있다."
+            if browsable and page.kind == "html"
+            else ""
+        )
         return (
             f"[{what} {page.url} — 본문이 거의 비었다({len(page.text)}자). 스크립트로 그리는 "
             "페이지이거나 본문을 못 추렸다. 첨부가 있으면 읽거나, 검색 요약을 쓰거나 다른 결과를 "

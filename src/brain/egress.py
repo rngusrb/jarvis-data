@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, List, Optional, Set, Tuple
+from typing import Awaitable, Callable, Collection, List, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 from src.brain.web import Blocked, Resolve, checked, resolve
@@ -35,6 +35,11 @@ BUDGET = 60_000_000
 # 이만큼 아무것도 안 오가면 연결을 닫는다.
 IDLE = 30.0
 CONNECT_TIMEOUT = 10.0
+# 브라우저가 나갈 수 있는 포트. 공유기 관리 화면(8080) 같은 것이 공인 주소로 열렸다(JAR-036 리뷰) —
+# 이 집의 공인 주소는 `web.checked` 가 막고, 그 밖의 집·회사 장비가 쓰는 포트도 닫아 둔다.
+PORTS = (80, 443)
+# 평문 HTTP 요청 본문의 상한(검색 폼 정도). 길이를 모르는 본문(chunked)은 받지 않는다.
+BODY_LIMIT = 1_000_000
 # 다음 홉으로 넘기지 않는 헤더(프록시 쪽 것).
 _HOP = {"proxy-connection", "proxy-authorization", "connection", "keep-alive", "te", "upgrade"}
 
@@ -52,11 +57,13 @@ class EgressProxy:
         budget: int = BUDGET,
         idle: float = IDLE,
         opener: Opener = _open,
+        ports: Collection[int] = PORTS,
     ) -> None:
         self.lookup = lookup
         self.budget = budget
         self.idle = idle
         self.opener = opener
+        self.ports = set(ports)
         # 밖에서 받은 바이트(세션 전체). 상한을 넘으면 새 연결도 거절한다.
         self.received = 0
         # 막은 곳(이름 → 이유). 시험과 로그가 본다.
@@ -138,24 +145,63 @@ class EgressProxy:
         except ValueError:
             await _answer(writer, 400, "포트를 못 읽었다")
             return
+        path = (url.path or "/") + (f"?{url.query}" if url.query else "")
+        kept = [line for line in lines[1:] if line and _name(line) not in _HOP]
+        length = _length(kept)
+        if length is None or length > BODY_LIMIT:
+            # 길이를 모르는 본문(chunked)이나 큰 본문은 넘기지 않는다 — 어디까지가 이 요청인지
+            # 알아야 그 뒤(같은 연결의 다음 요청)를 검사 없이 흘리지 않는다. 붙기 전에 거절한다.
+            await _answer(writer, 501, "길이를 모르거나 큰 본문은 넘기지 않는다")
+            return
+        try:
+            body = (
+                await asyncio.wait_for(reader.readexactly(length), timeout=self.idle)
+                if length
+                else b""
+            )
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
+            return  # 크롬이 본문을 다 보내지 않고 끊었다
         upstream = await self._reach(writer, url.hostname, port)
         if upstream is None:
             return
-        path = (url.path or "/") + (f"?{url.query}" if url.query else "")
-        kept = [line for line in lines[1:] if line and _name(line) not in _HOP]
         request = "\r\n".join([f"{method} {path} {version}", *kept, "Connection: close", "", ""])
-        upstream[1].write(request.encode("latin-1"))
-        await upstream[1].drain()
-        await self._relay(reader, writer, upstream)
+        try:
+            # 이 요청 하나(머리 + 본문 길이만큼)만 넘긴다. 같은 연결에 이어 온 것은 읽지도 않는다.
+            upstream[1].write(request.encode("latin-1") + body)
+            await upstream[1].drain()
+            await self._respond(upstream[0], writer)
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError, OSError):
+            return  # 어느 쪽이 끊었다 — 크롬은 그 요청을 실패로 본다
+        finally:
+            upstream[1].close()
+
+    async def _respond(self, source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
+        """사이트의 답을 크롬에 넘긴다. 머리에 `Connection: close` — 크롬이 이 연결로 다음 요청(다른
+        사이트일 수도 있다)을 보내지 않게. 평문 HTTP 는 연결 하나에 요청 하나다(JAR-036 리뷰)."""
+        try:
+            head = await asyncio.wait_for(source.readuntil(b"\r\n\r\n"), timeout=self.idle)
+        except asyncio.LimitOverrunError:
+            await _answer(sink, 502, "사이트의 답 머리가 너무 길다")
+            return
+        self.received += len(head)
+        lines = head.decode("latin-1").split("\r\n")
+        kept = [line for line in lines[1:] if line and _name(line) not in _HOP]
+        sink.write("\r\n".join([lines[0], *kept, "Connection: close", "", ""]).encode("latin-1"))
+        await self._pipe(source, sink, counted=True)
 
     async def _reach(self, writer: asyncio.StreamWriter, host: str, port: int) -> Optional[Streams]:
         """이름을 한 번 풀어 검사하고, 검사한 주소로 붙는다. 못 붙으면 크롬에 답하고 None."""
+        if port not in self.ports:
+            self.blocked.append(host[:80])
+            logger.warning("브라우저가 열지 않는 포트로 가려 했다 — 막음: %.80s:%d", host, port)
+            await _answer(writer, 403, "80·443 포트만 연다")
+            return None
         try:
             addresses = await checked(host, port, self.lookup)
         except Blocked as error:
-            self.blocked.append(host)
+            self.blocked.append(host[:80])
             logger.warning(
-                "브라우저가 갈 수 없는 곳으로 가려 했다 — 막음: %s:%d (%s)", host, port, error
+                "브라우저가 갈 수 없는 곳으로 가려 했다 — 막음: %.80s:%d (%s)", host, port, error
             )
             await _answer(writer, 403, "내부 주소는 열지 않는다")
             return None
@@ -224,11 +270,27 @@ def _name(line: str) -> str:
     return line.split(":", 1)[0].strip().lower()
 
 
+def _length(headers: List[str]) -> Optional[int]:
+    """본문 길이. 없으면 0, 모르거나(chunked·여러 값·숫자 아님) 이상하면 None."""
+    if any(_name(line) == "transfer-encoding" for line in headers):
+        return None
+    values = [line.split(":", 1)[1].strip() for line in headers if _name(line) == "content-length"]
+    if not values:
+        return 0
+    if len(set(values)) != 1 or not values[0].isdigit():
+        return None
+    return int(values[0])
+
+
 async def _answer(writer: asyncio.StreamWriter, status: int, why: str) -> None:
     body = why.encode("utf-8")
-    reason = {400: "Bad Request", 403: "Forbidden", 431: "Request Header Fields Too Large"}.get(
-        status, "Service Unavailable" if status == 503 else "Bad Gateway"
-    )
+    reason = {
+        400: "Bad Request",
+        403: "Forbidden",
+        431: "Request Header Fields Too Large",
+        501: "Not Implemented",
+        503: "Service Unavailable",
+    }.get(status, "Bad Gateway")
     writer.write(
         f"HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\n"
         f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode("latin-1")

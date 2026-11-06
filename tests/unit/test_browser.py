@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterator, List, Tuple
 from urllib.parse import parse_qs, urlsplit
@@ -45,6 +46,26 @@ PAGES = {
 <a href="/schedule">프레임 링크</a></body></html>""",
     "/alert": """<html><head><title>알림</title></head><body><script>alert('잠깐')</script>
 <main><p>알림 뒤의 본문.</p></main></body></html>""",
+    "/sneaky": """<html><head><title>몰래</title></head><body>
+<main><p>몰래 내려받는 페이지.</p></main>
+<iframe src="/file.pdf?n=1" style="display:none"></iframe>
+<iframe src="/file.pdf?n=2" style="display:none"></iframe>
+<script src="/slow.js"></script>
+<script>setTimeout(() => {
+  for (let i = 0; i < 3; i++) window.open('/popup?n=' + i);
+}, 200);</script>
+</body></html>""",
+    "/trap": """<html><head><title>함정</title></head><body><main><p>떠나지 못하게 하는 페이지.</p>
+<a href="/popup">나가기</a></main>
+<script>addEventListener('beforeunload', (e) => {
+  e.preventDefault(); e.returnValue = '';
+});</script>
+</body></html>""",
+    "/select": """<html><head><title>고르기</title></head><body><main><p id="out">고르기 전</p>
+<select name="year" onchange="document.getElementById('out').innerText = this.value + '년 일정'">
+<option>2025</option><option>2026</option></select></main></body></html>""",
+    "/spin": """<html><head><title>바쁨</title></head><body><main><p>곧 바빠지는 페이지.</p></main>
+<script>setTimeout(() => { while (true) {} }, 300);</script></body></html>""",
     "/tabs": """<html><head><title>연간 일정</title></head><body><main>
 <ul><li id="pro" style="cursor:pointer">기술사</li>
 <li id="eng" style="cursor:pointer">기사</li></ul>
@@ -69,6 +90,22 @@ class _Site(BaseHTTPRequestHandler):
         if path == "/search":
             words = parse_qs(urlsplit(self.path).query).get("kwd", [""])[0]
             self._send("text/html; charset=utf-8", f"<main><p>검색 결과: {words}</p></main>")
+        elif path == "/slow.js":
+            # 문서 읽기를 1초 붙잡는다 — 그 사이 숨은 프레임의 내려받기가 열기(goto) 안에서
+            # 일어난다.
+            time.sleep(1.0)
+            self._send("text/javascript", "")
+        elif path == "/rtc":
+            udp = parse_qs(urlsplit(self.path).query).get("udp", ["9"])[0]
+            script = (
+                "const pc = new RTCPeerConnection({iceServers: [{urls: 'stun:127.0.0.1:"
+                + udp
+                + "'}]});"
+                "pc.createDataChannel('x'); pc.createOffer().then(o => pc.setLocalDescription(o));"
+            )
+            self._send(
+                "text/html; charset=utf-8", f"<main><p>rtc</p></main><script>{script}</script>"
+            )
         elif path == "/file.pdf":
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
@@ -300,3 +337,182 @@ def test_script_bound_tabs_are_numbered_and_late_changes_are_waited_for(
     assert {"기술사", "기사"} <= {c.name for c in tabs.controls if c.role == "clickable"}
     assert "기술사 일정 표" in tabs.text  # form 안의 본문도 보인다
     assert "기사 3회 실기 접수 9.21~9.28" in after.text
+
+
+def test_the_browser_starts_with_the_guards_on(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """띄우는 설정을 붙든다 — QUIC·WebRTC UDP·DNS 미리 풀기 끔, 격리 켬, 루프백도 프록시로, 비밀값
+    없는 환경, 내려받기 안 받음, 서비스 워커 막음. 한꺼번에 지워도 시험이 다 통과했다(JAR-036
+    리뷰)."""
+    from playwright.async_api._generated import Browser as PlaywrightBrowser
+    from playwright.async_api._generated import BrowserType
+
+    from src.brain.browser import ARGS
+
+    port, _ = site
+    seen: dict = {}
+    launch, new_context = BrowserType.launch, PlaywrightBrowser.new_context
+
+    async def spy_launch(self: Any, **options: Any) -> Any:
+        seen["launch"] = options
+        return await launch(self, **options)
+
+    async def spy_context(self: Any, **options: Any) -> Any:
+        seen["context"] = options
+        return await new_context(self, **options)
+
+    monkeypatch.setattr(BrowserType, "launch", spy_launch)
+    monkeypatch.setattr(PlaywrightBrowser, "new_context", spy_context)
+    monkeypatch.setenv("JARVIS_TELEGRAM_BOT_TOKEN", "secret-token")
+
+    async def run() -> None:
+        async with _browser(port).session() as session:
+            await session.open("http://site.example/")
+
+    asyncio.run(run())
+    launched, context = seen["launch"], seen["context"]
+    assert set(ARGS) <= set(launched["args"]) and launched["chromium_sandbox"] is True
+    assert {"--disable-quic", "--dns-prefetch-disable"} <= set(ARGS)
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in ARGS
+    assert launched["proxy"]["bypass"] == "<-loopback>"
+    assert set(launched["env"]) == {"PATH", "HOME", "LANG"}
+    assert context["accept_downloads"] is False and context["service_workers"] == "block"
+
+
+def test_webrtc_sends_no_udp_around_the_door(site: Tuple[int, List[str]]) -> None:
+    """WebRTC 는 문(프록시)을 안 거치는 UDP 로 나간다 — 설정을 빼면 STUN 패킷 약 130개가
+    127.0.0.1·LAN 으로 나갔다(JAR-036 리뷰 대조 실험). 켠 채로는 하나도 안 나간다."""
+    import socket
+
+    port, _ = site
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.settimeout(0.2)
+    udp = listener.getsockname()[1]
+
+    async def run() -> None:
+        async with _browser(port).session() as session:
+            await session.open(f"http://site.example/rtc?udp={udp}")
+            await asyncio.sleep(2.0)
+
+    asyncio.run(run())
+    got = 0
+    try:
+        while True:
+            listener.recvfrom(2048)
+            got += 1
+    except socket.timeout:
+        pass
+    finally:
+        listener.close()
+    assert got == 0
+
+
+def test_downloads_and_windows_the_hand_did_not_ask_for_are_dropped(
+    site: Tuple[int, List[str]],
+) -> None:
+    """숨은 프레임이 흘린 내려받기 수백 개가 첨부 상한을 우회해 허용 목록·로그·메모리를 채웠고, 아무
+    조작 없이 연 창 60개가 손의 화면을 넘겼다(JAR-036 리뷰 재현). 손이 누른 동작의 것만 받는다."""
+    port, _ = site
+
+    async def run() -> Tuple[Any, Any, Any]:
+        async with _browser(port).session() as session:
+            first = session.page
+            view = await session.open("http://site.example/sneaky")
+            await asyncio.sleep(1.0)
+            return session, first, view
+
+    session, first, view = asyncio.run(run())
+    assert session.files == [] and session.page is first and view.title == "몰래"
+    assert session.ignored >= 5  # 내려받기 둘 + 창 셋
+
+
+def test_a_dead_tab_is_said_not_shown_as_an_empty_page(
+    site: Tuple[int, List[str]], caplog: pytest.LogCaptureFixture
+) -> None:
+    """탭이 죽으면 손은 "(본문 글이 없다)" 화면을 받고 로그는 debug 뿐이었다(JAR-036 리뷰)."""
+    port, _ = site
+
+    async def run() -> str:
+        async with _browser(port).session() as session:
+            await session.open("http://site.example/")
+            cdp = await session.context.new_cdp_session(session.page)
+            try:
+                await asyncio.wait_for(cdp.send("Page.crash"), timeout=2.0)
+            except Exception:
+                pass  # 죽이는 명령은 답이 안 온다(탭이 죽는다)
+            await asyncio.sleep(0.5)
+            try:
+                await session.view()
+            except Refused as error:
+                return str(error)
+            return "보였다"
+
+    assert "페이지가 죽었다" in asyncio.run(run())
+    assert "브라우저 탭이 죽었다" in caplog.text
+
+
+def test_a_page_that_begs_to_stay_does_not_trap_the_hand(site: Tuple[int, List[str]]) -> None:
+    """ "이 페이지를 떠날까요"에 머물기로 답했더니 떠나는 누름이 안 먹고 뒤로 가기가 갇혔다(리뷰
+    재현)."""
+    port, _ = site
+
+    async def run() -> Any:
+        async with _browser(port).session() as session:
+            trap = await session.open("http://site.example/trap")
+            return await session.click(_ref(trap, "나가기"))
+
+    assert asyncio.run(run()).title == "새 창"
+
+
+def test_choose_picks_only_a_visible_option(site: Tuple[int, List[str]]) -> None:
+    port, _ = site
+
+    async def run() -> Tuple[Any, Any, str]:
+        async with _browser(port).session() as session:
+            page = await session.open("http://site.example/select")
+            year = next(c for c in page.controls if c.role == "select")
+            try:
+                await session.choose(year.ref, "1999")
+                refused = ""
+            except Refused as error:
+                refused = str(error)
+            return page, await session.choose(year.ref, "2026"), refused
+
+    page, chosen, refused = asyncio.run(run())
+    assert "항목: 2025 / 2026" in render(page) and "2026년 일정" in chosen.text
+    assert "보이는 항목 중에서" in refused
+
+
+def test_a_page_that_stops_answering_is_given_up_on(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """메인 스레드를 붙잡는 페이지에서 화면 보기가 끝없이 기다렸다(JAR-036 리뷰) — 시간 상한."""
+    from src.brain import browser
+
+    monkeypatch.setattr(browser, "ASK", 1.0)
+    port, _ = site
+
+    async def run() -> str:
+        async with _browser(port).session() as session:
+            try:
+                await session.open("http://site.example/spin")
+                await asyncio.sleep(0.5)
+                await session.view()
+            except Refused as error:
+                return str(error)
+            return "보였다"
+
+    assert "답하지 않는다" in asyncio.run(asyncio.wait_for(run(), timeout=60))
+
+
+def test_the_chrome_folder_must_not_be_ours_to_change(tmp_path: Any) -> None:
+    """격리 허용 프로필이 붙는 폴더를 이 사용자가 고칠 수 있으면 띄우지 않는다(JAR-036 리뷰)."""
+    from src.brain.browser import _safe_folder
+
+    with pytest.raises(BrowserUnavailable, match="고칠 수 있다"):
+        _safe_folder(str(tmp_path))
+    with pytest.raises(BrowserUnavailable, match="없다"):
+        _safe_folder(str(tmp_path / "없음"))
+    _safe_folder("/usr")  # root 가 가진 폴더

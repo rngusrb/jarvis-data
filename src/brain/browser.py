@@ -2,17 +2,25 @@
 
 사용자 요청(2026-11-06): "클로드가 크롬창 열면 자기가 그거 보면서 다루잖아 그런 걸 할 수 있으면
 좋을 거 같은데". 읽기(`web.PageReader`)는 받은 HTML 만 본다 — 스크립트로 그리는 페이지(큐넷
-시험일정)는 빈 틀이었고, 탭·더보기· 사이트 검색은 못 했다.
+시험일정)는 빈 틀이었고, 탭·더보기·사이트 검색은 못 했다.
 
 지키는 것:
-  - 밖으로 나가는 길은 전부 `EgressProxy`(공개 주소로만, 검사한 주소로만). 루프백도 프록시를 지나게.
+  - 밖으로 나가는 길은 전부 `EgressProxy`(공개 주소로만, 검사한 주소로만, 80·443 만). 루프백도
+    프록시를 지나게. 이 집의 공인 주소(공유기로 돌아 들어가는 길)는 `web.checked` 가 막는다.
   - 크롬의 보안 격리(sandbox)는 켠다. 웹페이지 하나가 크롬 버그를 건드리면 격리 없이는 이 서버의
-    파일(개인 기록 DB, 봇 토큰)이 닿는다. 우분투 23.10+ 는 AppArmor 프로필이 있어야 격리가
-    뜬다(`deploy/apparmor`) — 없으면 못 뜬다고 시끄럽게 실패한다. 격리를 끄고 몰래 돌지 않는다.
+    파일(개인 기록 DB, 봇 토큰)이 닿는다. 우분투 23.10+ 는 AppArmor 프로필이 있어야 격리가 뜬다 —
+    프로필은 root 가 가진 크롬 폴더에만 붙인다(`browsers_path`, `deploy/apparmor`). 사용자가 고칠 수
+    있는 폴더면 띄우지 않는다. 못 뜨면 시끄럽게 실패한다. 격리를 끄고 몰래 돌지 않는다.
   - 세션마다 새 프로필 — 쿠키·저장된 계정이 없다. 다운로드는 받지 않고 주소만 넘긴다(파일은
-    `files.extract`).
-  - 입력은 검색창으로 보이는 칸에만, 한 줄 짧게(사용자 결정: 로그인·결제·글쓰기 없음). 친 글자는
-    로그에 남긴다.
+    `files.extract`). 내려받기·새 창은 손이 누른 동작에서 생긴 것만 받는다 — 숨은 프레임이 흘린
+    내려받기 수백 개가 첨부 상한을 우회해 허용 목록과 로그를 채웠다(JAR-036 리뷰 재현).
+  - 입력은 검색창으로 보이는 칸에만, 한 줄 짧게(사용자 결정: 로그인·결제·글쓰기 없음). 친 글자,
+    고른 항목, 연 주소와 옮겨 간 주소는 로그에 남긴다.
+  - 페이지에 묻는 일(글·번호 매기기·제목)마다 시간 상한 — 메인 스레드를 붙잡는 페이지에서 끝없이
+    기다렸다(리뷰 재현). HTML 은 2MB 까지만, 추리기는 다른 스레드에서.
+  - 크롬의 메모리: `--max-old-space-size` 는 JS 힙만 막는다(ArrayBuffer 는 못 막는다 — 리뷰 재현
+    2.4GB). 마지막 방어선은 `jarvis` 유닛의 MemoryMax(3G, 크롬도 같은 cgroup)이고, 크롬은 렌더러를
+    먼저 죽게 표시해 둔다. 탭이 죽으면 빈 화면으로 보이지 않게 알린다.
   - 크롬에는 비밀값이 든 환경을 넘기지 않는다.
 """
 
@@ -25,10 +33,10 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urldefrag, urlsplit
 
 from src.brain.egress import EgressProxy
-from src.brain.web import Link, Resolve, extract, resolve
+from src.brain.web import LINK_ENCODED, LINK_LENGTH, LINKS, Link, Resolve, extract, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +46,25 @@ TEXT_CAP = 5000
 CONTROLS = 150
 # 검색창에 넣는 글의 상한 — 검색어 한 줄.
 TYPED = 40
+# 추리기에 넣는 프레임 HTML 의 상한(읽기와 같다) — 60만 요소 페이지에서 루프가 6초 멈췄다(리뷰).
+HTML_CAP = 2_000_000
+# 보는 프레임 수(광고·추적 프레임이 수십 개인 페이지).
+FRAMES = 20
+# 페이지에 한 번 묻는 시간 상한(초).
+ASK = 5.0
+# 화면에 보이는 주소의 길이(자). `#` 뒤에 2MB 를 실은 주소가 문맥과 로그로 갔다(리뷰).
+SHOWN = 300
+# 한 세션에 열어 두는 창의 수.
+PAGES = 5
 VIEWPORT: Any = {"width": 1280, "height": 800}
-# 한 번에 하나. 크롬은 수백 MB 를 쓰고, 자비스 유닛은 3G 안이다(파일 분석 자식 1GB×둘과 함께).
+# 크롬을 띄울 때 넘기는 것 — 시험이 이 값으로 띄웠는지 본다.
+ARGS = (
+    "--disable-quic",
+    "--dns-prefetch-disable",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--js-flags=--max-old-space-size=512",
+)
+# 한 번에 하나.
 _one: Optional[asyncio.Semaphore] = None
 
 _ROLES = {
@@ -67,8 +92,8 @@ _CONTROLS_JS = r"""
   for (const old of document.querySelectorAll('[data-jarvis-ref]')) {
     old.removeAttribute('data-jarvis-ref');
   }
-  // 스크립트로 클릭을 단 탭·칸(큐넷 "접수일정" 탭은 onclick 없는 li 였다)은 손가락 커서로 알아본다.
-  // 이미 잡힌 것 안·바깥이거나, 부모도 손가락이면(같은 것의 안쪽) 뺀다.
+  // 스크립트로 클릭을 단 탭·칸(onclick 없는 li 등)은 손가락 커서로 알아본다. 이미 잡힌 것
+  // 안·바깥이거나, 부모도 손가락이면(같은 것의 안쪽) 뺀다.
   const pointing = (el) => getComputedStyle(el).cursor === 'pointer';
   const isControl = (el) => {
     if (el.matches(SEL)) return true;
@@ -78,7 +103,10 @@ _CONTROLS_JS = r"""
   };
   const out = [];
   let n = start;
-  for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+  // 요소가 수십만인 페이지에서 끝없이 돌지 않게 앞 2만 개만 본다(JAR-036 리뷰: 60만 요소).
+  const all = document.body ? document.body.querySelectorAll('*') : [];
+  for (let i = 0; i < all.length && i < 20000; i++) {
+    const el = all[i];
     if (!isControl(el)) continue;
     const box = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -102,7 +130,8 @@ _CONTROLS_JS = r"""
     const typing = ['searchbox', 'textbox', 'combobox'].includes(role);
     const img = el.querySelector && el.querySelector('img[alt]');
     const alt = img ? img.getAttribute('alt') : '';
-    const own = el.innerText || el.value || el.getAttribute('title') || alt || '';
+    const own = tag === 'select' ? (el.getAttribute('title') || el.name || '')
+      : (el.innerText || el.value || el.getAttribute('title') || alt || '');
     const hold = el.getAttribute('placeholder') || el.getAttribute('title') || '';
     const label = el.getAttribute('aria-label') || (typing ? hold : own);
     const name = String(label).replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -113,9 +142,13 @@ _CONTROLS_JS = r"""
     const inSearch = !!el.closest('form[role=search], [role=search]');
     const search = typing && (role === 'searchbox' || type === 'search' || looks
       || el.getAttribute('name') === 'q' || inSearch);
+    const options = tag === 'select'
+      ? Array.from(el.options || []).slice(0, 12)
+        .map((o) => String(o.label || o.text || '').replace(/\s+/g, ' ').trim().slice(0, 40))
+      : [];
     n += 1;
     el.setAttribute('data-jarvis-ref', String(n));
-    out.push({ref: n, role, name, search});
+    out.push({ref: n, role, name, search, options});
     if (out.length >= 300) break;
   }
   return out;
@@ -124,11 +157,13 @@ _CONTROLS_JS = r"""
 
 
 class BrowserUnavailable(RuntimeError):
-    """크롬을 못 띄웠다(Playwright·크롬이 없거나, 보안 격리가 막혔거나)."""
+    """크롬을 못 띄웠다(Playwright·크롬이 없거나, 보안 격리가 막혔거나, 크롬 폴더가 안전하지
+    않거나)."""
 
 
 class Refused(ValueError):
-    """하지 않는 일(검색창이 아닌 칸에 입력, 긴 글, http 아닌 주소, 없는 번호)."""
+    """하지 않는 일이나 못 한 일(검색창이 아닌 칸에 입력, 없는 번호, 죽은 탭, 답하지 않는
+    페이지)."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +172,7 @@ class Control:
     role: str
     name: str
     search: bool
+    options: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -152,6 +188,11 @@ class View:
     note: str = ""
 
 
+def short(url: str, cap: int = SHOWN) -> str:
+    """보이고 남기는 주소 — 길면 자른다."""
+    return url if len(url) <= cap else f"{url[:cap]}…(잘림)"
+
+
 @dataclass
 class Session:
     """크롬 한 세션(새 프로필). `Browser.session()` 이 연다."""
@@ -159,76 +200,190 @@ class Session:
     context: Any
     proxy: EgressProxy
     page: Any = None
-    # 내려받기로 넘어온 파일(받지는 않는다 — 주소만).
+    # 내려받기로 넘어온 파일(받지는 않는다 — 주소만). 손이 누른 동작에서 생긴 것만, 상한까지.
     files: List[Link] = field(default_factory=list)
-    # 친 글자(로그와 함께 남긴다).
+    # 친 검색어·고른 항목(로그와 함께 남긴다).
     typed: List[str] = field(default_factory=list)
+    # 손이 안 누른 내려받기·새 창(버렸다).
+    ignored: int = 0
+    crashed: bool = False
+    _acting: bool = False
+    _origin: str = ""
+    # 처음 열 때는 그 주소 자체가 파일인 것만 받는다(페이지가 열리며 숨은 프레임이 흘린 것은 안
+    # 받는다).
+    _only: Optional[str] = None
     _refs: Dict[int, Tuple[Any, Control]] = field(default_factory=dict)
 
     def adopt(self, page: Any) -> None:
-        """새 탭(팝업)이 열리면 그쪽을 본다. 알림창은 닫고, 내려받기는 주소만 적는다."""
-        page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
+        """이 창을 본다. 알림창에 답하고, 내려받기는 주소만 적고, 죽으면 알리고, 옮겨 가면
+        남긴다."""
+        page.on("dialog", self._dialog)
         page.on("download", self._downloaded)
+        page.on("crash", self._crashed)
+        page.on("framenavigated", self._moved)
         self.page = page
+        self.crashed = False
+
+    def popped(self, page: Any) -> None:
+        """새 창. 손이 누른 동작에서 열린 것만 그쪽을 본다 — 아무 조작 없이 창 60개를 열어 손의
+        화면을 공격자가 고른 창으로 넘긴 페이지가 있었다(리뷰 재현). 나머지는 닫는다."""
+        if page is self.page:
+            return
+        if not self._acting:
+            self.ignored += 1
+            logger.info("손이 안 누른 새 창은 닫는다(%d번째)", self.ignored)
+            asyncio.ensure_future(_close(page))
+            return
+        self.adopt(page)
+        extra = [p for p in self.context.pages if p is not page][: -(PAGES - 1) or None]
+        for old in extra:
+            asyncio.ensure_future(_close(old))
+
+    def _dialog(self, dialog: Any) -> None:
+        """알림창은 닫는다. "이 페이지를 떠날까요"는 떠난다 — 닫기(머물기)로 답했더니 떠나는 누름이
+        안 먹고 뒤로 가기가 시간 초과로 갇혔다(리뷰 재현)."""
+
+        async def answer() -> None:
+            try:
+                if dialog.type == "beforeunload":
+                    await dialog.accept()
+                else:
+                    await dialog.dismiss()
+            except Exception:
+                # 이미 닫힌 알림창이다(페이지가 넘어갔다) — 할 일이 없다.
+                logger.debug("알림창에 답하지 못함(이미 닫힘)", exc_info=True)
+
+        asyncio.ensure_future(answer())
 
     def _downloaded(self, download: Any) -> None:
-        name = download.suggested_filename or download.url.rsplit("/", 1)[-1]
-        if all(link.url != download.url for link in self.files):
-            self.files.append(Link(url=download.url, name=name[:80]))
-            logger.info("브라우저에서 파일을 만남(받지 않음): %s — %s", name, download.url)
+        url = urldefrag(str(download.url))[0]
+        if not self._acting or (self._only is not None and url != self._only):
+            self.ignored += 1
+            logger.info(
+                "손이 누르지 않은 내려받기는 버린다(%d번째): %s", self.ignored, short(url, 120)
+            )
+            return
+        why = ""
+        if urlsplit(url).hostname != self._origin:
+            why = "다른 사이트"
+        elif len(unquote(url)) > LINK_LENGTH or len(url) > LINK_ENCODED:
+            why = "주소가 너무 길다"
+        elif len(self.files) >= LINKS:
+            why = f"{LINKS}개를 넘었다"
+        if why:
+            logger.info("브라우저 파일을 버림(%s): %s", why, short(url, 120))
+            return
+        if all(link.url != url for link in self.files):
+            name = str(download.suggested_filename or url.rsplit("/", 1)[-1])[:80]
+            self.files.append(Link(url=url, name=name))
+            logger.info("브라우저에서 파일을 만남(받지 않음): %s — %s", name, short(url, 200))
+
+    def _crashed(self, page: Any) -> None:
+        if page is self.page:
+            self.crashed = True
+            logger.warning(
+                "브라우저 탭이 죽었다(메모리를 너무 썼거나 크롬 오류): %s", short(page.url, 200)
+            )
+
+    def _moved(self, frame: Any) -> None:
+        if frame.parent_frame is None:
+            logger.info("브라우저 이동: %s", short(str(frame.url), 200))
+
+    @asynccontextmanager
+    async def _hand(self) -> AsyncIterator[None]:
+        """손이 누르는 동안 — 이때 생긴 내려받기·새 창만 받는다(그 페이지와 같은 사이트의 것만)."""
+        self._acting = True
+        self._origin = urlsplit(str(self.page.url)).hostname or ""
+        try:
+            yield
+        finally:
+            self._acting = False
+
+    def _alive(self) -> None:
+        if self.crashed:
+            raise Refused("페이지가 죽었다(메모리를 너무 썼거나 크롬 오류) — 본 것으로 정리한다")
 
     async def open(self, url: str) -> View:
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise Refused(f"http(s) 주소만 연다: {url}")
-        logger.info("브라우저 열기(밖으로 나감): %s", url)
+            raise Refused(f"http(s) 주소만 연다: {short(url, 120)}")
+        logger.info("브라우저 열기(밖으로 나감): %s", short(url, 200))
         before = len(self.files)
+        self._acting, self._origin, self._only = True, parts.hostname, urldefrag(url)[0]
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=20_000)
         except Exception as error:
             if len(self.files) > before:  # 파일 주소라 화면 대신 내려받기로 넘어갔다
                 return await self.view(note=_file_note(self.files[-1]))
             raise _plain(error) from error
+        finally:
+            self._acting, self._only = False, None
         await self._settle()
         return await self.view()
 
     async def click(self, ref: int) -> View:
+        self._alive()
         frame, control = self._find(ref)
         before = len(self.files)
         logger.info("브라우저 누르기: [%d] %s %s", ref, control.role, control.name)
-        try:
-            await frame.locator(f'[data-jarvis-ref="{ref}"]').first.click(timeout=5_000)
-        except Exception as error:
-            raise _plain(error) from error
-        await self._settle()
+        async with self._hand():
+            try:
+                await frame.locator(f'[data-jarvis-ref="{ref}"]').first.click(timeout=5_000)
+            except Exception as error:
+                raise _plain(error) from error
+            await self._settle()
         note = _file_note(self.files[-1]) if len(self.files) > before else ""
         return await self.view(note=note)
 
     async def type_search(self, ref: int, text: str) -> View:
+        self._alive()
         frame, control = self._find(ref)
         words = text.strip()
         if not control.search:
             raise Refused(f"[{ref}] 은 검색창이 아니다 — 입력은 검색창에만 한다")
         if not words or len(words) > TYPED or any(ord(c) < 32 for c in words):
             raise Refused(f"검색어는 한 줄 {TYPED}자 안으로만 넣는다")
-        logger.info("브라우저 입력(밖으로 나감): %s ← %s", self.page.url, words)
+        logger.info("브라우저 입력(밖으로 나감): %s ← %s", short(str(self.page.url), 200), words)
         self.typed.append(words)
         box = frame.locator(f'[data-jarvis-ref="{ref}"]').first
-        try:
-            await box.fill(words, timeout=5_000)
-            await box.press("Enter", timeout=5_000)
-        except Exception as error:
-            raise _plain(error) from error
-        await self._settle()
+        async with self._hand():
+            try:
+                await box.fill(words, timeout=5_000)
+                await box.press("Enter", timeout=5_000)
+            except Exception as error:
+                raise _plain(error) from error
+            await self._settle()
+        return await self.view()
+
+    async def choose(self, ref: int, option: str) -> View:
+        """고르기 칸에서 보이는 항목 하나를 고른다(연도·회차 같은 거르기)."""
+        self._alive()
+        frame, control = self._find(ref)
+        if control.role != "select":
+            raise Refused(f"[{ref}] 은 고르기 칸이 아니다")
+        if option not in control.options:
+            shown = " / ".join(control.options) or "없음"
+            raise Refused(f"[{ref}] 의 항목에 없다 — 보이는 항목 중에서 고른다: {shown}")
+        logger.info("브라우저 고르기: [%d] %s ← %s", ref, control.name, option)
+        self.typed.append(option)
+        async with self._hand():
+            try:
+                await frame.locator(f'[data-jarvis-ref="{ref}"]').first.select_option(
+                    label=option, timeout=5_000
+                )
+            except Exception as error:
+                raise _plain(error) from error
+            await self._settle()
         return await self.view()
 
     async def scroll(self, down: bool = True) -> View:
+        self._alive()
         await self.page.mouse.wheel(0, 700 if down else -700)
         await asyncio.sleep(0.4)
         return await self.view()
 
     async def back(self) -> View:
-        response = None
+        self._alive()
         try:
             response = await self.page.go_back(wait_until="domcontentloaded", timeout=10_000)
         except Exception as error:
@@ -238,22 +393,36 @@ class Session:
 
     async def screenshot(self) -> bytes:
         """지금 화면(보이는 부분) — JPEG."""
+        self._alive()
         data: bytes = await self.page.screenshot(type="jpeg", quality=55, timeout=10_000)
         return data
 
     async def view(self, note: str = "") -> View:
         """지금 페이지: 본문 글(읽기와 같은 추리기) + 누를 수 있는 것에 번호. 프레임 안까지 본다."""
+        self._alive()
         self._refs.clear()
         controls: List[Control] = []
         texts: List[str] = []
         title = ""
-        for index, frame in enumerate(self.page.frames):
+        missed = 0
+        for index, frame in enumerate(list(self.page.frames)[:FRAMES]):
             try:
-                found = await frame.evaluate(_CONTROLS_JS, len(controls))
-                html = await frame.content()
+                found = await asyncio.wait_for(
+                    frame.evaluate(_CONTROLS_JS, len(controls)), timeout=ASK
+                )
+                html = await asyncio.wait_for(frame.content(), timeout=ASK)
+            except asyncio.TimeoutError:
+                if index == 0:
+                    raise Refused(
+                        "페이지가 답하지 않는다(무거운 스크립트) — 본 것으로 정리한다"
+                    ) from None
+                missed += 1
+                continue
             except Exception:
                 # 떼어지는 중인 프레임(광고·추적)은 건너뛴다 — 본 화면은 나머지로 충분하다.
-                logger.debug("프레임을 못 읽어 건너뜀: %s", frame.url, exc_info=True)
+                logger.debug(
+                    "프레임을 못 읽어 건너뜀: %s", short(str(frame.url), 120), exc_info=True
+                )
                 continue
             for item in found:
                 control = Control(
@@ -261,23 +430,26 @@ class Session:
                     role=str(item["role"]),
                     name=str(item["name"]),
                     search=bool(item["search"]),
+                    options=tuple(str(o) for o in item.get("options") or ()),
                 )
                 controls.append(control)
                 self._refs[control.ref] = (frame, control)
-            heading, body = extract(html)
+            heading, body = await asyncio.to_thread(extract, html[:HTML_CAP])
             if index == 0:
                 title = heading
                 texts.append(body)
             elif len(body) >= 20:  # 광고·추적 프레임(빈 것)은 빼고 한 문장 이상이면
-                texts.append(f"[프레임: {urlsplit(frame.url).hostname or ''}]\n{body}")
+                texts.append(f"[프레임: {urlsplit(str(frame.url)).hostname or ''}]\n{body}")
         text = "\n".join(t for t in texts if t)
         try:
-            title = await self.page.title() or title
+            title = await asyncio.wait_for(self.page.title(), timeout=2.0) or title
         except Exception:
             logger.debug("제목을 못 읽음", exc_info=True)
+        if missed:
+            note = (note + " " if note else "") + f"답하지 않는 프레임 {missed}개는 못 봤다."
         return View(
-            url=self.page.url,
-            title=title,
+            url=short(str(self.page.url)),
+            title=title[:200],
             text=text[:TEXT_CAP],
             cut=len(text) > TEXT_CAP,
             controls=controls[:CONTROLS],
@@ -310,12 +482,13 @@ class Session:
         last, still = -1, loop.time()
         while loop.time() - start < most:
             try:
-                size = await self.page.evaluate(
-                    "() => document.body ? document.body.innerText.length : 0"
+                size = await asyncio.wait_for(
+                    self.page.evaluate("() => document.body ? document.body.innerText.length : 0"),
+                    timeout=2.0,
                 )
             except Exception:
-                # 페이지가 넘어가는 중이다 — 다음 번에 다시 잰다.
-                logger.debug("글 길이를 못 잼(넘어가는 중) — 다시 잰다")
+                # 페이지가 넘어가는 중이거나 답하지 않는다 — 다음 번에 다시 잰다.
+                logger.debug("글 길이를 못 잼 — 다시 잰다")
                 size = -2
             now = loop.time()
             if size != last:
@@ -323,6 +496,14 @@ class Session:
             elif now - still >= quiet and now - start >= least:
                 return
             await asyncio.sleep(0.25)
+
+
+async def _close(page: Any) -> None:
+    try:
+        await page.close()
+    except Exception:
+        # 이미 닫혔다(세션이 끝나는 중) — 할 일이 없다.
+        logger.debug("창을 못 닫음(이미 닫힘)", exc_info=True)
 
 
 @dataclass
@@ -333,6 +514,9 @@ class Browser:
     sandbox: bool = True
     # 시험이 프록시가 붙는 곳을 바꿔 끼운다(공개 주소 → 로컬 시험 서버).
     opener: Any = None
+    # 크롬이 있는 폴더. 서버는 root 가 가진 /opt/jarvis/ms-playwright — 격리 허용 프로필이 거기에만
+    # 붙는다. 비우면 Playwright 기본 자리(개발 맥·시험).
+    browsers_path: str = ""
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[Session]:
@@ -346,6 +530,9 @@ class Browser:
                 raise BrowserUnavailable(
                     "playwright 가 없다 — docs/SETUP.md 의 브라우저"
                 ) from error
+            if self.browsers_path:
+                _safe_folder(self.browsers_path)
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = self.browsers_path
             proxy = (
                 EgressProxy(lookup=self.lookup, opener=self.opener)
                 if self.opener
@@ -363,12 +550,7 @@ class Browser:
                         # 루프백도 프록시로(크롬은 기본으로 루프백을 뺀다). Playwright 도 넣지만
                         # 버전이 바뀌어도 그대로이게 적는다 — 결과는 시험이 지킨다(내부 주소 막힘).
                         proxy={"server": address, "bypass": "<-loopback>"},
-                        args=[
-                            "--disable-quic",
-                            "--dns-prefetch-disable",
-                            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                            "--js-flags=--max-old-space-size=512",
-                        ],
+                        args=list(ARGS),
                         # 비밀값(봇 토큰 등)이 든 환경을 넘기지 않는다.
                         env={
                             "PATH": os.environ.get("PATH", ""),
@@ -392,8 +574,8 @@ class Browser:
                 )
                 context.set_default_timeout(10_000)
                 session = Session(context=context, proxy=proxy)
-                context.on("page", session.adopt)
                 session.adopt(await context.new_page())
+                context.on("page", session.popped)
                 yield session
             finally:
                 if browser is not None:
@@ -402,7 +584,22 @@ class Browser:
                     await playwright.stop()
                 await proxy.close()
                 if proxy.blocked:
-                    logger.warning("브라우저 세션에서 막은 곳: %s", sorted(set(proxy.blocked)))
+                    logger.warning("브라우저 세션에서 막은 곳: %s", sorted(set(proxy.blocked))[:20])
+
+
+def _safe_folder(path: str) -> None:
+    """크롬 폴더는 이 사용자가 고칠 수 없어야 한다 — 격리 허용(AppArmor) 프로필이 그 경로에 붙는다.
+    고칠 수 있으면 아무 실행 파일이나 거기에 두고 사용자 네임스페이스를 얻는다(JAR-036 리뷰)."""
+    if not os.path.isdir(path):
+        raise BrowserUnavailable(
+            f"크롬 폴더가 없다: {path} — docs/SETUP.md 의 브라우저(sudo 로 설치)"
+        )
+    for folder in (path, os.path.dirname(path.rstrip("/"))):
+        if os.access(folder, os.W_OK):
+            raise BrowserUnavailable(
+                f"크롬 폴더를 이 사용자가 고칠 수 있다: {folder} — "
+                "root 가 가진 폴더여야 한다(SETUP)"
+            )
 
 
 def _why(error: Exception) -> str:
@@ -413,7 +610,7 @@ def _why(error: Exception) -> str:
             "필요하다(docs/SETUP.md 의 브라우저, deploy/apparmor/jarvis-chromium)"
         )
     if "executable doesn't exist" in text.lower():
-        return "크롬이 없다 — `python -m playwright install --only-shell chromium`"
+        return "크롬이 없다 — docs/SETUP.md 의 브라우저(playwright install --only-shell chromium)"
     return f"크롬을 못 띄웠다: {type(error).__name__}: {text.splitlines()[0][:200] if text else ''}"
 
 
@@ -426,7 +623,7 @@ def _plain(error: Exception) -> Refused:
 
 
 def _file_note(link: Link) -> str:
-    return f"파일이라 화면에 안 열렸다(내려받지 않음): {link.name} — {link.url}"
+    return f"파일이라 화면에 안 열렸다(내려받지 않음): {link.name} — {short(link.url)}"
 
 
 def render(view: View) -> str:
@@ -446,6 +643,8 @@ def render(view: View) -> str:
         role = "검색창" if control.search else _ROLES.get(control.role, "누르기")
         typing = control.role in ("searchbox", "textbox", "combobox")
         mark = " (검색어 입력 가능)" if control.search else (" (입력 안 함)" if typing else "")
+        if control.options:
+            mark += " — 항목: " + " / ".join(control.options)
         lines.append(f"[{control.ref}] {role} {control.name}{mark}".rstrip())
     if view.more:
         lines.append(f"(외 {view.more}개)")

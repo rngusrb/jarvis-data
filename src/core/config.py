@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,10 @@ from dotenv import load_dotenv
 DEFAULT_BRAIN_URL = "http://100.98.90.38:8000"
 # 같은 데스크탑의 SearXNG(웹 검색). 비우면 자비스는 검색하지 않는다.
 DEFAULT_SEARCH_URL = "http://100.98.90.38:8888"
+# 리눅스 서버에서 크롬이 있는 곳 — root 가 가진 폴더. 크롬의 보안 격리를 허락하는 AppArmor 프로필이
+# 이 경로에만 붙는다(사용자가 고칠 수 있는 경로면 아무 실행 파일이나 격리 허락을 얻는다 — JAR-036
+# 리뷰).
+DEFAULT_BROWSERS_PATH = "/opt/jarvis/ms-playwright" if sys.platform.startswith("linux") else ""
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,8 @@ class Settings:
     # 대화가 브라우저(헤드리스 크롬)를 다룰 수 있나. 시험이 만드는 설정은 끔. 켜도 playwright 가
     # 없으면 앱이 끄고 남긴다(SETUP 의 브라우저).
     browser: bool = False
+    # 크롬이 있는 폴더(비우면 Playwright 기본 자리 — 개발 맥).
+    browsers_path: str = ""
 
     @property
     def telegram_enabled(self) -> bool:
@@ -55,4 +62,5 @@ def load_settings() -> Settings:
         ingest_token=os.getenv("JARVIS_INGEST_TOKEN", ""),
         search_base_url=os.getenv("JARVIS_SEARCH_URL", DEFAULT_SEARCH_URL).rstrip("/"),
         browser=os.getenv("JARVIS_BROWSER", "1").strip().lower() not in ("0", "false", "off", ""),
+        browsers_path=os.getenv("JARVIS_BROWSERS_PATH", DEFAULT_BROWSERS_PATH).strip(),
     )

@@ -146,7 +146,27 @@ def test_the_browser_is_built_only_when_on_and_installed(
 
     assert build_browse(_settings(tmp_path)) is None  # 시험 설정은 끔
     on = replace(_settings(tmp_path), browser=True)
-    agent = build_browse(on)
+    agent = build_browse(replace(on, browsers_path="/opt/jarvis/ms-playwright"))
     assert isinstance(agent, BrowseAgent) and agent.browser.sandbox is True
+    assert agent.browser.browsers_path == "/opt/jarvis/ms-playwright"
     monkeypatch.setitem(sys.modules, "playwright", None)
     assert build_browse(on) is None and "playwright 가 없다" in caplog.text
+
+
+def test_the_chrome_folder_defaults_to_a_root_owned_place_on_linux(monkeypatch: Any) -> None:
+    """서버(리눅스)는 root 가 가진 /opt/jarvis/ms-playwright — 격리 허용 프로필이 거기에만
+    붙는다."""
+    import importlib
+    import sys
+
+    from src.core import config
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    reloaded = importlib.reload(config)
+    try:
+        assert reloaded.DEFAULT_BROWSERS_PATH == "/opt/jarvis/ms-playwright"
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert importlib.reload(config).DEFAULT_BROWSERS_PATH == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)

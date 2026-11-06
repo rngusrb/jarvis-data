@@ -24,6 +24,7 @@ import asyncio
 import ipaddress
 import logging
 import re
+import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import (
@@ -59,6 +60,72 @@ MAX_FILE_BYTES = 15_000_000
 _NEVER = ("image/", "video/", "audio/", "font/")
 # Tailscale 은 CGNAT 대역(100.64.0.0/10)을 쓴다 — is_private 가 이 대역을 안 잡는다.
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
+# 이 집의 공인 주소를 알려 주는 곳(https, 글 한 줄). 앞에서부터 묻는다.
+ECHOES = ("https://api.ipify.org", "https://ipv4.icanhazip.com", "https://checkip.amazonaws.com")
+
+
+class OwnAddress:
+    """이 집(서버가 붙은 공유기)의 공인 주소. 그 주소로 가면 공유기가 안으로 되돌린다(NAT 헤어핀).
+
+    사설 대역만 막아서는 못 막는다 — 공인 주소로 돌아 들어온 연결이 공유기 관리 화면과 접속 기기
+    목록을 로그인 없이 열었다(JAR-036 리뷰 재현: 58.x:8080 → 공유기 로그인·접속 기기 목록 200). 알려
+    주는 곳에 물어 `fresh` 초 동안 쓰고, 다시 못 물으면 마지막으로 안 것을 `keep` 초까지 쓴다. 한
+    번도 모르면 None — 그땐 아무 데도 붙지 않는다(`checked`). 묻는 곳은 이 집의 공인 주소만
+    안다(어느 사이트든 이미 보는 값이다).
+    """
+
+    def __init__(self, fresh: float = 1800.0, keep: float = 6 * 3600.0) -> None:
+        self.fresh = fresh
+        self.keep = keep
+        self.address: Optional[str] = None
+        self.learned = 0.0
+        # 시험이 끼우는 값(네트워크를 안 탄다).
+        self.fixed: Optional[str] = None
+        self._lock: Optional[asyncio.Lock] = None
+
+    async def get(self) -> Optional[str]:
+        if self.fixed is not None:
+            return self.fixed
+        if self.address and time.monotonic() - self.learned < self.fresh:
+            return self.address
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            now = time.monotonic()
+            if self.address and now - self.learned < self.fresh:
+                return self.address
+            found = await self._ask()
+            if found:
+                if found != self.address:
+                    logger.info("이 집의 공인 주소: %s (그리로는 붙지 않는다)", found)
+                self.address, self.learned = found, now
+                return found
+            if self.address and now - self.learned < self.keep:
+                logger.warning(
+                    "공인 주소를 다시 못 물었다 — 마지막으로 안 %s 를 쓴다", self.address
+                )
+                return self.address
+            logger.error(
+                "이 집의 공인 주소를 몰라 밖으로 붙지 않는다(공유기로 돌아 들어가는 길을 못 막는다)"
+            )
+            return None
+
+    async def _ask(self) -> Optional[str]:
+        async with httpx.AsyncClient(timeout=5.0, headers={"User-Agent": USER_AGENT}) as client:
+            for url in ECHOES:
+                try:
+                    answer = (await client.get(url)).text.strip()
+                    address = ipaddress.ip_address(answer)
+                except (httpx.HTTPError, ValueError) as error:
+                    logger.warning("공인 주소를 못 물었다: %s (%s)", url, type(error).__name__)
+                    continue
+                if isinstance(address, ipaddress.IPv4Address) and _public(address):
+                    return str(address)
+                logger.warning("공인 주소 답이 이상하다: %s → %.40s", url, answer)
+        return None
+
+
+OWN = OwnAddress()
 
 
 @dataclass(frozen=True)
@@ -367,18 +434,32 @@ async def ensure_public(url: str, lookup: Resolve = resolve) -> List[str]:
 
 
 async def checked(host: str, port: int, lookup: Resolve = resolve) -> List[str]:
-    """이름이 가리키는 주소들. 하나라도 공개망이 아니면 `Blocked`."""
+    """이름이 가리키는 주소들. 하나라도 공개망이 아니거나 이 집의 공인 주소면 `Blocked`."""
     try:
         addresses = await lookup(host, port)
-    except OSError as error:
-        raise Blocked(f"이름을 못 찾았다: {host}") from error
+    except (OSError, UnicodeError, ValueError) as error:
+        # 64자 넘는 이름 조각 같은 것은 OSError 가 아니라 UnicodeError 로 온다 — 놓치면 답 없이
+        # 끊기고 "Task exception was never retrieved" 가 남았다(JAR-036 리뷰).
+        raise Blocked(f"이름을 못 찾았다: {host[:80]}") from error
     if not addresses:
-        raise Blocked(f"이름을 못 찾았다: {host}")
+        raise Blocked(f"이름을 못 찾았다: {host[:80]}")
+    own = await OWN.get()
+    if own is None:
+        raise Blocked("이 집의 공인 주소를 몰라 붙지 않는다(공유기로 돌아 들어가는 길을 못 막는다)")
+    mine = ipaddress.ip_address(own)
     for raw in addresses:
         address = ipaddress.ip_address(raw.split("%", 1)[0])
         if not _public(address):
-            raise Blocked(f"내부 주소는 읽지 않는다: {host} → {address}")
+            raise Blocked(f"내부 주소는 읽지 않는다: {host[:80]} → {address}")
+        if _v4(address) == mine:
+            raise Blocked(f"이 집의 공인 주소는 읽지 않는다(공유기로 돌아 들어간다): {host[:80]}")
     return addresses
+
+
+def _v4(address: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> Any:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
 
 
 def _public(address: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
@@ -451,20 +532,21 @@ class _Text(HTMLParser):
         self.parts: List[Tuple[str, bool, bool]] = []
         self.title: List[str] = []
         self.in_title = False
-        # 표의 칸 안인가. 칸 안의 줄바꿈(br·블록)은 공백으로 — 한 행이 한 줄이어야 칸 순서가 맞는다.
-        # 칸 안에서 줄을 나눴더니 큐넷 연간 시험일정의 행이 여러 줄로 쪼개져 발표일을 시험일로
-        # 읽었다(2026-11-06 JAR-038 실측).
+        # 표의 칸 안인가. 칸 안의 `<br>` 은 공백으로 — 한 행이 한 줄이어야 칸 순서가 맞는다. 칸
+        # 안에서 줄을 나눴더니 큐넷 연간 시험일정의 행이 여러 줄로 쪼개져 발표일을 시험일로
+        # 읽었다(2026-11-06 JAR-038 실측). 블록(p·div·tr)은 칸 안에서도 줄을 나눈다 — 페이지 전체가
+        # 바깥 칸 안에 있는 표 레이아웃에서 메뉴·본문·안쪽 표가 한 줄로 뭉쳤다(JAR-036 리뷰 재현).
         self.cell = 0
 
     def _break(self) -> None:
-        self.parts.append(("\n" if not self.cell else " ", False, self.main > 0))
+        self.parts.append(("\n", False, self.main > 0))
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         if tag == "title":
             self.in_title = True
         if tag in _VOID:
             if tag == "br":
-                self._break()
+                self.parts.append(("\n" if not self.cell else " ", False, self.main > 0))
             return
         names = " ".join(v or "" for k, v in attrs if k in ("class", "id"))
         opens = tag in _MAIN_TAGS or any(hint in names for hint in _MAIN_HINTS)

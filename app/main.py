@@ -173,7 +173,7 @@ def build_browse(settings: Settings) -> Optional[BrowseAgent]:
             timeout=90.0,
             temperature=0.2,
         ),
-        browser=Browser(),
+        browser=Browser(browsers_path=settings.browsers_path),
     )
 
 

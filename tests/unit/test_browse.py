@@ -49,6 +49,8 @@ class FakeSession:
         return _view("공지")
 
     async def click(self, ref: int) -> View:
+        if ref == 7:
+            await asyncio.sleep(5)  # 답하지 않는 페이지
         self.done.append(f"click {ref}")
         self.page.url = f"https://q.example/{ref}"
         if ref == 9:
@@ -63,6 +65,10 @@ class FakeSession:
 
     async def scroll(self, down: bool = True) -> View:
         return _view("공지", text="아래쪽")
+
+    async def choose(self, ref: int, option: str) -> View:
+        self.done.append(f"choose {ref} {option}")
+        return _view("고른 뒤", text=f"{option}년 일정")
 
     async def back(self) -> View:
         return _view("공지")
@@ -205,3 +211,42 @@ def test_a_start_page_that_cannot_open_is_said() -> None:
     agent, client, _ = _agent([], session=FakeSession(opened=False))
     done = asyncio.run(agent.run("https://q.example/a", "일정", NOW))
     assert done.text.startswith("시작 페이지를 못 열었다") and client.asked == []
+
+
+def test_one_screen_changing_action_per_turn() -> None:
+    """누른 뒤엔 번호를 다시 매긴다 — 같은 차례의 다음 번호는 다른 것을 가리킨다(JAR-036 리뷰)."""
+    agent, client, session = _agent(
+        [
+            Turn(
+                content="",
+                calls=(_call("click", ref=1), _call("click", 2, ref=2), _call("screenshot", 3)),
+            ),
+            Turn(content="됐다"),
+        ]
+    )
+    asyncio.run(agent.run("https://q.example/a", "일정", NOW))
+    tools = [m["content"] for m in client.asked[1]["messages"] if m["role"] == "tool"]
+    assert session.done == ["open https://q.example/a", "click 1"]
+    assert (
+        tools[1].startswith("앞 동작으로 화면이 바뀌어 건너뛰었다") and "화면을 찍었다" in tools[2]
+    )
+
+
+def test_an_action_that_never_finishes_is_given_up(caplog: Any) -> None:
+    """동작 하나(누르기·기다리기·보기)에 시간 상한 — 손의 상한은 차례 사이에서만 봤다(리뷰)."""
+    agent, client, _ = _agent(
+        [Turn(content="", calls=(_call("click", ref=7),)), Turn(content="정리")], action=0.2
+    )
+    done = asyncio.run(agent.run("https://q.example/a", "일정", NOW))
+    tools = [m["content"] for m in client.asked[1]["messages"] if m["role"] == "tool"]
+    assert "시간 안에 안 끝났다" in tools[0] and done.text == "정리"
+
+
+def test_the_hand_can_choose_an_option() -> None:
+    agent, client, session = _agent(
+        [Turn(content="", calls=(_call("choose", ref=3, option="2026"),)), Turn(content="2026년")]
+    )
+    asyncio.run(agent.run("https://q.example/a", "일정", NOW))
+    assert session.done[-1] == "choose 3 2026" and "choose" in [
+        t["function"]["name"] for t in TOOLS
+    ]

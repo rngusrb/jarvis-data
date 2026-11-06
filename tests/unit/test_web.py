@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import httpcore
@@ -631,7 +631,7 @@ def test_line_breaks_inside_a_cell_keep_the_row_on_one_line() -> None:
     실측)."""
     html = (
         "<main><table><tr><th>회별</th><th>원서접수</th><th>시험</th><th>발표</th></tr>"
-        "<tr><td>2026년/<br>제3회</td><td>2026.09.21<br>- 2026.09.23,<p>2026.09.28</p></td>"
+        "<tr><td>2026년/<br>제3회</td><td>2026.09.21<br>- 2026.09.23,<br>2026.09.28</td>"
         "<td>2026.10.24<br>- 2026.11.13</td><td>2026.12.11,<br>2026.12.18</td></tr></table>"
         "<p>원서접수 시간은 첫날 10:00부터.</p></main>"
     )
@@ -641,3 +641,52 @@ def test_line_breaks_inside_a_cell_keep_the_row_on_one_line() -> None:
         "2026.12.11, 2026.12.18"
     )
     assert lines[2] == "원서접수 시간은 첫날 10:00부터."
+
+
+def test_layout_tables_keep_their_lines() -> None:
+    """칸 안에서 블록까지 공백으로 바꿨더니, 페이지 전체가 바깥 칸 안에 있는 표 레이아웃에서
+    메뉴·본문· 안쪽 표가 한 줄로 뭉쳤다(JAR-036 리뷰 재현). 칸 안에서도 블록(p·li·tr)은 줄을
+    나눈다."""
+    menu = "".join(f'<li><a href="/m{i}">메뉴 {i}</a></li>' for i in range(1, 9))
+    html = (
+        f"<html><body><table><tr><td><ul>{menu}</ul></td><td>"
+        "<h3>2026년 제3회 기사 실기 시험 공고</h3>"
+        "<p>원서접수 기간과 시험 일정은 아래와 같습니다.</p>"
+        "<table><tr><th>구분</th><th>원서접수</th><th>시험</th></tr>"
+        "<tr><td>기사 3회</td><td>2026.09.21 ~ 09.28</td><td>2026.10.24 ~ 11.13</td></tr></table>"
+        "<p>빈자리 접수: 2026.10.18 ~ 10.19</p></td></tr></table></body></html>"
+    )
+    lines = extract(html)[1].split("\n")
+    assert "메뉴 1" not in "\n".join(lines)  # 메뉴 덩어리는 걷힌다
+    assert "구분 | 원서접수 | 시험" in lines
+    assert "기사 3회 | 2026.09.21 ~ 09.28 | 2026.10.24 ~ 11.13" in lines
+    assert "빈자리 접수: 2026.10.18 ~ 10.19" in lines
+
+
+def test_the_homes_public_address_is_learned_kept_and_failed_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """묻는 곳의 이상한 답(사설 주소·글)은 버리고 다음 곳에 묻는다. 다시 못 물으면 마지막으로 안
+    것을, 한 번도 모르면 None(그땐 `checked` 가 아무 데도 안 붙는다)."""
+    from src.brain import web
+
+    answers = {
+        "api.ipify.org": httpx.Response(200, text="192.168.55.1"),
+        "ipv4.icanhazip.com": httpx.Response(200, text="<html>막힘</html>"),
+        "checkip.amazonaws.com": httpx.Response(200, text="58.226.32.160\n"),
+    }
+    real = httpx.AsyncClient
+
+    def client(**options: Any) -> httpx.AsyncClient:
+        return real(
+            transport=httpx.MockTransport(lambda r: answers[r.url.host]),
+            **{k: v for k, v in options.items() if k != "transport"},
+        )
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", client)
+    own = web.OwnAddress(fresh=0.0, keep=3600.0)
+    assert asyncio.run(own.get()) == "58.226.32.160"
+
+    answers["checkip.amazonaws.com"] = httpx.Response(503)
+    assert asyncio.run(own.get()) == "58.226.32.160"  # 다시 못 물었다 — 마지막으로 안 것
+    assert asyncio.run(web.OwnAddress(fresh=0.0).get()) is None  # 한 번도 모름

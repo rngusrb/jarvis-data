@@ -507,3 +507,7 @@ def test_an_empty_page_points_at_the_browser_when_there_is_one() -> None:
     assert "브라우저(browse)로 이 페이지를 직접 열어 볼 수 있다" in render_page(
         empty, browsable=True
     )
+    # 스캔 PDF 같은 파일은 브라우저로 열어도 글이 안 나온다 — 한 번뿐인 브라우저를 버리게 하지
+    # 않는다.
+    scanned = Page(url="https://x.example/a.pdf", title="a.pdf", text="", cut=False, kind="pdf")
+    assert "browse" not in render_page(scanned, browsable=True)

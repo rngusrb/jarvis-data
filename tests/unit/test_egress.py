@@ -49,7 +49,7 @@ async def _ask(proxy_url: str, raw: bytes) -> bytes:
     reader, writer = await asyncio.open_connection(host, int(port))
     writer.write(raw)
     await writer.drain()
-    data = await asyncio.wait_for(reader.read(65_536), timeout=5)
+    data = await asyncio.wait_for(reader.read(), timeout=5)  # 문이 닫을 때까지
     writer.close()
     return data
 
@@ -265,3 +265,129 @@ def test_closing_ends_open_tunnels() -> None:
         return rest
 
     assert asyncio.run(run()) == b""
+
+
+def test_only_web_ports_are_opened() -> None:
+    """공유기 관리 화면(8080) 같은 것이 공개 주소로 열렸다(JAR-036 리뷰) — 브라우저는 80·443 만."""
+
+    async def run() -> Tuple[bytes, List[Tuple[str, int]], List[str]]:
+        dialed: List[Tuple[str, int]] = []
+        proxy = EgressProxy(lookup=_lookup(PUBLIC), opener=_opener(1, dialed))
+        url = await proxy.start()
+        try:
+            return (
+                await _ask(url, b"CONNECT site.example:8080 HTTP/1.1\r\n\r\n"),
+                dialed,
+                proxy.blocked,
+            )
+        finally:
+            await proxy.close()
+
+    answer, dialed, blocked = asyncio.run(run())
+    assert answer.startswith(b"HTTP/1.1 403") and dialed == [] and blocked == ["site.example"]
+
+
+def test_this_homes_public_address_is_inside() -> None:
+    """공인 주소로 돌아 들어오면 공유기가 안으로 되돌린다(NAT 헤어핀) — 공유기 로그인·접속 기기
+    목록이 로그인 없이 열렸다(JAR-036 리뷰 재현). 이 집의 공인 주소는 내부로 본다."""
+    from tests.conftest import OWN_ADDRESS
+
+    async def run() -> Tuple[bytes, bytes, List[Tuple[str, int]]]:
+        dialed: List[Tuple[str, int]] = []
+        table = {"home.example": [OWN_ADDRESS], "mapped.example": [f"::ffff:{OWN_ADDRESS}"]}
+        proxy = EgressProxy(lookup=_lookup(table), opener=_opener(1, dialed))
+        url = await proxy.start()
+        try:
+            first = await _ask(url, b"CONNECT home.example:443 HTTP/1.1\r\n\r\n")
+            second = await _ask(url, b"GET http://mapped.example/ HTTP/1.1\r\nHost: m\r\n\r\n")
+        finally:
+            await proxy.close()
+        return first, second, dialed
+
+    first, second, dialed = asyncio.run(run())
+    assert first.startswith(b"HTTP/1.1 403") and second.startswith(b"HTTP/1.1 403") and dialed == []
+
+
+def test_without_knowing_the_public_address_nothing_goes_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """공인 주소를 모르면 헤어핀을 못 막는다 — 그땐 아무 데도 붙지 않는다(시끄럽게)."""
+    from src.brain import web
+
+    async def unknown() -> None:
+        return None
+
+    monkeypatch.setattr(web.OWN, "fixed", None)
+    monkeypatch.setattr(web.OWN, "address", None)
+    monkeypatch.setattr(web.OWN, "_ask", unknown)
+
+    async def run() -> Tuple[bytes, List[Tuple[str, int]]]:
+        dialed: List[Tuple[str, int]] = []
+        proxy = EgressProxy(lookup=_lookup(PUBLIC), opener=_opener(1, dialed))
+        url = await proxy.start()
+        try:
+            return await _ask(url, b"CONNECT site.example:443 HTTP/1.1\r\n\r\n"), dialed
+        finally:
+            await proxy.close()
+
+    answer, dialed = asyncio.run(run())
+    assert answer.startswith(b"HTTP/1.1 403") and dialed == []
+
+
+def test_plain_http_is_one_request_per_connection() -> None:
+    """같은 연결로 따라온 다음 요청(다른 사이트일 수 있다)은 검사 없이 첫 사이트로 가면 안 된다 —
+    본문 길이만큼만 넘기고, 크롬에는 Connection: close 로 답한다(JAR-036 리뷰)."""
+
+    async def run() -> Tuple[bytes, List[bytes]]:
+        server, port, got = await _upstream(b"HTTP/1.1 200 OK\r\nKeep-Alive: timeout=5\r\n\r\nok")
+        proxy = EgressProxy(lookup=_lookup(PUBLIC), opener=_opener(port, []))
+        url = await proxy.start()
+        try:
+            answer = await _ask(
+                url,
+                b"POST http://site.example/q HTTP/1.1\r\nHost: site.example\r\n"
+                b"Content-Length: 3\r\n\r\nabc"
+                b"GET http://192.168.0.1/admin HTTP/1.1\r\nHost: 192.168.0.1\r\n\r\n",
+            )
+        finally:
+            await proxy.close()
+            server.close()
+        return answer, got
+
+    answer, got = asyncio.run(run())
+    assert got[0].endswith(b"\r\n\r\nabc") and b"admin" not in b"".join(got)
+    assert b"Connection: close" in answer and b"Keep-Alive" not in answer
+
+
+def test_bodies_of_unknown_length_are_refused() -> None:
+    async def run() -> Tuple[bytes, List[Tuple[str, int]]]:
+        dialed: List[Tuple[str, int]] = []
+        proxy = EgressProxy(lookup=_lookup(PUBLIC), opener=_opener(1, dialed))
+        url = await proxy.start()
+        try:
+            raw = (
+                b"POST http://site.example/q HTTP/1.1\r\nHost: s\r\n"
+                b"Transfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"
+            )
+            return await _ask(url, raw), dialed
+        finally:
+            await proxy.close()
+
+    answer, _ = asyncio.run(run())
+    assert answer.startswith(b"HTTP/1.1 501")
+
+
+def test_names_that_cannot_be_looked_up_are_refused_not_crashed() -> None:
+    """64자 넘는 이름 조각은 OSError 가 아니라 UnicodeError 로 온다 — 답 없이 끊겼다(JAR-036
+    리뷰)."""
+    from src.brain.web import resolve
+
+    async def run() -> bytes:
+        proxy = EgressProxy(lookup=resolve, opener=_opener(1, []))
+        url = await proxy.start()
+        try:
+            return await _ask(url, b"CONNECT " + b"a" * 70 + b".example.com:443 HTTP/1.1\r\n\r\n")
+        finally:
+            await proxy.close()
+
+    assert asyncio.run(run()).startswith(b"HTTP/1.1 403")

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.brain.browser import Browser, Refused, Session, render
+from src.brain.browser import Browser, Refused, Session, render, short
 from src.brain.client import ToolCall, ToolReasoner
 from src.brain.web import Link
 from src.core.clock import shown
@@ -55,6 +55,12 @@ TOOLS: List[Dict[str, Any]] = [
         {"direction": {"type": "string", "enum": ["down", "up"]}},
         ["direction"],
     ),
+    _tool(
+        "choose",
+        "고르기 칸에서 보이는 항목 하나를 고른다(연도·회차 같은 거르기).",
+        {"ref": REF, "option": {"type": "string", "description": "목록에 보이는 항목 그대로"}},
+        ["ref", "option"],
+    ),
     _tool("back", "앞 페이지로 돌아간다.", {}, []),
     _tool(
         "screenshot",
@@ -82,6 +88,10 @@ FINISH = (
     "어느 페이지에서 봤는지, 못 찾았으면 못 찾았다고."
 )
 SHOT = "(자비스 안의 말) 방금 찍은 화면이다."
+# 화면을 바꾸는 동작. 한 차례에 이것 하나만 — 바꾼 뒤엔 번호를 다시 매기므로 같은 차례의 다음 번호는
+# 다른 것을 가리킨다(JAR-036 리뷰).
+_CHANGING = {"click", "type_search", "choose", "scroll", "back"}
+STALE = "앞 동작으로 화면이 바뀌어 건너뛰었다 — 새 목록을 보고 다시 부른다."
 _HEAD = "[브라우저 화면"
 
 
@@ -104,8 +114,13 @@ class BrowseAgent:
     # 모델이 다룰 수 있는 차례 수. 그다음엔 도구 없이 정리한다. 8번이면 큐넷 메뉴를 따라 연간
     # 시험일정 페이지에 닿자마자 끝났다(2026-11-06 실측) — 메뉴 두세 겹 + 탭 + 확인 몫.
     steps: int = 14
-    # 다루는 시간(초). 넘기면 새 차례를 시작하지 않고 정리한다. 대화 전체 상한 안에 든다.
-    deadline: float = 150.0
+    # 다루는 시간(초). 넘기면 새 차례를 시작하지 않고 정리한다. 동작 하나(`action`)와 정리 몫을
+    # 더해도 부르는 쪽 상한(`ToolLoop.browse_seconds`) 안에 든다 — 그 상한에 걸리면 찾은 것을 다
+    # 버린다.
+    deadline: float = 120.0
+    # 동작 하나(누르기 + 기다리기 + 보기)의 상한(초). 메인 스레드를 붙잡는 페이지에서 끝없이
+    # 기다렸다(리뷰).
+    action: float = 30.0
     # 누를 곳을 고르는 데는 생각이 필요 없다(빠르게). 2026-11-05 실측: 꺼도 도구를 제대로 부른다.
     thinking: bool = False
 
@@ -114,9 +129,10 @@ class BrowseAgent:
         started = loop.time()
         async with self.browser.session() as session:
             try:
-                view = await session.open(url)
-            except Refused as error:
-                return Browsed(text=f"시작 페이지를 못 열었다: {error}", url=url)
+                view = await asyncio.wait_for(session.open(url), timeout=self.action + 15)
+            except (Refused, asyncio.TimeoutError) as error:
+                why = str(error) or "시간 안에 안 열렸다"
+                return Browsed(text=f"시작 페이지를 못 열었다: {why}", url=short(url))
             convo: List[Dict[str, Any]] = [
                 {"role": "system", "content": GUIDE},
                 {"role": "user", "content": f"목표: {goal}\n지금: {shown(now)}\n\n{render(view)}"},
@@ -140,8 +156,14 @@ class BrowseAgent:
                     }
                 )
                 shot: Optional[bytes] = None
+                changed = False
                 for call in turn.calls:
-                    result, image = await self._act(session, call)
+                    if changed and call.name in _CHANGING:
+                        result, image = STALE, None
+                    else:
+                        result, image = await self._timed(session, call)
+                        # 거절·실패는 화면을 안 바꿨다 — 새 화면이 나왔을 때만.
+                        changed = changed or (call.name in _CHANGING and result.startswith(_HEAD))
                     convo.append({"role": "tool", "tool_call_id": call.id, "content": result})
                     shot = image or shot
                 if shot is not None:
@@ -177,12 +199,19 @@ class BrowseAgent:
         )
         return Browsed(
             text=text,
-            url=str(session.page.url),
+            url=short(str(session.page.url)),
             files=tuple(session.files),
             steps=steps,
             typed=tuple(session.typed),
             shots=shots,
         )
+
+    async def _timed(self, session: Session, call: ToolCall) -> Tuple[str, Optional[bytes]]:
+        try:
+            return await asyncio.wait_for(self._act(session, call), timeout=self.action)
+        except asyncio.TimeoutError:
+            logger.warning("다루는 손 — %s 가 %d초 안에 안 끝났다", call.name, self.action)
+            return f"{call.name} 가 시간 안에 안 끝났다(페이지가 답하지 않는다).", None
 
     async def _act(self, session: Session, call: ToolCall) -> Tuple[str, Optional[bytes]]:
         """도구 하나. 실패도 글로 돌려준다 — 손이 다른 길을 찾거나 정리하게."""
@@ -193,6 +222,9 @@ class BrowseAgent:
             if call.name == "type_search":
                 text = str(arguments.get("text") or "")
                 return render(await session.type_search(int(arguments["ref"]), text)), None
+            if call.name == "choose":
+                option = str(arguments.get("option") or "")
+                return render(await session.choose(int(arguments["ref"]), option)), None
             if call.name == "scroll":
                 down = str(arguments.get("direction") or "down") != "up"
                 return render(await session.scroll(down=down)), None
