@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Dict, List
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import httpcore
 import httpx
@@ -260,14 +262,15 @@ def test_a_huge_page_is_not_downloaded_whole() -> None:
     assert len(seen) <= 4 and page.text.startswith("a")
 
 
-def test_a_non_text_body_is_refused_before_it_is_read() -> None:
+def test_a_body_without_text_is_refused_before_it_is_read() -> None:
+    """그림·영상은 글을 뽑을 수 없다 — 받기 전에 거절한다(파일은 이제 읽는다)."""
     seen: List[int] = []
     reader = PageReader(
-        _client(_streamed([b"%PDF"] * 50, seen, kind="application/pdf")),
+        _client(_streamed([b"\x89PNG"] * 50, seen, kind="image/png")),
         resolve=_public("211.115.84.70"),
     )
     with pytest.raises(ValueError):
-        asyncio.run(reader.read("https://a.kr/file.pdf"))
+        asyncio.run(reader.read("https://a.kr/photo.png"))
     assert seen == []
 
 
@@ -353,3 +356,258 @@ def test_a_name_that_turns_inward_after_the_check_is_still_blocked() -> None:
 def test_every_address_of_a_name_must_be_public() -> None:
     with pytest.raises(Blocked):
         asyncio.run(ensure_public("https://split.example/", _public("211.115.84.70", "10.0.0.5")))
+
+
+def test_a_pdf_attachment_is_read_as_a_file() -> None:
+    """큐넷은 첨부를 octet-stream 으로 주고 이름은 헤더에 담는다(2026-11-06 실측)."""
+    from tests.unit.test_files import _pdf
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/octet-stream;;charset=UTF-8",
+                "content-disposition": "attachment; filename*=UTF-8''%EC%9D%BC%EC%A0%95.pdf",
+            },
+            content=_pdf("Exam 2026.09.21"),
+        )
+
+    page = asyncio.run(
+        PageReader(_client(handler), resolve=_public("211.115.84.70")).read(
+            "https://q.example/d?id=1"
+        )
+    )
+    assert page.kind == "pdf" and page.title == "일정.pdf" and "Exam 2026.09.21" in page.text
+
+
+def test_attachment_links_are_collected_with_the_qnet_button() -> None:
+    """공지의 일정은 본문이 아니라 첨부에 있었다.
+
+    큐넷 첨부는 링크가 아니라 자바스크립트 버튼이다.
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.q-net.or.kr/man004.do?ARTL_SEQ=5276928&BOARD_ID=Q001&gSite=Q&id=man00402"
+    html = (
+        "<p>2026 일정.pdf</p><button onclick=\"javascript:fileDownMan004('bbs/Q001/Q001_2268020', "
+        "'2026 일정.pdf', '2268020')\"><span>다운로드</span></button>"
+        '<a href="/files/guide.hwp">안내문</a><a href="javascript:void(0)">x.pdf</a>'
+        '<a href="/notice/123">다른 글</a>'
+    )
+    links = links_of(html, base)
+
+    assert [link.name for link in links] == ["2026 일정.pdf", "안내문"]
+    qnet = urlsplit(links[0].url)
+    query = dict(parse_qsl(qnet.query))
+    assert qnet.path == "/man004.do" and query["id"] == "man00402s01"
+    assert query["ARTL_SEQ"] == "5276928" and query["filePath"] == "bbs/Q001/Q001_2268020"
+    assert links[1].url == "https://www.q-net.or.kr/files/guide.hwp"
+
+
+def test_files_are_parsed_in_a_separate_process() -> None:
+    """별도 프로세스에서 뽑는다.
+
+    스레드로 돌리면 시간 초과가 나도 스레드는 끝까지 돌았다(리뷰 재현).
+    """
+    from src.brain.files import extract
+    from tests.unit.test_files import _pdf
+
+    assert "Exam 2026.09.21" in asyncio.run(extract(_pdf("Exam 2026.09.21"), "pdf"))
+
+
+def test_a_parser_that_runs_too_long_is_killed_and_jarvis_keeps_going(tmp_path: Path) -> None:
+    """시간을 넘기면 자식을 끝낸다 — 기다리기만 멈추고 자식이 계속 돌면 스레드 때와 같다(리뷰)."""
+    import os
+    import sys
+
+    from src.brain.files import Unreadable, extract
+
+    pid_file = tmp_path / "pid"
+    hang = [
+        sys.executable,
+        "-c",
+        "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(30)",
+        str(pid_file),
+    ]
+
+    async def both() -> tuple:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.03)
+                ticks += 1
+
+        start = asyncio.get_running_loop().time()
+        outcome, _ = await asyncio.gather(
+            extract(b"x", "pdf", timeout=0.5, command=hang), tick(), return_exceptions=True
+        )
+        return outcome, ticks, asyncio.get_running_loop().time() - start
+
+    outcome, ticks, took = asyncio.run(both())
+    assert isinstance(outcome, Unreadable) and "0.5초를 넘겨 멈췄다" in str(outcome)
+    assert ticks == 5 and took < 5
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)  # 자식은 이미 없다
+
+
+def test_the_child_gets_no_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """남이 만든 파일을 여는 쪽이다 — 봇 토큰 같은 비밀값이 든 환경을 넘기지 않는다."""
+    import sys
+
+    from src.brain.files import extract
+
+    monkeypatch.setenv("JARVIS_TELEGRAM_BOT_TOKEN", "secret-token")
+    show = [
+        sys.executable,
+        "-c",
+        "import json, os, sys; sys.stdin.buffer.read(); "
+        "print(json.dumps({'text': json.dumps(dict(os.environ))}))",
+    ]
+    env = asyncio.run(extract(b"", "pdf", command=show))
+    assert "secret-token" not in env and "JARVIS" not in env
+
+
+def test_links_stay_on_the_same_site_and_short() -> None:
+    """같은 사이트의 짧은 주소만, 열 개까지.
+
+    남의 사이트 링크를 받으면 글 하나가 공격자 주소 열 개를 허용 목록에 넣는다(리뷰). 긴 주소
+    하나로는 본문 상한을 우회해 문맥을 채운다. 확장자 없는 게시판 첨부는 링크 글이 파일
+    이름이면 받는다.
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.mmu.ac.kr/board/view?id=1"
+    html = (
+        '<a href="https://evil.example/f.pdf">f.pdf</a>'
+        f'<a href="/files/{"a" * 600}.pdf">긴 것</a>'
+        '<a href="/download/89854/60179">2026 일정.xlsx.pdf</a>'
+        '<a href="/files/plan.hwp">plan</a>'
+    )
+    assert [link.url for link in links_of(html, base)] == [
+        "https://www.mmu.ac.kr/download/89854/60179",
+        "https://www.mmu.ac.kr/files/plan.hwp",
+    ]
+    many = "".join(f'<a href="/f{i}.pdf">f{i}</a>' for i in range(12))
+    assert len(links_of(many, base)) == 10
+
+
+def test_a_qnet_button_without_its_article_number_is_skipped() -> None:
+    """페이지 주소에 ARTL_SEQ 가 없으면 만들 수 없다 — 건너뛴다.
+
+    이 조건을 빼면 페이지 읽기가 KeyError 로 실패했다(리뷰).
+    """
+    from src.brain.web import links_of
+
+    html = "<button onclick=\"fileDownMan004('a/b', 'x.pdf', '1')\">다운</button>"
+    assert links_of(html, "https://www.q-net.or.kr/man004.do?id=man00402") == []
+
+
+def test_text_pages_and_files_have_different_size_caps() -> None:
+    """글 페이지는 2MB 에서, 파일은 15MB 까지 받는다. 대소문자가 섞인 종류도 글 페이지다(리뷰)."""
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b"<p>" + b"a" * 1000 + b"</p>"] * 100, seen, kind="Text/HTML")),
+        max_bytes=3000,
+        file_bytes=100_000,
+        resolve=_public("211.115.84.70"),
+    )
+    asyncio.run(reader.read("https://big.example/"))
+    assert len(seen) <= 4
+
+
+def test_files_from_the_web_go_to_the_child_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """페이지 읽기는 파일을 자식 프로세스(`files.extract`)로 보낸다.
+
+    스레드로 되돌려도 다른 시험이 다 통과했다(재리뷰 돌연변이 N31) — 그 길을 붙든다.
+    """
+    from src.brain import files
+    from tests.unit.test_files import _pdf
+
+    sent: list = []
+
+    async def child(data: bytes, kind: str, timeout: float = 25.0, command: object = None) -> str:
+        sent.append((data[:4], kind, timeout))
+        return "자식이 읽음"
+
+    monkeypatch.setattr(files, "extract", child)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, content=_pdf("Exam")
+        )
+
+    reader = PageReader(_client(handler), resolve=_public("211.115.84.70"), parse_seconds=7)
+    page = asyncio.run(reader.read("https://q.example/a.pdf"))
+    assert sent == [(b"%PDF", "pdf", 7)] and page.text == "자식이 읽음"
+
+
+def test_long_korean_attachment_names_are_kept_and_drops_are_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """주소 길이는 풀어 쓴(%-디코딩한) 길이로 잰다. 그래도 넘쳐서 뺀 것은 남긴다.
+
+    인코딩된 길이로 쟀더니 한글 1자가 9자라 큐넷 첨부 이름이 34자쯤만 돼도 조용히 빠졌다(재리뷰).
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.q-net.or.kr/man004.do?ARTL_SEQ=5276928&BOARD_ID=Q001&gSite=Q&id=man00402"
+    name = (
+        "2026년 정기 기사·산업기사 제3회 실기시험 원서접수 및 시험장 안내"
+        "(수험자 유의사항·준비물 포함).hwp"
+    )
+    html = (
+        f"<button onclick=\"fileDownMan004('bbs/Q001/Q001_1', '{name}', '1')\">다운</button>"
+        f'<a href="/files/{"a" * 600}.pdf">긴 것</a>'
+    )
+    with caplog.at_level(logging.INFO, logger="src.brain.web"):
+        links = links_of(html, base)
+    assert [link.name for link in links] == [name[:80]]
+    assert len(links[0].url) > 500 >= len(unquote(links[0].url))  # 예전 상한이면 빠졌다
+    assert "1개는 주소가 500자를 넘어 뺐다" in caplog.text
+
+
+def test_attachment_lists_stay_small_even_with_encoded_names() -> None:
+    """인코딩된 길이에도 상한을 둔다.
+
+    풀어 쓴 길이만 보면 링크 열 개가 인코딩 4천 자씩, 첨부 목록 하나가 4만 자가 됐다(3차 리뷰).
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.mmu.ac.kr/board/view?id=1"
+    korean = "가" * 200  # 풀면 200자, 인코딩하면 1,800자
+    html = (
+        f'<a href="/files/{quote(korean)}.pdf">{korean}.pdf</a><a href="/files/plan.hwp">plan</a>'
+    )
+    assert [link.url for link in links_of(html, base)] == ["https://www.mmu.ac.kr/files/plan.hwp"]
+
+
+def test_text_answers_like_json_get_the_small_cap() -> None:
+    """json 을 파일 상한(15MB)으로 받아 이 프로세스에서 정리했더니 루프가 1.75초 멈췄다(3차 리뷰).
+
+    글(HTML·text·json·csv)은 글 페이지 상한으로 받는다. 이름으로만 글인 것(octet-stream 의 .csv)도
+    정리하기 전에 자른다.
+    """
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b'{"a": "' + b"x" * 1000 + b'"}'] * 100, seen, kind="application/json")),
+        max_bytes=3000,
+        file_bytes=100_000,
+        resolve=_public("211.115.84.70"),
+    )
+    asyncio.run(reader.read("https://api.example/x.json"))
+    assert len(seen) <= 4
+
+    def csv(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream"},
+            content=b"a,b\n" * 50_000,
+        )
+
+    page = PageReader(
+        _client(csv), max_bytes=3000, max_chars=100_000, resolve=_public("211.115.84.70")
+    )
+    got = asyncio.run(page.read("https://api.example/big.csv"))
+    assert got.kind == "text" and len(got.text) <= 3000

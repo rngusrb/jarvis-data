@@ -9,6 +9,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    # 웹에서 찾은 파일 읽기(PDF, 한글 HWP) — brain/files.py
+    # 6.21 부터 한 스트림의 토큰 수에 상한이 있다 — 30쪽이 한 스트림을 나눠 쓰는 15KB PDF 를
+    # 6.21.0 은 1.8초에 거절, 6.20.0 은 150초가 넘어도 못 끝냈다(재리뷰 뒤 실측). crypto = AES 로
+    # 잠근 빈 암호 PDF(서버에 cryptography 가 없어 못 열었다).
+    "pypdf[crypto]>=6.21",
+    "olefile>=0.47",
 ]
 
 [project.optional-dependencies]

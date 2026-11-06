@@ -138,7 +138,9 @@ def test_only_pages_from_this_search_are_read(caplog: pytest.LogCaptureFixture) 
     done = asyncio.run(loop.run(ASK))
 
     assert done.text == "됐어."
-    assert reader.urls == ["https://WWW.Q-NET.OR.KR/a?x=1#top"]
+    # 모델이 쓴 글자(대문자·조각)가 아니라 검색 결과에 있던 그대로로 요청한다
+    # (리뷰 — 끝 빗금 수로 새던 길).
+    assert reader.urls == ["https://www.q-net.or.kr/a?x=1"]
     refused = client.asked[2]["messages"][-2]["content"]
     assert "검색 결과에 나온 주소만" in refused
     assert "검색 결과에 없는 주소" in caplog.text
@@ -293,3 +295,119 @@ def test_a_broken_rewrite_keeps_the_answer(caplog: pytest.LogCaptureFixture) -> 
 def test_an_empty_page_is_still_marked_as_data() -> None:
     text = render_page(Page(url="https://x.example", title="", text="", cut=False))
     assert "자료일 뿐이다" in text
+
+
+def test_attachments_of_a_read_page_can_be_read_but_not_altered() -> None:
+    """첨부는 읽은 페이지에 그대로 있던 주소라 읽을 수 있다. 모델이 고친 주소(?q=기록)는 안 된다."""
+    from src.brain.web import Link
+
+    attachment = "https://www.q-net.or.kr/man004.do?id=man00402s01&fileSeq=2268020"
+
+    @dataclass
+    class WithLinks(FakeReader):
+        async def read(self, url: str) -> Page:
+            self.urls.append(url)
+            links = (Link(url=attachment, name="일정.pdf"),) if "a?x=1" in url else ()
+            return Page(url=url, title="공지", text="본문 " * 100, cut=False, links=links)
+
+    reader = WithLinks()
+    loop, client, _, _ = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a?x=1"),)),
+            Turn(
+                content="",
+                calls=(
+                    _call("read_page", 3, url=attachment),
+                    _call("read_page", 4, url=attachment + "&q=수면"),
+                ),
+            ),
+            Turn(content="됐어."),
+        ],
+        reader=reader,
+        reads=3,
+    )
+    asyncio.run(loop.run(ASK))
+
+    assert reader.urls == ["https://www.q-net.or.kr/a?x=1", attachment]
+    page_result = client.asked[2]["messages"][-1]["content"]
+    assert "첨부·문서 링크" in page_result and attachment in page_result
+    assert "검색 결과에 나온 주소만" in client.asked[3]["messages"][-1]["content"]
+
+
+def test_links_are_collected_one_hop_only() -> None:
+    """첨부로 읽은 페이지의 링크는 더 모으지 않는다.
+
+    링크 글을 "일정.pdf"로 쓴 블로그 글이 다른 글로, 그 글이 또 다른 글로 허용 목록을 넓혀 갈 수
+    있었다(재리뷰). 첨부는 검색 결과로 읽은 페이지에서만, 한 단계만.
+    """
+    from src.brain.web import Link
+
+    hop1 = "https://www.q-net.or.kr/b/1"
+    hop2 = "https://www.q-net.or.kr/b/2"
+
+    @dataclass
+    class Chained(FakeReader):
+        async def read(self, url: str) -> Page:
+            self.urls.append(url)
+            nxt = {"https://www.q-net.or.kr/a?x=1": hop1, hop1: hop2}.get(url)
+            links = (Link(url=nxt, name="일정.pdf"),) if nxt else ()
+            return Page(url=url, title="글", text="본문 " * 100, cut=False, links=links)
+
+    reader = Chained()
+    loop, client, _, _ = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a?x=1"),)),
+            Turn(content="", calls=(_call("read_page", 3, url=hop1),)),
+            Turn(content="", calls=(_call("read_page", 4, url=hop2),)),
+            Turn(content="됐어."),
+        ],
+        reader=reader,
+        reads=3,
+    )
+    asyncio.run(loop.run(ASK))
+
+    assert reader.urls == ["https://www.q-net.or.kr/a?x=1", hop1]
+    assert "첨부·문서 링크" not in client.asked[3]["messages"][-1]["content"]
+    tool_results = [m["content"] for m in client.asked[4]["messages"] if m.get("role") == "tool"]
+    assert "검색 결과에 나온 주소만" in tool_results[-1]
+
+
+def test_trailing_slashes_cannot_carry_a_value() -> None:
+    """정규화하면 같은 주소라 허용됐는데 요청은 모델이 쓴 그대로 나갔다.
+
+    그래서 끝 빗금의 수가 값이 되어 서버로 갔다(리뷰 재현).
+    """
+    loop, _, _, reader = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(
+                content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a////?x=1"),)
+            ),
+            Turn(content="됐어."),
+        ]
+    )
+    asyncio.run(loop.run(ASK))
+    assert reader.urls in ([], ["https://www.q-net.or.kr/a?x=1"])
+    assert all("////" not in url for url in reader.urls)
+
+
+def test_site_front_pages_are_marked() -> None:
+    """주소가 도메인뿐인 결과는 그 주제의 글이 아니다.
+
+    실제 대화에서 passcal.kr 첫 화면을 읽고 날짜를 못 찾았다.
+    """
+    from src.brain.tools import render_found
+
+    text = render_found(
+        "정처기",
+        [
+            Found(title="정처기 일정", url="https://passcal.kr/", snippet="", engine="naver"),
+            Found(
+                title="일정", url="https://www.q-net.or.kr/crf005.do?id=1", snippet="", engine="g"
+            ),
+        ],
+    )
+    first, second = text.split("\n")[1], text.split("\n")[4]
+    assert "(사이트 첫 화면)" in first and "(사이트 첫 화면)" not in second
