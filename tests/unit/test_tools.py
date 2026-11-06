@@ -511,3 +511,31 @@ def test_an_empty_page_points_at_the_browser_when_there_is_one() -> None:
     # 않는다.
     scanned = Page(url="https://x.example/a.pdf", title="a.pdf", text="", cut=False, kind="pdf")
     assert "browse" not in render_page(scanned, browsable=True)
+
+
+def test_files_from_the_browser_are_capped_in_the_loop_too() -> None:
+    """손 쪽에서 거르지만 고리에서도 한 겹 더 — 10개, 1,000자."""
+    from src.brain.web import Link
+
+    many = tuple(Link(url=f"https://www.q-net.or.kr/f{i}.pdf", name=f"f{i}") for i in range(12))
+    browse = FakeBrowse(files=many)
+    loop, _, _, reader = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(
+                content="",
+                calls=(_call("browse", 2, url="https://www.q-net.or.kr/a?x=1", goal="일정"),),
+            ),
+            Turn(
+                content="",
+                calls=(
+                    _call("read_page", 3, url="https://www.q-net.or.kr/f9.pdf"),
+                    _call("read_page", 4, url="https://www.q-net.or.kr/f11.pdf"),
+                ),
+            ),
+            Turn(content="됐어."),
+        ],
+        browse=browse,
+    )
+    asyncio.run(loop.run(ASK))
+    assert reader.urls == ["https://www.q-net.or.kr/f9.pdf"]

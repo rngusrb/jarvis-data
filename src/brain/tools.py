@@ -26,7 +26,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from src.brain.browse import BrowseAgent, Browsed
 from src.brain.client import ToolCall, ToolReasoner, Turn
-from src.brain.web import Found, Page, Reader, Search
+from src.brain.web import LINK_ENCODED, LINKS, Found, Page, Reader, Search
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +326,9 @@ class ToolLoop:
             return f"브라우저 실패({type(error).__name__}). 다른 결과를 읽거나 찾은 것으로 답한다."
         state.uses.append(Use("browse", url, True, f"{len(done.text)}자", len(done.text)))
         # 브라우저에서 만난 파일은 읽을 수 있다 — 주소는 페이지가 준 것이다(모델이 쓴 게 아니다).
-        state.seen.update((_norm(link.url), link.url) for link in done.files)
+        # 손 쪽에서 이미 거르지만(같은 사이트·길이·10개) 여기서도 한 겹 더.
+        files = [link for link in done.files if len(link.url) <= LINK_ENCODED][:LINKS]
+        state.seen.update((_norm(link.url), link.url) for link in files)
         return render_browsed(goal, done)
 
     def _result(self, text: str, state: _State) -> Researched:

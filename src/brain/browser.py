@@ -47,7 +47,25 @@ CONTROLS = 150
 # 검색창에 넣는 글의 상한 — 검색어 한 줄.
 TYPED = 40
 # 추리기에 넣는 프레임 HTML 의 상한(읽기와 같다) — 60만 요소 페이지에서 루프가 6초 멈췄다(리뷰).
+# **크롬 안에서** 자른다: 다 받아 와서 자르면 150MB DOM 한 장에 자비스 1.6GB·드라이버 0.8GB 가
+# 됐다(2차 리뷰 재현 — 크롬까지 합쳐 유닛 상한 3G 를 넘었다).
 HTML_CAP = 2_000_000
+_HTML_JS = r"""
+(cap) => {
+  const root = document.documentElement;
+  if (!root) return '';
+  let html = root.outerHTML;
+  if (html.length > cap) {
+    html = html.slice(0, cap);
+    const end = html.lastIndexOf('>');  // 태그 중간에서 끊으면 조각("<div d")이 본문에 섞였다
+    if (end > 0) html = html.slice(0, end + 1);
+  }
+  return html;
+}
+"""
+# 브라우저 이동 로그 — 초당 한 줄, 세션당 이만큼까지. pushState 를 돌리는 페이지 하나가 20초에
+# 33만 줄을 찍어 journald 가 넘친 줄(감사 줄까지)을 버렸다(2차 리뷰 재현).
+MOVES = 60
 # 보는 프레임 수(광고·추적 프레임이 수십 개인 페이지).
 FRAMES = 20
 # 페이지에 한 번 묻는 시간 상한(초).
@@ -208,7 +226,13 @@ class Session:
     ignored: int = 0
     crashed: bool = False
     _acting: bool = False
+    # 손이 누르는 동작 중(누르기·검색·고르기) — 새 창은 이때 하나만 받는다(열기 중에는 안 받는다).
+    _clicking: bool = False
+    _popped: bool = False
     _origin: str = ""
+    _moves: int = 0
+    _last_move: float = 0.0
+    _skipped_moves: int = 0
     # 처음 열 때는 그 주소 자체가 파일인 것만 받는다(페이지가 열리며 숨은 프레임이 흘린 것은 안
     # 받는다).
     _only: Optional[str] = None
@@ -229,14 +253,19 @@ class Session:
         화면을 공격자가 고른 창으로 넘긴 페이지가 있었다(리뷰 재현). 나머지는 닫는다."""
         if page is self.page:
             return
-        if not self._acting:
+        if not self._clicking or self._popped:
+            # 열기 중에 뜬 공지 창, 한 번 누름에 둘째 이후의 창 — 닫는다. 열기 중 창을 받았더니 손이
+            # 공지 창에서 시작했고, 창이 많으면 여는 창까지 닫혔다(2차 리뷰 재현).
             self.ignored += 1
             logger.info("손이 안 누른 새 창은 닫는다(%d번째)", self.ignored)
             asyncio.ensure_future(_close(page))
             return
+        self._popped = True
+        previous = self.page
         self.adopt(page)
-        extra = [p for p in self.context.pages if p is not page][: -(PAGES - 1) or None]
-        for old in extra:
+        # 창은 `PAGES` 개까지 — 넘으면 가장 오래된 것부터 닫는다(지금 창과 바로 앞 창은 남긴다).
+        others = [p for p in self.context.pages if p is not page and p is not previous]
+        for old in others[: max(0, len(others) - (PAGES - 2))]:
             asyncio.ensure_future(_close(old))
 
     def _dialog(self, dialog: Any) -> None:
@@ -286,18 +315,31 @@ class Session:
             )
 
     def _moved(self, frame: Any) -> None:
-        if frame.parent_frame is None:
-            logger.info("브라우저 이동: %s", short(str(frame.url), 200))
+        if frame.parent_frame is not None:
+            return
+        now = asyncio.get_running_loop().time()
+        if self._moves >= MOVES or now - self._last_move < 1.0:
+            self._skipped_moves += 1
+            if self._moves == MOVES:
+                self._moves += 1
+                logger.info("브라우저 이동이 너무 많아 그 뒤는 남기지 않는다(%d줄)", MOVES)
+            return
+        self._moves += 1
+        self._last_move = now
+        more = f" (사이 {self._skipped_moves}번 더)" if self._skipped_moves else ""
+        self._skipped_moves = 0
+        logger.info("브라우저 이동: %s%s", short(str(frame.url), 200), more)
 
     @asynccontextmanager
     async def _hand(self) -> AsyncIterator[None]:
         """손이 누르는 동안 — 이때 생긴 내려받기·새 창만 받는다(그 페이지와 같은 사이트의 것만)."""
-        self._acting = True
+        self._acting = self._clicking = True
+        self._popped = False
         self._origin = urlsplit(str(self.page.url)).hostname or ""
         try:
             yield
         finally:
-            self._acting = False
+            self._acting = self._clicking = False
 
     def _alive(self) -> None:
         if self.crashed:
@@ -400,7 +442,10 @@ class Session:
     async def view(self, note: str = "") -> View:
         """지금 페이지: 본문 글(읽기와 같은 추리기) + 누를 수 있는 것에 번호. 프레임 안까지 본다."""
         self._alive()
-        self._refs.clear()
+        # 번호표는 화면을 끝까지 봤을 때만 바꾼다. 도중에 끊기면(시간 초과) 비워 둔다 — 반쯤 새
+        # 번호면 손이 옛 화면의 번호로 엉뚱한 것을 누른다(2차 리뷰).
+        self._refs = {}
+        refs: Dict[int, Tuple[Any, Control]] = {}
         controls: List[Control] = []
         texts: List[str] = []
         title = ""
@@ -410,7 +455,7 @@ class Session:
                 found = await asyncio.wait_for(
                     frame.evaluate(_CONTROLS_JS, len(controls)), timeout=ASK
                 )
-                html = await asyncio.wait_for(frame.content(), timeout=ASK)
+                html = await asyncio.wait_for(frame.evaluate(_HTML_JS, HTML_CAP), timeout=ASK)
             except asyncio.TimeoutError:
                 if index == 0:
                     raise Refused(
@@ -433,8 +478,8 @@ class Session:
                     options=tuple(str(o) for o in item.get("options") or ()),
                 )
                 controls.append(control)
-                self._refs[control.ref] = (frame, control)
-            heading, body = await asyncio.to_thread(extract, html[:HTML_CAP])
+                refs[control.ref] = (frame, control)
+            heading, body = await asyncio.to_thread(extract, str(html or "")[:HTML_CAP])
             if index == 0:
                 title = heading
                 texts.append(body)
@@ -447,6 +492,7 @@ class Session:
             logger.debug("제목을 못 읽음", exc_info=True)
         if missed:
             note = (note + " " if note else "") + f"답하지 않는 프레임 {missed}개는 못 봤다."
+        self._refs = refs
         return View(
             url=short(str(self.page.url)),
             title=title[:200],

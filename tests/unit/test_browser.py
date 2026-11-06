@@ -66,6 +66,32 @@ PAGES = {
 <option>2025</option><option>2026</option></select></main></body></html>""",
     "/spin": """<html><head><title>바쁨</title></head><body><main><p>곧 바빠지는 페이지.</p></main>
 <script>setTimeout(() => { while (true) {} }, 300);</script></body></html>""",
+    "/many": """<html><head><title>파일 많음</title></head><body>
+<main><p>파일이 많은 페이지.</p></main>
+<a href="http://other.example/file.pdf">남의 파일</a>
+<a href="/file.pdf#조각">조각 붙은 파일</a>
+<a href="/file.pdf?x=LONGLONG">긴 파일</a>
+<button onclick="for (let i = 0; i < 12; i++) {
+  const f = document.createElement('iframe'); f.style.display = 'none';
+  f.src = '/file.pdf?n=' + i; document.body.appendChild(f);
+}">많이 받기</button>
+<button onclick="for (let i = 0; i < 3; i++) window.open('/popup?n=' + i);">창 셋</button>
+</body></html>""",
+    "/noticepop": """<html><head><title>공지 있음</title></head><body>
+<main><p>공지가 뜨는 페이지.</p>
+</main><script>window.open('/popup?n=a'); window.open('/popup?n=b');</script></body></html>""",
+    "/pushy": """<html><head><title>바뀌는 주소</title></head><body><main><p>주소를 계속 바꾼다.</p>
+</main><script>let k = 0;
+setInterval(() => history.pushState({}, '', '/pushy?n=' + (k++)), 5);</script></body></html>""",
+    "/big": """<html><head><title>큰 페이지</title></head><body><main><p>schedule page</p>
+<div id="box"></div></main><script>
+const box = document.getElementById('box');
+const word = 'x'.repeat(1000);
+for (let i = 0; i < 20000; i++) {
+  const d = document.createElement('div');
+  d.setAttribute('data-' + (i % 50), word); box.appendChild(d);
+}
+</script></body></html>""",
     "/tabs": """<html><head><title>연간 일정</title></head><body><main>
 <ul><li id="pro" style="cursor:pointer">기술사</li>
 <li id="eng" style="cursor:pointer">기사</li></ul>
@@ -113,7 +139,8 @@ class _Site(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"%PDF-1.4 ...")
         elif path in PAGES:
-            self._send("text/html; charset=utf-8", PAGES[path].replace("{port}", str(self.port)))
+            page = PAGES[path].replace("{port}", str(self.port))
+            self._send("text/html; charset=utf-8", page.replace("LONGLONG", "a" * 1100))
         else:
             self._send("text/plain", "없음", status=404)
 
@@ -142,7 +169,7 @@ def site() -> Iterator[Tuple[int, List[str]]]:
 
 def _browser(port: int) -> Browser:
     async def lookup(host: str, wanted: int) -> List[str]:
-        return [PUBLIC] if host == "site.example" else [host]
+        return [PUBLIC] if host in ("site.example", "other.example") else [host]
 
     async def opener(host: str, wanted: int) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         assert host == PUBLIC  # 문은 검사한 공개 주소로만 붙으려 한다
@@ -516,3 +543,169 @@ def test_the_chrome_folder_must_not_be_ours_to_change(tmp_path: Any) -> None:
     with pytest.raises(BrowserUnavailable, match="없다"):
         _safe_folder(str(tmp_path / "없음"))
     _safe_folder("/usr")  # root 가 가진 폴더
+
+
+def test_only_two_megabytes_of_page_cross_into_jarvis(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2MB 는 크롬 안에서 자른다 — 다 받아 와서 자르면 150MB DOM 한 장에 자비스 1.6GB·드라이버
+    0.8GB 가 됐다(2차 리뷰 재현). 태그 중간에서도 안 끊는다("<div d" 조각이 본문에 섞였다)."""
+    import tracemalloc
+
+    from src.brain import browser
+
+    monkeypatch.setattr(browser, "HTML_CAP", 200_000)
+    port, _ = site
+
+    async def run() -> Any:
+        async with _browser(port).session() as session:
+            await session.open("http://site.example/big")  # 20MB 쯤인 DOM
+            tracemalloc.start()
+            try:
+                view = await session.view()
+                return view, tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+
+    view, peak = asyncio.run(run())
+    assert peak < 8_000_000 and "schedule page" in view.text and "<div" not in view.text
+
+
+def test_downloads_from_a_click_are_capped(site: Tuple[int, List[str]]) -> None:
+    """손이 누른 동작에서도 같은 사이트·`#` 뒤 버림·긴 주소 거절·10개까지 — 이 넷을 지우자 클릭 한
+    번에 파일 120개가 들어왔는데 시험은 다 통과했다(2차 리뷰)."""
+    port, _ = site
+
+    async def run() -> List[Any]:
+        async with _browser(port).session() as session:
+            page = await session.open("http://site.example/many")
+            for name in ("남의 파일", "조각 붙은 파일", "긴 파일"):
+                page = await session.click(_ref(page, name))
+            await session.click(_ref(page, "많이 받기"))
+            return session.files
+
+    files = asyncio.run(run())
+    urls = [f.url for f in files]
+    assert "http://site.example/file.pdf" in urls  # 조각(#)은 떼었다
+    assert not any("other.example" in u or "#" in u or "aaaa" in u for u in urls)
+    assert len(files) == 10
+
+
+def test_windows_while_opening_are_closed_and_one_per_click(
+    site: Tuple[int, List[str]],
+) -> None:
+    """열기 중에 뜬 공지 창을 받았더니 손이 그 창에서 시작했고, 창이 많으면 여는 창까지 닫혔다(2차
+    리뷰). 열기 중 창은 닫고, 누름 한 번에는 창 하나만."""
+    port, _ = site
+
+    async def run() -> Tuple[Any, Any, Any, int, int]:
+        async with _browser(port).session() as session:
+            first = session.page
+            opened = await session.open("http://site.example/noticepop")
+            stayed = session.page is first
+            page = await session.open("http://site.example/many")
+            after = await session.click(_ref(page, "창 셋"))
+            await asyncio.sleep(0.5)
+            return opened, stayed, after, session.ignored, len(session.context.pages)
+
+    opened, stayed, after, ignored, pages = asyncio.run(run())
+    assert opened.title == "공지 있음" and stayed and after.title == "새 창"
+    assert ignored >= 4 and pages <= 3
+
+
+def test_address_changes_are_logged_sparingly(
+    site: Tuple[int, List[str]], caplog: pytest.LogCaptureFixture
+) -> None:
+    """pushState 를 돌리는 페이지 하나가 20초에 33만 줄을 찍어 journald 가 감사 줄까지 버렸다(2차
+    리뷰)."""
+    import logging
+
+    port, _ = site
+
+    async def run() -> int:
+        async with _browser(port).session() as session:
+            await session.open("http://site.example/pushy")
+            await asyncio.sleep(2.0)
+            return session._skipped_moves + session._moves
+
+    with caplog.at_level(logging.INFO, logger="src.brain.browser"):
+        moves = asyncio.run(run())
+    logged = caplog.text.count("브라우저 이동:")
+    assert moves > 50 and logged <= 4
+
+
+def test_a_cut_off_view_leaves_no_half_numbers(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """화면 보기가 도중에 끊기면 번호표는 비운다 — 반쯤 새 번호면 옛 화면의 번호로 엉뚱한 것을
+    눌렀다."""
+    import time
+
+    from src.brain import browser
+
+    port, _ = site
+
+    async def run() -> Tuple[int, str]:
+        async with _browser(port).session() as session:
+            home = await session.open("http://site.example/")
+            real = browser.extract
+            monkeypatch.setattr(browser, "extract", lambda html: (time.sleep(1.0), real(html))[1])
+            try:
+                await asyncio.wait_for(session.view(), timeout=0.3)
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await session.click(_ref(home, "시험일정"))
+                return len(session._refs), "눌렸다"
+            except Refused as error:
+                return len(session._refs), str(error)
+
+    left, said = asyncio.run(run())
+    assert left == 0 and "지금 화면에 없다" in said
+
+
+def test_text_is_pulled_out_off_the_event_loop(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """본문 추리기는 다른 스레드에서 — 큰 페이지에서 이벤트 루프가 멈추지 않게(1차 리뷰 6초)."""
+    import time
+
+    from src.brain import browser
+
+    port, _ = site
+
+    async def run() -> int:
+        async with _browser(port).session() as session:
+            await session.open("http://site.example/popup")
+            real = browser.extract
+            monkeypatch.setattr(browser, "extract", lambda html: (time.sleep(0.6), real(html))[1])
+            ticks = 0
+
+            async def tick() -> None:
+                nonlocal ticks
+                while True:
+                    await asyncio.sleep(0.05)
+                    ticks += 1
+
+            ticker = asyncio.create_task(tick())
+            await session.view()
+            ticker.cancel()
+            return ticks
+
+    assert asyncio.run(run()) >= 6
+
+
+def test_the_chrome_folders_parent_must_not_be_ours_either(tmp_path: Any) -> None:
+    """폴더는 못 고쳐도 부모를 고칠 수 있으면 폴더를 바꿔치기할 수 있다."""
+    import os
+
+    from src.brain.browser import _safe_folder
+
+    chrome = tmp_path / "chrome"
+    chrome.mkdir()
+    os.chmod(chrome, 0o555)
+    try:
+        with pytest.raises(BrowserUnavailable, match="고칠 수 있다"):
+            _safe_folder(str(chrome))
+    finally:
+        os.chmod(chrome, 0o755)

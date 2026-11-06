@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import httpcore
@@ -690,3 +690,27 @@ def test_the_homes_public_address_is_learned_kept_and_failed_closed(
     answers["checkip.amazonaws.com"] = httpx.Response(503)
     assert asyncio.run(own.get()) == "58.226.32.160"  # 다시 못 물었다 — 마지막으로 안 것
     assert asyncio.run(web.OwnAddress(fresh=0.0).get()) is None  # 한 번도 모름
+
+
+def test_a_failed_lookup_of_the_public_address_is_remembered() -> None:
+    """실패를 기억하지 않았더니 묻는 곳 장애 때 연결 하나하나가 차례로 15초씩 줄을 섰다(2차 리뷰
+    재현)."""
+    from src.brain import web
+
+    asked: List[int] = []
+
+    class Down(web.OwnAddress):
+        async def _ask(self) -> Optional[str]:
+            asked.append(1)
+            return None
+
+    own = Down(fresh=0.0, retry=60.0)
+
+    async def three() -> list:
+        return [await own.get() for _ in range(3)]
+
+    assert asyncio.run(three()) == [None, None, None] and len(asked) == 1
+    known = Down(fresh=0.0, retry=60.0)
+    known.address, known.learned = "58.226.32.160", __import__("time").monotonic()
+    assert asyncio.run(known.get()) == "58.226.32.160"  # 다시 못 물었다 — 마지막 것
+    assert asyncio.run(known.get()) == "58.226.32.160" and len(asked) == 2  # 바로, 안 묻고

@@ -391,3 +391,22 @@ def test_names_that_cannot_be_looked_up_are_refused_not_crashed() -> None:
             await proxy.close()
 
     assert asyncio.run(run()).startswith(b"HTTP/1.1 403")
+
+
+def test_big_bodies_are_refused_before_connecting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.brain import egress
+
+    monkeypatch.setattr(egress, "BODY_LIMIT", 10)
+
+    async def run() -> Tuple[bytes, List[Tuple[str, int]]]:
+        dialed: List[Tuple[str, int]] = []
+        proxy = EgressProxy(lookup=_lookup(PUBLIC), opener=_opener(1, dialed))
+        url = await proxy.start()
+        try:
+            raw = b"POST http://site.example/q HTTP/1.1\r\nHost: s\r\nContent-Length: 20\r\n\r\n"
+            return await _ask(url, raw + b"x" * 20), dialed
+        finally:
+            await proxy.close()
+
+    answer, dialed = asyncio.run(run())
+    assert answer.startswith(b"HTTP/1.1 501") and dialed == []

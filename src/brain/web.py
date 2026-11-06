@@ -74,11 +74,17 @@ class OwnAddress:
     안다(어느 사이트든 이미 보는 값이다).
     """
 
-    def __init__(self, fresh: float = 1800.0, keep: float = 6 * 3600.0) -> None:
+    def __init__(
+        self, fresh: float = 1800.0, keep: float = 6 * 3600.0, retry: float = 60.0
+    ) -> None:
         self.fresh = fresh
         self.keep = keep
+        # 못 물은 뒤 이만큼은 다시 묻지 않고 바로 답한다 — 실패를 안 기억했더니 묻는 곳 장애 때 연결
+        # 하나하나가 차례로 15초씩 줄을 섰다(2차 리뷰 재현).
+        self.retry = retry
         self.address: Optional[str] = None
         self.learned = 0.0
+        self.failed = float("-inf")
         # 시험이 끼우는 값(네트워크를 안 탄다).
         self.fixed: Optional[str] = None
         self._lock: Optional[asyncio.Lock] = None
@@ -88,18 +94,23 @@ class OwnAddress:
             return self.fixed
         if self.address and time.monotonic() - self.learned < self.fresh:
             return self.address
+        if time.monotonic() - self.failed < self.retry:
+            return self._last()
         if self._lock is None:
             self._lock = asyncio.Lock()
         async with self._lock:
             now = time.monotonic()
             if self.address and now - self.learned < self.fresh:
                 return self.address
+            if now - self.failed < self.retry:  # 기다리는 사이 앞 사람이 묻다 실패했다
+                return self._last()
             found = await self._ask()
             if found:
                 if found != self.address:
                     logger.info("이 집의 공인 주소: %s (그리로는 붙지 않는다)", found)
                 self.address, self.learned = found, now
                 return found
+            self.failed = time.monotonic()
             if self.address and now - self.learned < self.keep:
                 logger.warning(
                     "공인 주소를 다시 못 물었다 — 마지막으로 안 %s 를 쓴다", self.address
@@ -110,8 +121,13 @@ class OwnAddress:
             )
             return None
 
+    def _last(self) -> Optional[str]:
+        if self.address and time.monotonic() - self.learned < self.keep:
+            return self.address
+        return None
+
     async def _ask(self) -> Optional[str]:
-        async with httpx.AsyncClient(timeout=5.0, headers={"User-Agent": USER_AGENT}) as client:
+        async with httpx.AsyncClient(timeout=3.0, headers={"User-Agent": USER_AGENT}) as client:
             for url in ECHOES:
                 try:
                     answer = (await client.get(url)).text.strip()
