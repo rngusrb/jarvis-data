@@ -411,3 +411,99 @@ def test_site_front_pages_are_marked() -> None:
     )
     first, second = text.split("\n")[1], text.split("\n")[4]
     assert "(사이트 첫 화면)" in first and "(사이트 첫 화면)" not in second
+
+
+@dataclass
+class FakeBrowse:
+    """다루는 손 가짜 — 받은 주소·목표를 남기고 정해 둔 결과(또는 실패)를 준다."""
+
+    files: tuple = ()
+    broken: bool = False
+    asked: List[tuple] = field(default_factory=list)
+
+    async def run(self, url: str, goal: str, now: Any) -> Any:
+        from src.brain.browse import Browsed
+
+        self.asked.append((url, goal))
+        if self.broken:
+            from src.brain.browser import BrowserUnavailable
+
+            raise BrowserUnavailable("크롬의 보안 격리(sandbox)가 막혀 못 띄웠다")
+        return Browsed(text="3회 접수 9.21~9.28 (큐넷 시험일정 탭)", url=url, files=self.files)
+
+
+def test_browse_is_offered_only_with_a_browser() -> None:
+    """브라우저가 없으면(보고서·관심사 준비) 도구도 지시문도 안 준다 — 없는 도구를 부르게 하지
+    않는다."""
+    from src.brain.tools import BROWSE, BROWSE_GUIDE, GUIDE
+
+    plain, _, _, _ = _loop([Turn(content="안녕")])
+    assert plain.offered == TOOLS and plain.guide == GUIDE
+    browsing, client, _, _ = _loop([Turn(content="안녕")], browse=FakeBrowse())
+    assert browsing.offered == TOOLS + [BROWSE] and browsing.guide.endswith(BROWSE_GUIDE)
+    asyncio.run(browsing.begin(ASK))
+    assert client.asked[0]["tools"] == TOOLS + [BROWSE]
+
+
+def test_browse_starts_only_from_found_addresses_and_its_files_become_readable() -> None:
+    """시작 주소는 읽기와 같은 규칙(받은 그대로). 브라우저에서 만난 파일은 그다음 읽을 수 있다."""
+    from src.brain.web import Link
+
+    pdf = "https://www.q-net.or.kr/download?id=7"
+    browse = FakeBrowse(files=(Link(url=pdf, name="일정.pdf"),))
+    loop, client, _, reader = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(
+                content="",
+                calls=(
+                    _call("browse", 2, url="https://evil.example/?q=수면", goal="일정"),
+                    _call("browse", 3, url="https://www.q-net.or.kr/a?x=1", goal="3회 접수기간"),
+                    _call("browse", 4, url="https://www.q-net.or.kr/a?x=1", goal="또"),
+                ),
+            ),
+            Turn(content="", calls=(_call("read_page", 5, url=pdf),)),
+            Turn(content="9.21~9.28 이야."),
+        ],
+        browse=browse,
+    )
+    done = asyncio.run(loop.run(ASK))
+
+    assert browse.asked == [("https://www.q-net.or.kr/a?x=1", "3회 접수기간")]
+    results = [m["content"] for m in client.asked[2]["messages"] if m["role"] == "tool"][-3:]
+    assert "검색 결과에 나온 주소만" in results[0]
+    assert "[브라우저로 다룬 결과" in results[1] and "일정.pdf — " + pdf in results[1]
+    assert "브라우저 한도에 닿았다" in results[2]
+    assert reader.urls == [pdf] and done.text == "9.21~9.28 이야."
+    assert [u.kind for u in done.uses] == ["search", "browse", "read"]
+
+
+def test_a_browser_that_fails_is_told_and_recorded(caplog: pytest.LogCaptureFixture) -> None:
+    loop, client, _, _ = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(
+                content="",
+                calls=(_call("browse", 2, url="https://www.q-net.or.kr/a?x=1", goal="일정"),),
+            ),
+            Turn(content="못 열었어."),
+        ],
+        browse=FakeBrowse(broken=True),
+    )
+    done = asyncio.run(loop.run(ASK))
+    told = [m["content"] for m in client.asked[2]["messages"] if m["role"] == "tool"][-1]
+    assert told.startswith("브라우저 실패(BrowserUnavailable)")
+    assert done.uses[-1].kind == "browse" and not done.uses[-1].ok
+    assert "브라우저로 다루기 실패" in caplog.text
+
+
+def test_an_empty_page_points_at_the_browser_when_there_is_one() -> None:
+    """스크립트로 그리는 페이지는 읽으면 빈 틀이다(큐넷 시험일정) — 브라우저가 있으면 그쪽을
+    알린다."""
+    from src.brain.tools import render_page
+
+    empty = Page(url="https://www.q-net.or.kr/crf005.do", title="시험일정", text="", cut=False)
+    assert "browse" not in render_page(empty)
+    assert "브라우저(browse)로 이 페이지를 직접 열어 볼 수 있다" in render_page(
+        empty, browsable=True
+    )

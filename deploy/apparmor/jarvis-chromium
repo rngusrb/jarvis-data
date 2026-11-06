@@ -1,0 +1,18 @@
+# 자비스가 띄우는 헤드리스 크롬(Playwright 가 받은 것)에만 사용자 네임스페이스를 허락한다.
+# 크롬의 보안 격리(sandbox)가 이것으로 돈다. 우분투 23.10+ 는 기본으로 막는다
+# (kernel.apparmor_restrict_unprivileged_userns=1) - 막힌 채로는 "No usable sandbox" 로 못 뜬다.
+# 우분투가 자기 크롬(/opt/google/chrome)에 주는 프로필과 같은 꼴이다. 설치는 docs/SETUP.md 의 "브라우저".
+abi <abi/4.0>,
+include <tunables/global>
+
+profile jarvis-chromium-shell /home/*/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
+  userns,
+
+  include if exists <local/jarvis-chromium-shell>
+}
+
+profile jarvis-chromium /home/*/.cache/ms-playwright/chromium-*/chrome-linux64/chrome flags=(unconfined) {
+  userns,
+
+  include if exists <local/jarvis-chromium>
+}

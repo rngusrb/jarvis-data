@@ -132,3 +132,21 @@ def test_web_search_is_on_only_with_an_address(tmp_path: Path) -> None:
     assert tools is not None and tools.searches == 3
     assert isinstance(tools.search, SearxSearch) and tools.search.base_url == "http://searx:8888"
     assert build_reporter(_settings(tmp_path)).research is None
+
+
+def test_the_browser_is_built_only_when_on_and_installed(
+    tmp_path: Path, monkeypatch: Any, caplog: Any
+) -> None:
+    """대화만 브라우저를 다룬다. 끄면(`JARVIS_BROWSER=0`) 없고, playwright 가 없으면 끄고 남긴다."""
+    import sys
+    from dataclasses import replace
+
+    from app.main import build_browse
+    from src.brain.browse import BrowseAgent
+
+    assert build_browse(_settings(tmp_path)) is None  # 시험 설정은 끔
+    on = replace(_settings(tmp_path), browser=True)
+    agent = build_browse(on)
+    assert isinstance(agent, BrowseAgent) and agent.browser.sandbox is True
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    assert build_browse(on) is None and "playwright 가 없다" in caplog.text

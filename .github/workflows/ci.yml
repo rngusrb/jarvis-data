@@ -18,4 +18,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
+      # 브라우저 시험은 진짜 헤드리스 크롬으로 돈다. 크롬의 보안 격리는 켠 채로 시험한다 — 우분투
+      # 러너는 권한 없는 사용자 네임스페이스를 막아 두므로(서버와 같다) 이 일회용 머신에서만 푼다.
+      - run: python -m playwright install --with-deps --only-shell chromium
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: python scripts/harness.py all --gc

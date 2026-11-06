@@ -152,6 +152,43 @@ docker run -d --name searxng --restart unless-stopped -p 8888:8080 \
 **검색어는 밖으로 나간다**(SearXNG 를 거쳐 구글·네이버로 — 사용자가 원한 것). 자비스 로그의
 "웹 검색(밖으로 나감)"이 나간 검색어 전부다.
 
+### 브라우저 — 헤드리스 크롬
+
+대화가 페이지를 직접 다룬다(스크립트로 그리는 페이지, 탭·더보기, 사이트 검색창). 크롬은 화면 없이 서버에서
+돌고, 밖으로 나가는 길은 전부 자비스 안의 문(공개 주소로만)을 지난다. 끄려면 `.env` 에 `JARVIS_BROWSER=0`.
+
+```bash
+cd ~/jarvis-data
+.venv/bin/pip install -e .                                  # playwright 가 같이 깔린다
+.venv/bin/python -m playwright install --only-shell chromium   # 헤드리스 크롬(~200MB, ~/.cache/ms-playwright)
+```
+
+**보안 격리(sandbox)를 켜고 돈다.** 우분투 23.10+ 는 권한 없는 사용자 네임스페이스를 막아 둬서
+(`sysctl kernel.apparmor_restrict_unprivileged_userns` 가 1) 그대로는 "No usable sandbox!" 로 못 뜬다.
+그 크롬에만 허락하는 프로필을 넣는다(우분투가 자기 크롬에 주는 것과 같은 꼴, 한 번만):
+
+```bash
+sudo install -m 644 deploy/apparmor/jarvis-chromium /etc/apparmor.d/jarvis-chromium
+sudo apparmor_parser -r /etc/apparmor.d/jarvis-chromium
+```
+
+확인 — 격리를 켜고 뜨는지:
+
+```bash
+.venv/bin/python -c "import asyncio; from playwright.async_api import async_playwright as p
+async def go():
+    async with p() as pw:
+        b = await pw.chromium.launch(chromium_sandbox=True); print('격리 켜고 뜸', b.version); await b.close()
+asyncio.run(go())"
+```
+
+> 사고 이력 (2026-11-06, JAR-036): 우분투 26.04 에서 격리를 켠 크롬이 못 떴다. Playwright 의 기본값은 격리 끔이라
+> 아무것도 안 했으면 조용히 격리 없이 돌았다 — 브라우저는 검색 결과의 아무 사이트나 연다. 자비스는 격리가
+> 막혔으면 못 뜬다고 시끄럽게 실패한다(격리를 끄고 다시 띄우지 않는다).
+
+브라우저가 친 검색어와 연 주소는 자비스 로그의 "브라우저 입력(밖으로 나감)", "브라우저 열기(밖으로 나감)"에
+남는다. 로그인·결제·글쓰기는 하지 않는다(사용자 결정 2026-11-06 — 보기·누르기와 사이트 검색창 입력까지).
+
 ---
 
 ## 2. 아이폰 단축어 — 여기가 제일 손이 많이 간다

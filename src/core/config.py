@@ -31,6 +31,9 @@ class Settings:
     ingest_token: str
     # 웹 검색(SearXNG). 비어 있으면 도구 고리를 안 붙인다 — 시험이 만드는 설정은 비어 있다.
     search_base_url: str = ""
+    # 대화가 브라우저(헤드리스 크롬)를 다룰 수 있나. 시험이 만드는 설정은 끔. 켜도 playwright 가
+    # 없으면 앱이 끄고 남긴다(SETUP 의 브라우저).
+    browser: bool = False
 
     @property
     def telegram_enabled(self) -> bool:
@@ -51,4 +54,5 @@ def load_settings() -> Settings:
         # 아이폰 단축어가 들고 올 토큰. Tailscale 안이라도 한 겹 더 둔다.
         ingest_token=os.getenv("JARVIS_INGEST_TOKEN", ""),
         search_base_url=os.getenv("JARVIS_SEARCH_URL", DEFAULT_SEARCH_URL).rstrip("/"),
+        browser=os.getenv("JARVIS_BROWSER", "1").strip().lower() not in ("0", "false", "off", ""),
     )
