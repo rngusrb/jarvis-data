@@ -6,7 +6,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, List
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
 import httpcore
 import httpx
@@ -446,7 +446,7 @@ def test_a_parser_that_runs_too_long_is_killed_and_jarvis_keeps_going(tmp_path: 
         return outcome, ticks, asyncio.get_running_loop().time() - start
 
     outcome, ticks, took = asyncio.run(both())
-    assert isinstance(outcome, Unreadable) and "멈췄다" in str(outcome)
+    assert isinstance(outcome, Unreadable) and "0.5초를 넘겨 멈췄다" in str(outcome)
     assert ticks == 5 and took < 5
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid_file.read_text()), 0)  # 자식은 이미 없다
@@ -566,3 +566,48 @@ def test_long_korean_attachment_names_are_kept_and_drops_are_logged(
     assert [link.name for link in links] == [name[:80]]
     assert len(links[0].url) > 500 >= len(unquote(links[0].url))  # 예전 상한이면 빠졌다
     assert "1개는 주소가 500자를 넘어 뺐다" in caplog.text
+
+
+def test_attachment_lists_stay_small_even_with_encoded_names() -> None:
+    """인코딩된 길이에도 상한을 둔다.
+
+    풀어 쓴 길이만 보면 링크 열 개가 인코딩 4천 자씩, 첨부 목록 하나가 4만 자가 됐다(3차 리뷰).
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.mmu.ac.kr/board/view?id=1"
+    korean = "가" * 200  # 풀면 200자, 인코딩하면 1,800자
+    html = (
+        f'<a href="/files/{quote(korean)}.pdf">{korean}.pdf</a><a href="/files/plan.hwp">plan</a>'
+    )
+    assert [link.url for link in links_of(html, base)] == ["https://www.mmu.ac.kr/files/plan.hwp"]
+
+
+def test_text_answers_like_json_get_the_small_cap() -> None:
+    """json 을 파일 상한(15MB)으로 받아 이 프로세스에서 정리했더니 루프가 1.75초 멈췄다(3차 리뷰).
+
+    글(HTML·text·json·csv)은 글 페이지 상한으로 받는다. 이름으로만 글인 것(octet-stream 의 .csv)도
+    정리하기 전에 자른다.
+    """
+    seen: List[int] = []
+    reader = PageReader(
+        _client(_streamed([b'{"a": "' + b"x" * 1000 + b'"}'] * 100, seen, kind="application/json")),
+        max_bytes=3000,
+        file_bytes=100_000,
+        resolve=_public("211.115.84.70"),
+    )
+    asyncio.run(reader.read("https://api.example/x.json"))
+    assert len(seen) <= 4
+
+    def csv(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/octet-stream"},
+            content=b"a,b\n" * 50_000,
+        )
+
+    page = PageReader(
+        _client(csv), max_bytes=3000, max_chars=100_000, resolve=_public("211.115.84.70")
+    )
+    got = asyncio.run(page.read("https://api.example/big.csv"))
+    assert got.kind == "text" and len(got.text) <= 3000

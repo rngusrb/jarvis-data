@@ -182,7 +182,7 @@ async def extract(
         try:
             out, err, over = await asyncio.wait_for(_talk(child, data), timeout=timeout)
         except asyncio.TimeoutError:
-            raise Unreadable(f"글을 뽑는 데 {timeout:.0f}초를 넘겨 멈췄다") from None
+            raise Unreadable(f"글을 뽑는 데 {timeout:g}초를 넘겨 멈췄다") from None
         finally:
             if child.returncode is None:
                 child.kill()
@@ -222,6 +222,11 @@ async def _talk(child: asyncio.subprocess.Process, data: bytes) -> Tuple[bytes, 
             pass  # 자식이 먼저 끝났다 — 왜인지는 종료 코드와 오류 출력에 있다
         finally:
             stdin.close()
+            try:
+                # 닫힘을 기다려 그 오류도 거둔다 — 안 거두면 3.10 이 "never retrieved"를 남겼다.
+                await stdin.wait_closed()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     async def take() -> bytes:
         nonlocal over
@@ -583,12 +588,14 @@ def _xlsx(names: List[str], xml: Callable[[str], ElementTree.Element]) -> str:
             if _local(row.tag) != "row":
                 continue
             cells: Dict[int, str] = {}
+            width = 0  # 이 행에서 다음 칸 자리(지금까지 가장 오른쪽 + 1)
             for c in row:
                 if _local(c.tag) == "c":
-                    column = _column(c.get("r"), max(cells) + 1 if cells else 0)
+                    column = _column(c.get("r"), width)
                     cells[column] = _cell(c, shared, times).strip()
+                    width = max(width, column + 1)
             if cells:
-                line = " | ".join(cells.get(j, "") for j in range(max(cells) + 1))
+                line = " | ".join(cells.get(j, "") for j in range(width))
                 if line.strip(" |"):
                     rows.append(line)
             if len(rows) >= SHEET_ROWS:
@@ -611,10 +618,12 @@ def _cell(c: ElementTree.Element, shared: List[str], times: Dict[int, str]) -> s
     return value
 
 
-# 엑셀이 번호로만 아는 서식: 날짜(14~17), 날짜와 시각(22), 시각(18~21, 45~47).
+# 엑셀이 번호로만 아는 서식: 날짜(14~17), 날짜와 시각(22), 시각(18~21, 45, 47),
+# 누적 시각(46 = [h]:mm:ss).
 _BUILTIN_TIMES = {
     **{n: "date" for n in (14, 15, 16, 17, 22)},
-    **{n: "time" for n in (18, 19, 20, 21, 45, 46, 47)},
+    **{n: "time" for n in (18, 19, 20, 21, 45, 47)},
+    46: "elapsed",
 }
 
 
@@ -639,6 +648,8 @@ def _time_styles(styles: ElementTree.Element) -> Dict[int, str]:
         code = re.sub(r'"[^"]*"|\[(?![hHmMsS]+\])[^\]]*\]|\\.', "", custom.get(fid, "")).lower()
         if any(ch in code for ch in "yd"):
             found[index] = "date"
+        elif re.search(r"\[[hms]+\]", code):
+            found[index] = "elapsed"  # 1.5일이 "12:00"이 아니라 "36:00"(3차 리뷰)
         elif any(ch in code for ch in "hs"):
             found[index] = "time"
     return found
@@ -652,6 +663,10 @@ def _serial(value: str, kind: str) -> str:
         moment = datetime(1899, 12, 30) + timedelta(seconds=seconds)
     except (ValueError, OverflowError):
         return value
+    if kind == "elapsed":
+        hours, rest = divmod(seconds, 3600)
+        minutes, secs = divmod(rest, 60)
+        return f"{hours}:{minutes:02d}" + (f":{secs:02d}" if secs else "")
     if kind == "time":
         return moment.strftime("%H:%M:%S" if moment.second else "%H:%M")
     return moment.strftime("%Y-%m-%d %H:%M" if moment.hour or moment.minute else "%Y-%m-%d")

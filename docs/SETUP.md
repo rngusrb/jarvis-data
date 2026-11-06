@@ -79,6 +79,7 @@ EnvironmentFile=/home/YOURNAME/jarvis-data/.env
 ExecStart=/home/YOURNAME/jarvis-data/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8100
 Restart=always
 RestartSec=10
+MemoryMax=3G
 
 [Install]
 WantedBy=multi-user.target
@@ -95,6 +96,15 @@ sudo systemctl enable --now jarvis
 > 16:20(실제 07:20)으로 돌았고 수집 끊김 알림까지 만들었다 — vLLM 이 아직 안 떠서 말은 안 나갔지만,
 > 나갔다면 발화 기록이 9시간 미래에 찍혀 그만큼 쿨다운이 길어진다. 이미 깔린 서버에는 덧붙이기만 한다:
 > `/etc/systemd/system/jarvis.service.d/clock.conf` 에 `[Unit]` `Wants=time-sync.target` `After=time-sync.target`.
+
+**메모리 상한(`MemoryMax=3G`).** 자비스는 웹에서 받은 파일(PDF·한글·오피스)을 자식 프로세스에서 읽는다 —
+자식은 1GB 까지, 동시에 둘. 자식도 같은 cgroup 이라 이 상한에 같이 묶인다. 무엇이 새도 같은 기계의 vLLM·DB 가
+같이 죽지 않게 하는 마지막 방어선이다(평소 자비스는 100MB 안팎). 이미 깔린 서버에는 한 줄로 — 바로 적용되고
+남는다: `sudo systemctl set-property jarvis.service MemoryMax=3G`(확인: `systemctl show jarvis -p MemoryMax`).
+
+> 사고 이력 (2026-11-06, JAR-035 리뷰 재현): 파일 읽기의 첫 판에서 몇 KB 짜리 압축 폭탄이 메모리를 수 GB 썼고,
+> 고친 판에서도 자식의 경고 출력을 본체가 다 모아 90KB PDF 하나에 본체가 2GB 를 넘었다. 서버는 가용 4.7GB 에
+> 스왑이 99% 차 있어 그대로였다면 vLLM 이나 DB 가 OOM 으로 죽을 수 있었다. 코드도 고쳤지만 상한은 따로 둔다.
 
 ### vLLM — 도커, 도구 호출을 켜고
 

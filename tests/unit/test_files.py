@@ -656,12 +656,13 @@ def test_excel_times_are_times_and_odd_cell_addresses_stay_small() -> None:
             '<xf numFmtId="165"/></cellXfs></styleSheet>',
             "xl/worksheets/sheet1.xml": f"<worksheet {S}><sheetData><row>"
             '<c r="A1" s="1"><v>0.3958333333</v></c><c r="B1" s="2"><v>46286</v></c>'
-            '<c r="C1" s="3"><v>0.5</v></c>'
+            '<c r="C1" s="3"><v>1.5</v></c>'
             '<c r="ZZZZZZZZZZ1" t="inlineStr"><is><t>멀리</t></is></c>'
             "</row></sheetData></worksheet>",
         }
     )
-    assert text_of(xlsx, files.XLSX) == "[시트 1]\n09:30 | 2026-09-21 | 12:00 | 멀리"
+    # 누적 시각([h]:mm)의 1.5일은 "12:00"이 아니라 "36:00"(3차 리뷰).
+    assert text_of(xlsx, files.XLSX) == "[시트 1]\n09:30 | 2026-09-21 | 36:00 | 멀리"
 
 
 def _child_script(body: str) -> list:
@@ -757,3 +758,36 @@ def test_the_child_starts_isolated_without_secrets(monkeypatch: pytest.MonkeyPat
         asyncio.run(extract(b"", "pdf"))
     assert seen["argv"][:2] == (sys.executable, "-I") and seen["argv"][-1] == "pdf"
     assert set(seen["env"]) == {"PATH", "LANG"}
+
+
+def test_a_child_that_closes_its_pipes_and_then_ends_still_answers() -> None:
+    """통로를 닫고 조금 더 돌다 끝나는 자식 — 끝날 때까지 기다린다. 안 기다리면 막 끝나던 자식을
+    죽여 "종료 -9"가 났다(3차 리뷰 돌연변이)."""
+    from src.brain.files import extract
+
+    late = _child_script(
+        'import os, time\nsys.stdout.write(\'{"text": "다 읽음"}\')\nsys.stdout.flush()\n'
+        "os.close(1)\nos.close(2)\ntime.sleep(0.3)\n"
+    )
+    assert asyncio.run(extract(b"x", "pdf", command=late)) == "다 읽음"
+
+
+def test_limits_a_child_could_not_set_are_logged_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """맥처럼 상한을 못 건 자식은 답에 그 사실을 담고, 부모가 한 번 남긴다.
+
+    서버에서 이 경고가 나오면 사고다.
+    """
+    import logging
+
+    from src.brain.files import extract
+
+    told = _child_script(
+        'sys.stdout.write(\'{"text": "ok", "unlimited": ["RLIMIT_AS: 못 걺"]}\')\n'
+    )
+    monkeypatch.setattr(files, "_warned_limits", False)
+    with caplog.at_level(logging.WARNING, logger="src.brain.files"):
+        assert asyncio.run(extract(b"", "pdf", command=told)) == "ok"
+        assert asyncio.run(extract(b"", "pdf", command=told)) == "ok"
+    assert caplog.text.count("상한을 못 걸었다") == 1 and "RLIMIT_AS" in caplog.text

@@ -206,7 +206,10 @@ class PageReader:
                     raise ValueError(f"글이 아니다({content_type}): {target}")
                 name = files.name_of(target, response.headers.get("content-disposition", ""))
                 lowered = content_type.lower()
+                # 글(HTML·text·json·csv)은 이 프로세스에서 정리하니 작은 상한으로. json 을 파일
+                # 상한(15MB)으로 받았더니 루프가 1.75초 멈췄다(3차 리뷰).
                 textual = "html" in lowered or lowered.startswith("text/")
+                textual = textual or "json" in lowered or "csv" in lowered
                 limit = self.max_bytes if textual else self.file_bytes
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -215,6 +218,8 @@ class PageReader:
                         break
             data = bytes(raw[:limit])
             kind = files.kind_of(data[:8], content_type, name)
+            if kind in (files.HTML, files.TEXT):
+                data = data[: self.max_bytes]  # 이름으로만 글인 것(octet-stream 의 .csv)도
             if kind == files.HTML:
                 html = decode(data, content_type)
                 title, text = extract(html)
@@ -558,8 +563,10 @@ _QNET = re.compile(r"fileDownMan004\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)
 LINKS = 10
 # 첨부 주소 길이 상한 — 풀어 쓴(%-디코딩한) 길이로 잰다. 긴 주소 하나로 본문 4천 자 상한을 우회해
 # 문맥을 채울 수 있다(리뷰). 인코딩된 길이로 쟀더니 한글 1자가 9자라 큐넷 첨부 이름이 34자쯤만
-# 돼도 조용히 빠졌다(재리뷰).
+# 돼도 조용히 빠졌다(재리뷰). 인코딩된 길이에도 따로 상한 — 풀어 쓴 길이만 보면 링크 열 개가
+# 인코딩 4천 자씩, 첨부 목록 하나가 4만 자가 됐다(3차 리뷰). 큐넷 실측 가장 긴 것 441자.
 LINK_LENGTH = 500
+LINK_ENCODED = 1_000
 _DOCUMENTS = (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".csv")
 
 
@@ -640,7 +647,7 @@ def links_of(html: str, base: str) -> List[Link]:
         parts = urlsplit(url)
         if not url or parts.scheme not in ("http", "https") or parts.hostname != host:
             continue
-        if len(unquote(url)) > LINK_LENGTH:
+        if len(unquote(url)) > LINK_LENGTH or len(url) > LINK_ENCODED:
             too_long += 1
             continue
         if url in seen:
