@@ -847,6 +847,32 @@ def test_a_flood_of_downloads_closes_the_page(site: Tuple[int, List[str]]) -> No
     assert "쏟아내 닫았다" in asyncio.run(run())
 
 
+def test_a_flood_of_address_changes_closes_the_page(
+    site: Tuple[int, List[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """바꿀 때마다 주소가 넘어온다 — 쉼 없이 바꾸는 페이지는 닫는다(로그 줄이기만으로는 양이 안
+    준다)."""
+    from src.brain import browser
+
+    monkeypatch.setattr(browser, "NAV_FLOOD", 100)
+    port, _ = site
+
+    async def run() -> str:
+        async with _browser(port).session() as session:
+            try:
+                await session.open("http://site.example/pushy")
+                for _ in range(40):
+                    if session.flooded:
+                        break
+                    await asyncio.sleep(0.25)
+                await session.view()
+            except Refused as error:
+                return str(error)
+            return "보였다"
+
+    assert "쏟아내 닫았다" in asyncio.run(run())
+
+
 def test_controls_from_the_page_are_checked_again() -> None:
     """누를 것 목록은 페이지가 바꾼 함수로 만든 값일 수 있다 — 꼴·번호·이름·항목을 파이썬에서 다시
     거른다."""

@@ -82,6 +82,9 @@ FLOOD = 200
 # 브라우저 이동 로그 — 초당 한 줄, 세션당 이만큼까지. pushState 를 돌리는 페이지 하나가 20초에
 # 33만 줄을 찍어 journald 가 넘친 줄(감사 줄까지)을 버렸다(2차 리뷰 재현).
 MOVES = 60
+# 주소 바꾸기가 이만큼 넘으면 그 페이지를 닫는다 — 바꿀 때마다 주소(최대 2MB)가 자비스로 넘어온다.
+# pushState 를 쉼 없이 돌리는 페이지는 20초에 33만 번이었다(2차 리뷰).
+NAV_FLOOD = 1000
 # 보는 프레임 수(광고·추적 프레임이 수십 개인 페이지).
 FRAMES = 20
 # 페이지에 한 번 묻는 시간 상한(초).
@@ -338,6 +341,11 @@ class Session:
     def _moved(self, frame: Any) -> None:
         if frame.parent_frame is not None:
             return
+        if self._moves + self._skipped_moves > NAV_FLOOD and not self.flooded:
+            self.flooded = True
+            logger.warning("브라우저 주소 바꾸기가 %d번을 넘어 그 페이지를 닫는다", NAV_FLOOD)
+            asyncio.ensure_future(_close(self.page))
+            return
         now = asyncio.get_running_loop().time()
         if self._moves >= MOVES or now - self._last_move < 1.0:
             self._skipped_moves += 1
@@ -364,7 +372,7 @@ class Session:
 
     def _alive(self) -> None:
         if self.flooded:
-            raise Refused("페이지가 내려받기를 쏟아내 닫았다 — 본 것으로 정리한다")
+            raise Refused("페이지가 내려받기나 주소 바꾸기를 쏟아내 닫았다 — 본 것으로 정리한다")
         if self.crashed:
             raise Refused("페이지가 죽었다(메모리를 너무 썼거나 크롬 오류) — 본 것으로 정리한다")
 
