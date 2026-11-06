@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urldefrag, urlsplit
 
+from src.brain.badsites import BadSites
 from src.brain.egress import EgressProxy
 from src.brain.web import LINK_ENCODED, LINK_LENGTH, LINKS, Link, Resolve, extract, resolve
 
@@ -53,17 +54,26 @@ TYPED = 40
 HTML_CAP = 2_000_000
 _HTML_JS = r"""
 (cap) => {
-  // body 만 — 머리(head)의 큰 스크립트·스타일이 2MB 를 먼저 채워 본문이 비었다(3차 리뷰).
-  const root = document.body || document.documentElement;
-  if (!root) return {s: ''};
-  let html = root.outerHTML;
-  if (typeof html !== 'string') return {s: ''};
-  if (html.length > cap) {
-    html = html.slice(0, cap);
-    const end = html.lastIndexOf('>');  // 태그 중간에서 끊으면 조각("<div d")이 본문에 섞였다
-    if (end > 0) html = html.slice(0, end + 1);
+  // 결과는 프로토타입 없는 객체로 — Object.prototype 에 단 이름표(Symbol.toStringTag)가
+  // 손잡이 설명에 실려 왔다. 페이지가 바꾼 getter 가 던지는 오류도 밖으로 안 낸다 — 오류 글이
+  // 통째로 넘어왔다(4차 리뷰).
+  try {
+    const root = document.body || document.documentElement;
+    if (!root) return {__proto__: null, s: ''};
+    let html = root.outerHTML;
+    if (typeof html !== 'string') return {__proto__: null, fail: 1};
+    // 태그 자체가 있으니 빌 수 없다 — 비면 크롬이 글 한도를 넘어 빈 글을 준 것(600MB DOM,
+    // 4차 리뷰).
+    if (html.length === 0) return {__proto__: null, big: 1};
+    if (html.length > cap) {
+      html = html.slice(0, cap);
+      const end = html.lastIndexOf('>');  // 태그 중간에서 끊으면 조각("<div d")이 본문에 섞였다
+      if (end > 0) html = html.slice(0, end + 1);
+    }
+    return {__proto__: null, s: html};  // 감싼다 — 원시 글 손잡이는 값을 통째로 실어 왔다(_bounded)
+  } catch (e) {
+    return {__proto__: null, fail: 1};
   }
-  return {s: html};  // 객체로 감싼다 — 원시 글이면 손잡이를 만들 때 값이 통째로 넘어온다(_bounded)
 }
 """
 # 페이지 세계에서 돈 JS 의 결과를 받기 전에 본다 — 원시 문자열이고 이 길이 안일 때만 받는다.
@@ -71,7 +81,20 @@ _HTML_JS = r"""
 # 수 없다 — 바꿔 둔 페이지 하나가 자르기를 없애 자비스 1.3GB·드라이버 1GB 를 채웠다(3차 리뷰 재현).
 # 원시 문자열의 typeof·length 는 페이지가 못 바꾼다.
 _SIZE_JS = (
-    "(o) => (o !== null && typeof o === 'object' && typeof o.s === 'string') ? o.s.length : -1"
+    "(o) => (o === null || typeof o !== 'object') ? -1 : o.big === 1 ? -2 : o.fail === 1 ? -3"
+    " : typeof o.s === 'string' ? o.s.length : -1"
+)
+# 제목 — 같은 꼴로.
+_TITLE_JS = (
+    "() => { try { return {__proto__: null, s: document.title}; }"
+    " catch (e) { return {__proto__: null, fail: 1}; } }"
+)
+# 페이지의 잡히지 않은 오류를 드라이버로 보내지 않는다 — 오류 글이 통째로 자비스로 넘어왔다
+# (4차 리뷰: 50MB 오류 10개에 자비스 1.6GB·유닛 4.0GB, 구독과 상관없이 온다). 페이지
+# 스크립트보다 먼저 돌고, 페이지 자신의 처리기는 그대로 돈다.
+_QUIET_JS = (
+    "addEventListener('error', (e) => { e.preventDefault(); }, true);"
+    "addEventListener('unhandledrejection', (e) => { e.preventDefault(); }, true);"
 )
 # 누를 것 목록(JSON 글 하나)과 제목의 상한(자).
 CONTROLS_CAP = 300_000
@@ -79,6 +102,9 @@ TITLE_CAP = 2_000
 # 손이 안 누른 내려받기가 이만큼 넘게 쏟아지면 그 페이지를 닫는다 — 받지 않아도 내려받기마다 주소가
 # 크롬에서 자비스로 넘어온다(주소 하나가 최대 2MB).
 FLOOD = 200
+# 웹소켓이 이만큼 넘게 열리면 그 페이지를 닫는다 — 만들 때마다 주소(최대 2MB)가 구독과 상관없이
+# 자비스로 넘어왔다(4차 리뷰: 1.9MB 주소 300개에 +347MB). 보통 페이지는 몇 개다.
+SOCKETS = 20
 # 브라우저 이동 로그 — 초당 한 줄, 세션당 이만큼까지. pushState 를 돌리는 페이지 하나가 20초에
 # 33만 줄을 찍어 journald 가 넘친 줄(감사 줄까지)을 버렸다(2차 리뷰 재현).
 MOVES = 60
@@ -123,6 +149,7 @@ _ROLES = {
 # 파일 같은 칸은 아예 안 보인다 — 넣을 일이 없다.
 _CONTROLS_JS = r"""
 (start) => {
+  try {
   const SEL = 'a[href], button, input:not([type=hidden]), select, textarea, summary,'
     + ' [role=button], [role=link], [role=tab], [role=menuitem], [role=option],'
     + ' [role=checkbox], [role=radio], [role=searchbox], [role=combobox], [onclick]';
@@ -188,7 +215,10 @@ _CONTROLS_JS = r"""
     out.push({ref: n, role, name, search, options});
     if (out.length >= 300) break;
   }
-  return {s: JSON.stringify(out)};  // 글 하나로, 객체로 감싸 — 받기 전에 길이를 본다(_bounded)
+  return {__proto__: null, s: JSON.stringify(out)};  // 글 하나로 감싸 — 받기 전에 길이를 본다
+  } catch (e) {
+    return {__proto__: null, fail: 1};  // 페이지가 바꾼 함수가 던진 오류 글을 밖으로 안 낸다
+  }
 }
 """
 
@@ -245,6 +275,9 @@ class Session:
     ignored: int = 0
     crashed: bool = False
     flooded: bool = False
+    sockets: int = 0
+    # 문제를 일으킨 사이트 기억(없으면 안 적는다 — 시험).
+    bad: Optional[BadSites] = None
     _acting: bool = False
     # 손이 누르는 동작 중(누르기·검색·고르기) — 새 창은 이때 하나만 받는다(열기 중에는 안 받는다).
     _clicking: bool = False
@@ -259,12 +292,16 @@ class Session:
     _refs: Dict[int, Tuple[Any, Control]] = field(default_factory=dict)
 
     def adopt(self, page: Any) -> None:
-        """이 창을 본다. 알림창에 답하고, 내려받기는 주소만 적고, 죽으면 알리고, 옮겨 가면
-        남긴다."""
-        page.on("dialog", self._dialog)
+        """이 창을 본다. 내려받기는 주소만 적고, 죽으면 알리고, 옮겨 가면 남기고, 웹소켓은 센다.
+
+        알림창은 구독하지 않는다 — 구독하면 `prompt` 의 기본값 글이 통째로 넘어왔다(4차 리뷰:
+        100MB 에 자비스 1.2GB). 구독이 없으면 Playwright 가 자기 쪽에서 닫는다(떠나기 알림창은
+        떠남).
+        """
         page.on("download", self._downloaded)
         page.on("crash", self._crashed)
         page.on("framenavigated", self._moved)
+        page.on("websocket", self._socket)
         self.page = page
         self.crashed = False
 
@@ -288,21 +325,19 @@ class Session:
         for old in others[: max(0, len(others) - (PAGES - 2))]:
             asyncio.ensure_future(_close(old))
 
-    def _dialog(self, dialog: Any) -> None:
-        """알림창은 닫는다. "이 페이지를 떠날까요"는 떠난다 — 닫기(머물기)로 답했더니 떠나는 누름이
-        안 먹고 뒤로 가기가 시간 초과로 갇혔다(리뷰 재현)."""
+    def _blame(self, why: str, url: Any) -> None:
+        """문제를 일으킨 사이트로 적는다(30일 동안 안 간다)."""
+        host = urlsplit(str(url)[:2048]).hostname
+        if self.bad is not None and host:
+            self.bad.add(host, why)
 
-        async def answer() -> None:
-            try:
-                if dialog.type == "beforeunload":
-                    await dialog.accept()
-                else:
-                    await dialog.dismiss()
-            except Exception:
-                # 이미 닫힌 알림창이다(페이지가 넘어갔다) — 할 일이 없다.
-                logger.debug("알림창에 답하지 못함(이미 닫힘)", exc_info=True)
-
-        asyncio.ensure_future(answer())
+    def _socket(self, socket: Any) -> None:
+        self.sockets += 1
+        if self.sockets > SOCKETS and not self.flooded:
+            self.flooded = True
+            logger.warning("페이지가 웹소켓을 %d개 넘게 열어 그 페이지를 닫는다", SOCKETS)
+            self._blame("웹소켓을 쏟아냈다", self.page.url)
+            asyncio.ensure_future(_close(self.page))
 
     def _downloaded(self, download: Any) -> None:
         url = urldefrag(str(download.url))[0]
@@ -311,6 +346,7 @@ class Session:
             if self.ignored > FLOOD and not self.flooded:
                 self.flooded = True
                 logger.warning("손이 안 누른 내려받기가 %d개를 넘어 그 페이지를 닫는다", FLOOD)
+                self._blame("내려받기를 쏟아냈다", self.page.url)
                 asyncio.ensure_future(_close(self.page))
             logger.info(
                 "손이 누르지 않은 내려받기는 버린다(%d번째): %s", self.ignored, short(url, 120)
@@ -337,13 +373,20 @@ class Session:
             logger.warning(
                 "브라우저 탭이 죽었다(메모리를 너무 썼거나 크롬 오류): %s", short(page.url, 200)
             )
+            self._blame("브라우저 탭이 죽었다(메모리를 너무 썼거나 크롬 오류)", page.url)
 
     def _moved(self, frame: Any) -> None:
         if frame.parent_frame is not None:
             return
+        if self.bad is not None:
+            # 지금 보는 사이트 — 자비스가 여기서 쓰러지면 다시 켜질 때 이 사이트를 탓한다.
+            host = urlsplit(str(frame.url)[:2048]).hostname
+            if host:
+                self.bad.visiting(host)
         if self._moves + self._skipped_moves > NAV_FLOOD and not self.flooded:
             self.flooded = True
             logger.warning("브라우저 주소 바꾸기가 %d번을 넘어 그 페이지를 닫는다", NAV_FLOOD)
+            self._blame("주소 바꾸기를 쏟아냈다", frame.url)
             asyncio.ensure_future(_close(self.page))
             return
         now = asyncio.get_running_loop().time()
@@ -372,7 +415,9 @@ class Session:
 
     def _alive(self) -> None:
         if self.flooded:
-            raise Refused("페이지가 내려받기나 주소 바꾸기를 쏟아내 닫았다 — 본 것으로 정리한다")
+            raise Refused(
+                "페이지가 내려받기·주소 바꾸기·웹소켓을 쏟아내 닫았다 — 본 것으로 정리한다"
+            )
         if self.crashed:
             raise Refused("페이지가 죽었다(메모리를 너무 썼거나 크롬 오류) — 본 것으로 정리한다")
 
@@ -380,6 +425,12 @@ class Session:
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise Refused(f"http(s) 주소만 연다: {short(url, 120)}")
+        if self.bad is not None:
+            why = self.bad.why(parts.hostname)
+            if why:
+                logger.warning("문제 사이트라 열지 않는다: %s — %s", parts.hostname, why)
+                raise Refused(f"이 사이트는 {why} — {self.bad.days}일 동안 열지 않는다")
+            self.bad.visiting(parts.hostname)
         logger.info("브라우저 열기(밖으로 나감): %s", short(url, 200))
         before = len(self.files)
         self._acting, self._origin, self._only = True, parts.hostname, urldefrag(url)[0]
@@ -499,6 +550,7 @@ class Session:
                     error,
                     short(str(frame.url), 120),
                 )
+                self._blame(f"이상한 값을 줬다({error})", frame.url)
                 if index == 0:
                     raise Refused(
                         f"페이지가 이상한 값을 줬다({error}) — 본 것으로 정리한다"
@@ -535,10 +587,7 @@ class Session:
         try:
             # 제목도 같은 길로 — page.title() 은 상한이 없어 100MB 제목 하나로 자비스가 1.4GB 가
             # 됐다.
-            title = (
-                await _bounded(self.page.main_frame, "() => ({s: document.title})", None, TITLE_CAP)
-                or title
-            )
+            title = await _bounded(self.page.main_frame, _TITLE_JS, None, TITLE_CAP) or title
         except _Unfit as error:
             note = (note + " " if note else "") + "제목이 이상해 뺐다."
             logger.warning("제목이 이상해 받지 않았다: %s", error)
@@ -584,8 +633,8 @@ class Session:
             try:
                 size = await asyncio.wait_for(
                     self.page.evaluate(
-                        "() => { const n = document.body ? document.body.innerText.length : 0;"
-                        " return typeof n === 'number' ? n : -1; }"
+                        "() => { try { const n = document.body ? document.body.innerText.length"
+                        " : 0; return typeof n === 'number' ? n : -1; } catch (e) { return -1; } }"
                     ),
                     timeout=2.0,
                 )
@@ -617,6 +666,10 @@ async def _bounded(frame: Any, script: str, arg: Any, cap: int) -> str:
     handle = await asyncio.wait_for(frame.evaluate_handle(script, arg), timeout=ASK)
     try:
         size = await asyncio.wait_for(handle.evaluate(_SIZE_JS), timeout=ASK)
+        if size == -2:
+            raise _Unfit("페이지가 너무 커 크롬이 빈 글을 줬다")
+        if size == -3:
+            raise _Unfit("페이지 스크립트가 실패했다(페이지가 바꾼 함수)")
         if not isinstance(size, int) or size < 0:
             raise _Unfit("글이 아니다")
         if size > cap:
@@ -685,6 +738,8 @@ class Browser:
     # 크롬이 있는 폴더. 서버는 root 가 가진 /opt/jarvis/ms-playwright — 격리 허용 프로필이 거기에만
     # 붙는다. 비우면 Playwright 기본 자리(개발 맥·시험).
     browsers_path: str = ""
+    # 문제를 일으킨 사이트 기억 — 적힌 곳은 열지도, 프록시로 붙지도 않는다.
+    bad: Optional[BadSites] = None
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[Session]:
@@ -701,10 +756,11 @@ class Browser:
             if self.browsers_path:
                 _safe_folder(self.browsers_path)
                 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = self.browsers_path
+            refuse = self.bad.hosts() if self.bad is not None else frozenset()
             proxy = (
-                EgressProxy(lookup=self.lookup, opener=self.opener)
+                EgressProxy(lookup=self.lookup, opener=self.opener, refuse=refuse)
                 if self.opener
-                else EgressProxy(lookup=self.lookup)
+                else EgressProxy(lookup=self.lookup, refuse=refuse)
             )
             playwright = None
             browser = None
@@ -741,11 +797,14 @@ class Browser:
                     f"Gecko) Chrome/{major.group(0) if major else '150'}.0.0.0 Safari/537.36",
                 )
                 context.set_default_timeout(10_000)
-                session = Session(context=context, proxy=proxy)
+                await context.add_init_script(_QUIET_JS)
+                session = Session(context=context, proxy=proxy, bad=self.bad)
                 session.adopt(await context.new_page())
                 context.on("page", session.popped)
                 yield session
             finally:
+                if self.bad is not None:
+                    self.bad.left()  # 자비스는 살아 있다 — 쓰러진 표시를 지운다
                 if browser is not None:
                     await browser.close()
                 if playwright is not None:

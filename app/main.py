@@ -20,6 +20,7 @@ import httpx
 from fastapi import FastAPI
 
 from src.brain.agent import JarvisAgent
+from src.brain.badsites import BadSites
 from src.brain.browse import BrowseAgent
 from src.brain.browser import Browser
 from src.brain.client import VLLMClient
@@ -164,6 +165,10 @@ def build_browse(settings: Settings) -> Optional[BrowseAgent]:
     except ImportError:
         logger.warning("브라우저 끔 — playwright 가 없다(docs/SETUP.md 의 브라우저)")
         return None
+    # 문제를 일으킨 사이트는 30일 동안 안 간다. 지난번 브라우저로 보다 자비스가 쓰러졌으면
+    # 그 사이트도 이제 적는다.
+    bad = BadSites(settings.db_path.parent / "browser_bad_sites.json")
+    bad.recover()
     return BrowseAgent(
         # 누를 곳을 고르는 차례는 짧다 — 생각 없이, 답 상한도 작게.
         client=VLLMClient(
@@ -173,7 +178,7 @@ def build_browse(settings: Settings) -> Optional[BrowseAgent]:
             timeout=90.0,
             temperature=0.2,
         ),
-        browser=Browser(browsers_path=settings.browsers_path),
+        browser=Browser(browsers_path=settings.browsers_path, bad=bad),
     )
 
 

@@ -10,11 +10,13 @@ import asyncio
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Iterator, List, Tuple
+from pathlib import Path
+from typing import Any, Iterator, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from src.brain.badsites import BadSites
 from src.brain.browser import Browser, BrowserUnavailable, Refused, render
 
 PUBLIC = "211.115.84.70"
@@ -120,12 +122,25 @@ JSON.stringify = () => huge;
 <script>document.title = 'T'.repeat(20000000);</script></body></html>""",
     "/throwing": """<html><head><title>던지는 페이지</title></head><body>
 <main><p>본문.</p></main><script>
-Object.defineProperty(Element.prototype, 'outerHTML', {get() { throw new Error('안 줌'); }});
+const said = 'E'.repeat(20000000);
+Object.defineProperty(Element.prototype, 'outerHTML', {get() { throw new Error(said); }});
 </script></body></html>""",
     "/oddtext": """<html><head><title>이상한 길이</title></head><body>
 <main><p>본문은 멀쩡하다.</p></main><script>
 const big = new Array(100000).fill('w'.repeat(100));
 Object.defineProperty(HTMLElement.prototype, 'innerText', {get() { return {length: big}; }});
+</script></body></html>""",
+    "/channels": """<html><head><title>통로</title></head><body>
+<main><p>통로 페이지의 본문이다.</p></main><script>
+const big = 'D'.repeat(20000000);
+Object.prototype[Symbol.toStringTag] = big;
+setTimeout(() => prompt('m', big), 30);
+for (let i = 0; i < 3; i++) setTimeout(() => { throw new Error(big); }, 10 * i);
+Promise.reject(new Error(big));
+</script></body></html>""",
+    "/sockets": """<html><head><title>소켓</title></head><body>
+<main><p>웹소켓을 쏟는다.</p></main><script>
+for (let i = 0; i < 40; i++) { try { new WebSocket('ws://site.example/ws' + i); } catch (e) {} }
 </script></body></html>""",
     "/dlflood": """<html><head><title>쏟는 페이지</title></head><body>
 <main><p>내려받기를 쏟는다.</p></main>
@@ -210,7 +225,7 @@ def site() -> Iterator[Tuple[int, List[str]]]:
     server.shutdown()
 
 
-def _browser(port: int) -> Browser:
+def _browser(port: int, bad: Optional[BadSites] = None) -> Browser:
     async def lookup(host: str, wanted: int) -> List[str]:
         return [PUBLIC] if host in ("site.example", "other.example") else [host]
 
@@ -218,7 +233,7 @@ def _browser(port: int) -> Browser:
         assert host == PUBLIC  # 문은 검사한 공개 주소로만 붙으려 한다
         return await asyncio.open_connection("127.0.0.1", port)
 
-    return Browser(lookup=lookup, opener=opener)
+    return Browser(lookup=lookup, opener=opener, bad=bad)
 
 
 def _ref(view: Any, name: str) -> int:
@@ -814,10 +829,11 @@ def test_a_huge_title_is_left_out(site: Tuple[int, List[str]]) -> None:
 
 
 def test_a_main_page_that_cannot_be_read_is_said(site: Tuple[int, List[str]]) -> None:
-    """메인 화면을 못 읽으면 알림 없이 "본문 글이 없다"였다(3차 리뷰) — 시끄럽게 거절한다."""
+    """메인 화면을 못 읽으면 알림 없이 "본문 글이 없다"였다(3차 리뷰) — 시끄럽게 거절한다. 던진
+    오류의 글은 받지 않는다 — 100MB 오류 글이 통째로 넘어와 자비스 1.4GB 였다(4차 리뷰)."""
     port, _ = site
-    said, _, _ = _peak(port, "http://site.example/throwing")
-    assert "읽지 못했다" in said or "이상한 값" in said
+    said, peak, _ = _peak(port, "http://site.example/throwing")
+    assert "스크립트가 실패" in said and peak < 8_000_000
 
 
 def test_odd_text_lengths_do_not_cross_over(site: Tuple[int, List[str]]) -> None:
@@ -899,3 +915,60 @@ def test_controls_from_the_page_are_checked_again() -> None:
         _items("{깨진")
     with pytest.raises(_Unfit):
         _items('{"ref": 1}')
+
+
+def test_what_the_page_says_on_its_own_does_not_cross_into_jarvis(
+    site: Tuple[int, List[str]],
+) -> None:
+    """페이지가 스스로 내는 것 — 알림창 기본값, 잡히지 않은 오류, 객체 이름표 — 가 큰 글을 실어
+    자비스로 넘어왔다(4차 리뷰: 100MB 에 자비스 1.2~1.6GB, 유닛 3~4GB)."""
+    port, _ = site
+    said, peak, view = _peak(port, "http://site.example/channels")
+    assert said == "" and peak < 8_000_000 and "통로 페이지의 본문" in view.text
+
+
+def test_a_flood_of_websockets_closes_the_page_and_the_site_is_remembered(
+    site: Tuple[int, List[str]], tmp_path: Path
+) -> None:
+    port, _ = site
+    bad = BadSites(tmp_path / "bad.json")
+
+    async def run() -> str:
+        async with _browser(port, bad).session() as session:
+            try:
+                await session.open("http://site.example/sockets")
+                for _ in range(40):
+                    if session.flooded:
+                        break
+                    await asyncio.sleep(0.25)
+                await session.view()
+            except Refused as error:
+                return str(error)
+            return "보였다"
+
+    assert "쏟아내 닫았다" in asyncio.run(run())
+    assert "웹소켓을 쏟아냈다" in (bad.why("site.example") or "")
+
+
+def test_a_remembered_site_is_not_opened_and_the_marker_is_cleared(
+    site: Tuple[int, List[str]], tmp_path: Path
+) -> None:
+    """적힌 사이트는 열지 않는다. 보는 동안은 표시가 있고, 세션이 끝나면 지운다."""
+    port, _ = site
+    bad = BadSites(tmp_path / "bad.json")
+
+    async def run() -> Tuple[str, str]:
+        async with _browser(port, bad).session() as session:
+            await session.open("http://site.example/")
+            marked = bad.marker.read_text()
+        bad.add("site.example", "탭이 죽었다")
+        async with _browser(port, bad).session() as session:
+            try:
+                await session.open("http://site.example/")
+            except Refused as error:
+                return marked, str(error)
+        return marked, "열렸다"
+
+    marked, said = asyncio.run(run())
+    assert marked == "site.example" and not bad.marker.exists()
+    assert "탭이 죽었다" in said and "30일 동안 열지 않는다" in said

@@ -410,3 +410,25 @@ def test_big_bodies_are_refused_before_connecting(monkeypatch: pytest.MonkeyPatc
 
     answer, dialed = asyncio.run(run())
     assert answer.startswith(b"HTTP/1.1 501") and dialed == []
+
+
+def test_sites_that_caused_trouble_are_not_reached() -> None:
+    """문제를 일으켰던 사이트(badsites)는 한 페이지 안의 프레임·자원으로도 붙지 않는다."""
+
+    async def run() -> Tuple[bytes, bytes, List[Tuple[str, int]]]:
+        dialed: List[Tuple[str, int]] = []
+        proxy = EgressProxy(
+            lookup=_lookup(PUBLIC), opener=_opener(1, dialed), refuse={"Site.Example."}
+        )
+        url = await proxy.start()
+        try:
+            return (
+                await _ask(url, b"CONNECT site.example:443 HTTP/1.1\r\n\r\n"),
+                await _ask(url, b"GET http://site.example/ HTTP/1.1\r\nHost: site.example\r\n\r\n"),
+                dialed,
+            )
+        finally:
+            await proxy.close()
+
+    tunnel, plain, dialed = asyncio.run(run())
+    assert tunnel.startswith(b"HTTP/1.1 403") and plain.startswith(b"HTTP/1.1 403") and dialed == []

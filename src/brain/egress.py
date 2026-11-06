@@ -58,8 +58,11 @@ class EgressProxy:
         idle: float = IDLE,
         opener: Opener = _open,
         ports: Collection[int] = PORTS,
+        refuse: Collection[str] = (),
     ) -> None:
         self.lookup = lookup
+        # 문제를 일으켰던 사이트(badsites) — 붙지 않는다(한 페이지 안의 프레임·자원으로도).
+        self.refuse = {host.lower().rstrip(".") for host in refuse}
         self.budget = budget
         self.idle = idle
         self.opener = opener
@@ -191,6 +194,11 @@ class EgressProxy:
 
     async def _reach(self, writer: asyncio.StreamWriter, host: str, port: int) -> Optional[Streams]:
         """이름을 한 번 풀어 검사하고, 검사한 주소로 붙는다. 못 붙으면 크롬에 답하고 None."""
+        if host.lower().rstrip(".") in self.refuse:
+            self.blocked.append(host[:80])
+            logger.warning("문제를 일으켰던 사이트라 붙지 않는다: %.80s", host)
+            await _answer(writer, 403, "문제를 일으켰던 사이트라 열지 않는다")
+            return None
         if port not in self.ports:
             self.blocked.append(host[:80])
             logger.warning("브라우저가 열지 않는 포트로 가려 했다 — 막음: %.80s:%d", host, port)

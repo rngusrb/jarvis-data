@@ -14,6 +14,8 @@ data/processed/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# 브라우저가 문제를 일으킨 사이트·지금 보는 사이트 — 방문 기록이다
+data/browser_bad_sites.*
 .harness_cache/
 # 빌드 산출물 — 다른 프로젝트 것이 섞여 들어온 적이 있다
 *.zip
