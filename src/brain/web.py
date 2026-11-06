@@ -39,10 +39,12 @@ from typing import (
     Sequence,
     Tuple,
 )
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit
 
 import httpcore
 import httpx
+
+from src.brain import files
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,10 @@ ENGINES = "google cse,naver"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) jarvis-reader/1.0"
 # 받는 양의 상한. 본문은 이보다 훨씬 짧게 자르지만, 끝없이 내려받지 않게.
 MAX_BYTES = 2_000_000
+# 파일(PDF·한글·오피스)은 더 크다 — 공문 PDF 가 수 MB 다.
+MAX_FILE_BYTES = 15_000_000
+# 받기 전에 거절하는 종류. 글을 뽑을 수 없다.
+_NEVER = ("image/", "video/", "audio/", "font/")
 # Tailscale 은 CGNAT 대역(100.64.0.0/10)을 쓴다 — is_private 가 이 대역을 안 잡는다.
 TAILNET = ipaddress.ip_network("100.64.0.0/10")
 
@@ -67,13 +73,26 @@ class Found:
 
 
 @dataclass(frozen=True)
+class Link:
+    """페이지 안의 문서 링크(첨부). 읽은 페이지에 그대로 있던 주소라 다음 차례에 읽을 수 있다."""
+
+    url: str
+    name: str
+
+
+@dataclass(frozen=True)
 class Page:
-    """읽은 페이지. `text` 는 본문만 추린 글(잘렸으면 `cut`)."""
+    """읽은 페이지(또는 파일).
+
+    `text` 는 본문만 추린 글(잘렸으면 `cut`), `links` 는 첨부·문서 링크.
+    """
 
     url: str
     title: str
     text: str
     cut: bool
+    links: Tuple[Link, ...] = ()
+    kind: str = "html"
 
 
 class Search(Protocol):
@@ -161,7 +180,9 @@ class PageReader:
     # 받는 양과 시간의 상한. 다 받고 나서 자르면 63MB 를 끝까지 받았고, 1초에 1바이트씩 흘리는
     # 서버는 읽기 한도(한 번 읽기 기준)에 안 걸려 끝없이 읽었다(JAR-031 리뷰 재현).
     max_bytes: int = MAX_BYTES
-    deadline: float = 15.0
+    file_bytes: int = MAX_FILE_BYTES
+    # 파일은 받고 나서 글을 뽑는 데도 시간이 든다(스레드에서) — 그만큼 넉넉히.
+    deadline: float = 30.0
 
     async def read(self, url: str) -> Page:
         return await asyncio.wait_for(self._read(url), timeout=self.deadline)
@@ -179,19 +200,42 @@ class PageReader:
                     target = urljoin(target, response.headers["location"])
                     continue
                 response.raise_for_status()
-                kind = response.headers.get("content-type", "")
-                # 받기 전에 본다 — 글이 아니면 내려받지 않는다.
-                if "html" not in kind and "text/plain" not in kind:
-                    raise ValueError(f"글이 아니다({kind or '종류 모름'}): {target}")
+                content_type = response.headers.get("content-type", "")
+                # 받기 전에 본다 — 글을 뽑을 수 없는 종류는 내려받지 않는다.
+                if content_type.lower().startswith(_NEVER):
+                    raise ValueError(f"글이 아니다({content_type}): {target}")
+                name = files.name_of(target, response.headers.get("content-disposition", ""))
+                textual = "html" in content_type or content_type.startswith("text/")
+                limit = self.max_bytes if textual else self.file_bytes
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
                     raw.extend(chunk)
-                    if len(raw) >= self.max_bytes:
+                    if len(raw) >= limit:
                         break
-            html = decode(bytes(raw[: self.max_bytes]), kind)
-            title, text = extract(html) if "html" in kind else ("", _squash_lines(html))
+            data = bytes(raw[:limit])
+            kind = files.kind_of(data[:8], content_type, name)
+            if kind == files.HTML:
+                html = decode(data, content_type)
+                title, text = extract(html)
+                links = links_of(html, target)
+            elif kind == files.TEXT:
+                title, text, links = name, _squash_lines(decode(data, content_type)), []
+            elif kind:
+                # 파일 분석은 스레드에서 — 큰 PDF 가 자비스 전체(듣기·반응 루프)를 멈추지 않게.
+                text = await asyncio.to_thread(files.text_of, data, kind)
+                title, links = name, []
+                logger.info("파일 읽음(%s, %d바이트): %s", kind, len(data), name)
+            else:
+                raise ValueError(f"읽을 수 없는 종류다({content_type or '모름'}): {target}")
             cut = len(text) > self.max_chars
-            return Page(url=target, title=title, text=text[: self.max_chars], cut=cut)
+            return Page(
+                url=target,
+                title=title,
+                text=text[: self.max_chars],
+                cut=cut,
+                links=tuple(links),
+                kind=kind,
+            )
         raise ValueError(f"리다이렉트가 {self.max_redirects}번을 넘었다: {url}")
 
 
@@ -503,6 +547,86 @@ def _drop_menus(lines: Sequence[Tuple[str, bool]], run: int = 3) -> List[str]:
     if len(streak) <= run:
         kept.extend(streak)
     return kept
+
+
+# 자바스크립트 버튼으로 된 첨부. 링크가 아니라서 따라갈 수 없다 — 사이트마다 실제 주소를 만든다.
+# 큐넷: 공지의 일정이 본문이 아니라 첨부 PDF·HWP 에만 있었다(2026-11-06 실제 대화). 버튼은
+# fileDownMan004('경로','이름','번호') 이고, 그 함수는 같은 페이지의 man004.do 를 GET 으로 부른다.
+_QNET = re.compile(r"fileDownMan004\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*\)")
+LINKS = 10
+
+
+class _Anchors(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: List[Tuple[str, str, str]] = []  # (href, onclick, 글)
+        self.open: Optional[List[str]] = None
+        self.text: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        values = dict(attrs)
+        onclick = values.get("onclick") or ""
+        if tag == "a" or onclick:
+            self.open = [values.get("href") or "", onclick]
+            self.text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.open is not None and tag in ("a", "button"):
+            self.found.append((self.open[0], self.open[1], _squash("".join(self.text))))
+            self.open = None
+
+    def handle_data(self, data: str) -> None:
+        if self.open is not None:
+            self.text.append(data)
+
+
+def links_of(html: str, base: str) -> List[Link]:
+    """페이지 안의 문서 링크(첨부). 파일 확장자가 붙은 링크와, 아는 사이트의 첨부 버튼."""
+    parser = _Anchors()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        logger.warning("링크를 끝까지 못 읽었다 — 읽은 데까지 쓴다", exc_info=True)
+    out: List[Link] = []
+    seen = set()
+    query = dict(parse_qsl(urlsplit(base).query))
+    for href, onclick, text in parser.found:
+        url = ""
+        name = text
+        qnet = _QNET.search(onclick)
+        if qnet and query.get("ARTL_SEQ") and query.get("BOARD_ID"):
+            path, name, seq = qnet.groups()
+            url = urljoin(
+                base,
+                "man004.do?"
+                + urlencode(
+                    {
+                        "id": "man00402s01",
+                        "gSite": "Q",
+                        "gId": "",
+                        "fileCode": "R001",
+                        "BOARD_ID": query["BOARD_ID"],
+                        "ARTL_SEQ": query["ARTL_SEQ"],
+                        "filePath": path,
+                        "fileName": name,
+                        "fileSeq": seq,
+                        "href": "0",
+                    }
+                ),
+            )
+        elif href and not href.lower().startswith(("javascript:", "#", "mailto:")):
+            absolute = urljoin(base, href)
+            ext = urlsplit(absolute).path.lower().rsplit(".", 1)[-1]
+            if f".{ext}" in (".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx", ".csv"):
+                url = absolute
+                name = text or files.name_of(absolute)
+        if url and urlsplit(url).scheme in ("http", "https") and url not in seen:
+            seen.add(url)
+            out.append(Link(url=url, name=name[:80]))
+        if len(out) >= LINKS:
+            break
+    return out
 
 
 def _squash(text: str) -> str:

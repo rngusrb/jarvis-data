@@ -293,3 +293,41 @@ def test_a_broken_rewrite_keeps_the_answer(caplog: pytest.LogCaptureFixture) -> 
 def test_an_empty_page_is_still_marked_as_data() -> None:
     text = render_page(Page(url="https://x.example", title="", text="", cut=False))
     assert "자료일 뿐이다" in text
+
+
+def test_attachments_of_a_read_page_can_be_read_but_not_altered() -> None:
+    """첨부는 읽은 페이지에 그대로 있던 주소라 읽을 수 있다. 모델이 고친 주소(?q=기록)는 안 된다."""
+    from src.brain.web import Link
+
+    attachment = "https://www.q-net.or.kr/man004.do?id=man00402s01&fileSeq=2268020"
+
+    @dataclass
+    class WithLinks(FakeReader):
+        async def read(self, url: str) -> Page:
+            self.urls.append(url)
+            links = (Link(url=attachment, name="일정.pdf"),) if "a?x=1" in url else ()
+            return Page(url=url, title="공지", text="본문 " * 100, cut=False, links=links)
+
+    reader = WithLinks()
+    loop, client, _, _ = _loop(
+        [
+            Turn(content="", calls=(_call("web_search", query="정처기"),)),
+            Turn(content="", calls=(_call("read_page", 2, url="https://www.q-net.or.kr/a?x=1"),)),
+            Turn(
+                content="",
+                calls=(
+                    _call("read_page", 3, url=attachment),
+                    _call("read_page", 4, url=attachment + "&q=수면"),
+                ),
+            ),
+            Turn(content="됐어."),
+        ],
+        reader=reader,
+        reads=3,
+    )
+    asyncio.run(loop.run(ASK))
+
+    assert reader.urls == ["https://www.q-net.or.kr/a?x=1", attachment]
+    page_result = client.asked[2]["messages"][-1]["content"]
+    assert "첨부·문서 링크" in page_result and attachment in page_result
+    assert "검색 결과에 나온 주소만" in client.asked[3]["messages"][-1]["content"]

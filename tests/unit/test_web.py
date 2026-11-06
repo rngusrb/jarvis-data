@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Dict, List
+from urllib.parse import parse_qsl, urlsplit
 
 import httpcore
 import httpx
@@ -260,14 +261,15 @@ def test_a_huge_page_is_not_downloaded_whole() -> None:
     assert len(seen) <= 4 and page.text.startswith("a")
 
 
-def test_a_non_text_body_is_refused_before_it_is_read() -> None:
+def test_a_body_without_text_is_refused_before_it_is_read() -> None:
+    """그림·영상은 글을 뽑을 수 없다 — 받기 전에 거절한다(파일은 이제 읽는다)."""
     seen: List[int] = []
     reader = PageReader(
-        _client(_streamed([b"%PDF"] * 50, seen, kind="application/pdf")),
+        _client(_streamed([b"\x89PNG"] * 50, seen, kind="image/png")),
         resolve=_public("211.115.84.70"),
     )
     with pytest.raises(ValueError):
-        asyncio.run(reader.read("https://a.kr/file.pdf"))
+        asyncio.run(reader.read("https://a.kr/photo.png"))
     assert seen == []
 
 
@@ -353,3 +355,81 @@ def test_a_name_that_turns_inward_after_the_check_is_still_blocked() -> None:
 def test_every_address_of_a_name_must_be_public() -> None:
     with pytest.raises(Blocked):
         asyncio.run(ensure_public("https://split.example/", _public("211.115.84.70", "10.0.0.5")))
+
+
+def test_a_pdf_attachment_is_read_as_a_file() -> None:
+    """큐넷은 첨부를 octet-stream 으로 주고 이름은 헤더에 담는다(2026-11-06 실측)."""
+    from tests.unit.test_files import _pdf
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/octet-stream;;charset=UTF-8",
+                "content-disposition": "attachment; filename*=UTF-8''%EC%9D%BC%EC%A0%95.pdf",
+            },
+            content=_pdf("Exam 2026.09.21"),
+        )
+
+    page = asyncio.run(
+        PageReader(_client(handler), resolve=_public("211.115.84.70")).read(
+            "https://q.example/d?id=1"
+        )
+    )
+    assert page.kind == "pdf" and page.title == "일정.pdf" and "Exam 2026.09.21" in page.text
+
+
+def test_attachment_links_are_collected_with_the_qnet_button() -> None:
+    """공지의 일정은 본문이 아니라 첨부에 있었다.
+
+    큐넷 첨부는 링크가 아니라 자바스크립트 버튼이다.
+    """
+    from src.brain.web import links_of
+
+    base = "https://www.q-net.or.kr/man004.do?ARTL_SEQ=5276928&BOARD_ID=Q001&gSite=Q&id=man00402"
+    html = (
+        "<p>2026 일정.pdf</p><button onclick=\"javascript:fileDownMan004('bbs/Q001/Q001_2268020', "
+        "'2026 일정.pdf', '2268020')\"><span>다운로드</span></button>"
+        '<a href="/files/guide.hwp">안내문</a><a href="javascript:void(0)">x.pdf</a>'
+        '<a href="/notice/123">다른 글</a>'
+    )
+    links = links_of(html, base)
+
+    assert [link.name for link in links] == ["2026 일정.pdf", "안내문"]
+    qnet = urlsplit(links[0].url)
+    query = dict(parse_qsl(qnet.query))
+    assert qnet.path == "/man004.do" and query["id"] == "man00402s01"
+    assert query["ARTL_SEQ"] == "5276928" and query["filePath"] == "bbs/Q001/Q001_2268020"
+    assert links[1].url == "https://www.q-net.or.kr/files/guide.hwp"
+
+
+def test_a_big_file_is_parsed_without_stopping_jarvis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """파일 분석은 스레드에서 — 큰 PDF 를 읽는 동안에도 듣기·반응 루프가 돈다."""
+    import time
+
+    from src.brain import files as files_module
+
+    def slow(data: bytes, kind: str) -> str:
+        time.sleep(0.3)
+        return "다 읽었다"
+
+    monkeypatch.setattr(files_module, "text_of", slow)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-1.4")
+
+    async def both() -> tuple:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.04)
+                ticks += 1
+
+        reader = PageReader(_client(handler), resolve=_public("211.115.84.70"))
+        page, _ = await asyncio.gather(reader.read("https://a.kr/big.pdf"), tick())
+        return page, ticks
+
+    page, ticks = asyncio.run(both())
+    assert page.text == "다 읽었다" and ticks == 5

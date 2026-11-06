@@ -9,6 +9,9 @@ dependencies = [
     "python-dotenv>=1.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    # 웹에서 찾은 파일 읽기(PDF, 한글 HWP) — brain/files.py
+    "pypdf>=5.0",
+    "olefile>=0.47",
 ]
 
 [project.optional-dependencies]
