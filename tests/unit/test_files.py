@@ -427,9 +427,13 @@ def test_odd_surrogates_from_a_parser_do_not_kill_the_child(
     """pypdf 는 ToUnicode 의 <D800> 을 짝 없는 서로게이트로 준다 — utf-8 로 쓰다 자식이 죽어 그 파일
     전체를 못 읽었다(재리뷰). 짝은 한 글자로, 짝 없는 것은 �로."""
     import logging
+    import resource
     import sys
     import warnings
 
+    # 자식의 상한을 이 시험 프로세스에 걸지 않는다 — 걸었더니 뒤에 뜬 크롬·드라이버가 1GB 상한을
+    # 물려받아 바로 죽었다(conftest `_limits_untouched` 의 사고 이력).
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: None)
     monkeypatch.setattr(logging, "disable", lambda level: None)
     monkeypatch.setattr(warnings, "simplefilter", lambda action, *a, **k: None)
     monkeypatch.setattr(files, "text_of", lambda data, kind: "a\ud800b \ud83d\ude00")
