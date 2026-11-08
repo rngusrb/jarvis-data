@@ -527,7 +527,12 @@ def test_a_dead_tab_is_said_not_shown_as_an_empty_page(
                 await asyncio.wait_for(cdp.send("Page.crash"), timeout=2.0)
             except Exception:
                 pass  # 죽이는 명령은 답이 안 온다(탭이 죽는다)
-            await asyncio.sleep(0.5)
+            # 죽었다는 알림을 기다린다 — CI 에서는 7초 넘게 늦었다(늦은 알림은 아래 가짜 프레임
+            # 시험이 본다).
+            for _ in range(60):
+                if session.crashed:
+                    break
+                await asyncio.sleep(0.25)
             try:
                 await session.view()
             except Refused as error:
@@ -536,6 +541,43 @@ def test_a_dead_tab_is_said_not_shown_as_an_empty_page(
 
     assert "페이지가 죽었다" in asyncio.run(run())
     assert "브라우저 탭이 죽었다" in caplog.text
+
+
+def test_a_crash_notice_that_comes_while_looking_still_says_the_tab_died(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """죽었다는 알림이 화면을 보는 도중에 오면 "답하지 않는다"가 아니라 죽었다고 말한다(PR #55
+    CI)."""
+    from typing import cast
+
+    from src.brain import browser
+    from src.brain.browser import Session
+
+    monkeypatch.setattr(browser, "ASK", 0.3)
+    session = Session(context=None, proxy=cast(Any, None))
+
+    class Frame:
+        url = "http://site.example/"
+
+        async def evaluate_handle(self, script: str, arg: Any) -> Any:
+            session.crashed = True  # 보는 도중에 알림이 온다
+            await asyncio.sleep(5)
+
+    class Page:
+        url = "http://site.example/"
+        frames = [Frame()]
+        main_frame = frames[0]
+
+    session.page = Page()
+
+    async def run() -> str:
+        try:
+            await session.view()
+        except Refused as error:
+            return str(error)
+        return "보였다"
+
+    assert "페이지가 죽었다" in asyncio.run(run())
 
 
 def test_a_page_that_begs_to_stay_does_not_trap_the_hand(site: Tuple[int, List[str]]) -> None:

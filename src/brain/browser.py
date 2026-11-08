@@ -538,6 +538,9 @@ class Session:
                 html = await _bounded(frame, _HTML_JS, HTML_CAP, HTML_CAP)
             except asyncio.TimeoutError:
                 if index == 0:
+                    # 그사이 탭이 죽었다는 알림이 왔으면 그것으로 — 알림이 늦게 오면 죽은 탭이
+                    # "답하지 않는다"로 보였다(PR #55 CI).
+                    self._alive()
                     raise Refused(
                         "페이지가 답하지 않는다(무거운 스크립트) — 본 것으로 정리한다"
                     ) from None
@@ -559,6 +562,7 @@ class Session:
                 continue
             except Exception as error:
                 if index == 0:
+                    self._alive()  # 죽은 탭이면 그것으로("Target crashed" 오류가 먼저 올 때)
                     # 메인 화면을 못 읽었다 — 빈 화면으로 넘기지 않는다(3차 리뷰: 알림 없이 "본문
                     # 글이 없다").
                     logger.warning(
