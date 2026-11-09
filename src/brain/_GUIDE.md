@@ -369,6 +369,7 @@ tests:
   - tests/unit/test_egress.py
   - tests/unit/test_browser.py
   - tests/unit/test_badsites.py
+  - tests/unit/test_selfcheck.py
   - tests/unit/test_browse.py
 ```
 
@@ -395,6 +396,7 @@ python scripts/harness.py src/brain/
 | `agent.py` | 게이트 → 맥락 조립 → 추론 → 발화 결정. 같은 줄기에서 묶인 신호(`also`)도 한 판단으로 — 말하면 묶인 것은 "함께 판단"으로(말한 건 하나로 센다), 안 하면 모두 그 판단으로 기록. 이 신호만을 위한 맥락(`extra` — 관심사 준비)을 더한다 |
 | `gate.py` | 싼 필터. severity 임계값 + 같은 신호는 한 번(그 트리거의 모든 기록에서, 신호의 때보다 뒤의 판단까지) + 줄기 간격(신호가 든 `family` 로, 말한 것만) + 트리거별 쿨다운 |
 | `memory.py` | `SpeechLog` — 언제 무슨 말을 했는지, 먼저 건 말의 표와 👍👎 |
+| `selfcheck.py` | 자기 점검 — 자유 질문에 답을 보낸 뒤(답은 기다리지 않는다) 질문·쓴 도구(됐나·실패 이유)·보낸 답을 주고 `{result, blocked, note, missing}` 를 받아 남긴다. 결과는 다 함·일부·못 함, 막힌 갈래는 정해진 것만(`BLOCKED`) — 꼴이 깨지면 남기지 않고 원문을 경고로. 시간 초과·빈 답은 모델 없이 바로 "못 함", 두뇌에 못 닿은 것은 안 남긴다(장애). `/gaps`(`GapReport`) — 14일을 세고(모델 없이), 막힌 게 있으면 모델이 부족한 기능을 셋까지 묶어 쓴다. 정리가 실패해도 센 것은 보낸다 |
 | `report.py` | `/report` — 넓게 모아(잠잠 빼고 나무·하루 요약 14일·값 90일·사건 14일) "요즘의 너"를 쓴다. 읽는 법은 재료 묶음이 들고 온다(섹터가 적음), 지시문엔 일반 규칙만. 실패해도 늘 답한다(닿지 않음과 거절을 나눠서). 쓰기 전에 요즘 관심사의 다가오는 일정을 찾아 두고(`research`), 쓰기는 생각 없이 |
 | `feedback.py` | 👍👎 — 버튼 모양(한 곳에만), 사람 얘기에 대한 반응을 판단 맥락으로(`FeedbackProvider`, 누른 때부터 30일) |
 | `context.py` | `ContextProvider` 프로토콜 + 조립 |

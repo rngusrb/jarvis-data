@@ -109,6 +109,7 @@ tests:
   - tests/unit/test_speech_log_sqlite.py
   - tests/unit/test_trace_store.py
   - tests/unit/test_topic_store.py
+  - tests/unit/test_selfchecks.py
   - tests/integration/test_listen_loop.py
 ```
 
@@ -125,6 +126,7 @@ python scripts/harness.py src/storage/
 | `sqlite.py` | 관측치 저장소. 멱등 쓰기 + 범위 조회 + 마지막 수신 시각 |
 | `speech.py` | 발화 기억. 재시작을 넘겨 쿨다운을 지킨다. 무엇에 대한 판단이었나(`about`)도 남긴다 — 옛 행은 비어 있다. 먼저 건 말의 표(`token`)와 👍👎(`feedback`), 같은 신호를 판단했나(`judged_since` — 전부에서, 그 신호보다 뒤의 판단까지), 줄기로 마지막에 말한 것(`last_spoken_in` — 기록의 `family` 칸으로). 옛 관심사 행(`topic:12`)만 줄기를 채운다 — 관심사 이름은 플랫폼(`TopicWatch`)이 짓는 꼴이라 읽어도 짐작이 아니다. 열 때마다 돌고 채운 수를 남긴다 |
 | `traces.py` | 흔적 저장소. 중복은 조용히 무시(수집기가 겹쳐 읽는 게 정상). 흔적에 번호(`id`)를 붙여 돌려주고, 조회 끝(`until`)을 받는다(회고 되감기) |
+| `selfchecks.py` | 자기 점검 기록(`brain/selfcheck`) — 같은 DB 의 표. 질문 300자·답 600자·한 줄 200자까지만, 쓴 도구는 JSON 목록. 지우지 않고 읽는 쪽이 기간을 정한다(`/gaps` 14일) |
 | `conversation.py` | 대화 기록 + 폴링 커서. 삽입 순서로 정렬한다. 주고받은 말과 자비스가 먼저 건 말(메타 `first`)이 한 흐름으로 |
 | `topics.py` | 주제 나무 저장소 — 주제·근거 연결·변경 기록·메모·회고 기록. 나무를 바꾸는 길은 `apply` 하나(검사한 나무와의 차이를 한 트랜잭션에, 낡은 나무면 `StaleTree`). 지우지 않고 접고 뗀다. 되감기 사본의 나무를 번호째 들인다(`adopt` — 나무가 있으면 거절, 근거 흔적이 다르면 하나도 안 들임) |
 | `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC. 받은 때는 처음 받은 때(11-02 에 관측치에서 옮긴 위치 75건은 모름 — 비어 있다. 옛 74건 + 재시작 전 옛 코드가 받은 1건) |
