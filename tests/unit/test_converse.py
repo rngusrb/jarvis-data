@@ -488,6 +488,7 @@ def test_the_answer_goes_out_first_and_is_looked_back_on_after(tmp_path: Path) -
         "공지엔 없어.",
     )
     assert "(도구를 안 썼다)" in judge.prompts[0]
+    assert "[지금 질문]\n정처기 실기 언제야?" in judge.prompts[0]  # 도구 없는 길도 본 것을 넘긴다
 
 
 def test_what_the_tools_did_goes_into_the_look_back(tmp_path: Path) -> None:
@@ -634,6 +635,8 @@ def test_on_the_tool_path_the_answer_does_not_wait_either(tmp_path: Path) -> Non
     # 답할 때 본 것(기록·지금 질문)을 돌아보기도 본다 — 기록으로 한 답을 "지어냄"으로 봤다(1차
     # 리뷰).
     assert "채용준비" in judge.prompts[0] and "[지금 질문]\n안녕" in judge.prompts[0]
+    # 찾아본 뒤 길도 — 1차 High 가 되살아나도 못 잡았다(2차 리뷰: 이 길은 prompts[0] 만 봤다).
+    assert "채용준비" in judge.prompts[1] and "[지금 질문]\n찾아 줘" in judge.prompts[1]
     assert "- 내 기록으로 답하기:" in judge.prompts[0] and "- web_search:" in judge.prompts[0]
 
 

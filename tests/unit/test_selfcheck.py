@@ -252,3 +252,64 @@ def test_the_shown_kinds_and_the_write_up_are_capped(tmp_path: Path) -> None:
     assert tally.count("번 — 예:") == KINDS_SHOWN < len(kinds)
     text = asyncio.run(report.write(tally, problems))
     assert text.endswith("가" * WRITE_CAP) and "가" * (WRITE_CAP + 1) not in text
+
+
+@pytest.mark.parametrize(
+    "blocked,uses,abilities,expected",
+    [
+        ("검색 결과가 모자람", (), ["web_search: 찾는다"], "있는 기능을 안 씀"),
+        (
+            "검색 결과가 모자람",
+            (Use("search", "q", True, "0개"),),
+            ["web_search: 찾는다"],
+            "검색 결과가 모자람",
+        ),
+        ("검색 결과가 모자람", (), [], "검색 결과가 모자람"),  # 검색이 없으면 안 쓴 게 아니다
+        (
+            "파일을 못 읽음",
+            (Use("search", "q", True, "3개"),),
+            ["read_page: 읽는다"],
+            "있는 기능을 안 씀",
+        ),
+        (
+            "페이지를 못 읽음",
+            (Use("browse", "u", False, "막힘"),),
+            ["read_page: 읽는다"],
+            "페이지를 못 읽음",
+        ),
+        ("로그인이 필요함", (), ["web_search: 찾는다"], "로그인이 필요함"),
+    ],
+)
+def test_a_tool_kind_said_without_using_the_tool_is_called_unused(
+    tmp_path: Path, blocked: str, uses: tuple, abilities: list, expected: str
+) -> None:
+    """모델은 검색을 안 해 놓고 "검색 결과가 모자람"이라 했다(2차 리뷰 5/5) — 있는 기능을 안 쓴
+    것이다."""
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    brain = Fixed(_judged(result="못 함", blocked=blocked, missing="새 기능"))
+    check = asyncio.run(SelfReview(brain, store).review("q", "a", uses, NOW, abilities=abilities))
+    assert check is not None and check.blocked == expected
+    assert check.missing == ("" if expected == "있는 기능을 안 씀" else "새 기능")
+
+
+def test_the_write_up_examples_say_which_tools_were_used(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    _keep(store, "안 찾은 것", "못 함", "있는 기능을 안 씀")
+    store.add(
+        SelfCheck(
+            NOW,
+            "찾은 것",
+            "a",
+            (("search", "q", True, "3개"), ("read", "u", False, "막힘")),
+            "일부",
+            "페이지를 못 읽음",
+            "",
+            "막힘",
+        )
+    )
+    brain = Fixed("- 정리")
+    report = GapReport(brain, store)
+    tally, problems = report.tally(NOW)
+    asyncio.run(report.write(tally, problems))
+    assert "질문: 안 찾은 것\n결과: 못 함(있는 기능을 안 씀)\n쓴 도구: 없음" in brain.prompts[0]
+    assert "쓴 도구: 검색, 읽기(실패)" in brain.prompts[0]

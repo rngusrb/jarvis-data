@@ -46,6 +46,15 @@ BLOCKED = (
     OTHER,
 )
 _TOOLS = {"search": "검색", "read": "읽기", "browse": "브라우저"}
+# 도구가 붙은 갈래 — (그 갈래를 말하려면 써 봤어야 할 도구 종류, 그 기능의 도구 이름). 모델은 안 써
+# 놓고도 이 갈래를 골랐다: "있는 기능을 안 씀"이 맞는 21건에 그 갈래가 0건, 검색을 안 했는데 "검색
+# 결과가 모자람" 5/5(2차 리뷰 실측). 그 도구가 있고 안 썼으면 코드가 "안 씀"으로 돌린다.
+_NEEDS = {
+    "검색 결과가 모자람": (("search",), "web_search"),
+    "페이지를 못 읽음": (("read", "browse"), "read_page"),
+    "파일을 못 읽음": (("read",), "read_page"),
+    "브라우저로도 못 찾음": (("browse",), "browse"),
+}
 # 돌아볼 때 보여주는 답의 길이(자).
 ANSWER_SHOWN = 1500
 # 답할 때 본 것(기록·최근 대화)의 상한(자). 넘으면 앞(기록)과 끝(지금 질문)을 남기고 가운데를
@@ -118,6 +127,9 @@ class SelfReview:
             logger.warning("자기 점검 판단을 못 읽었다(남기지 않는다): %.200s", reply)
             return None
         result, blocked, note, missing = judged
+        if _unused(blocked, uses, abilities):
+            logger.info('자기 점검 — 도구를 안 쓰고 "%s"라 해서 "%s"(으)로 본다', blocked, UNUSED)
+            blocked, missing = UNUSED, ""
         check = SelfCheck(
             at=at,
             question=question,
@@ -199,6 +211,7 @@ class GapReport:
         counted = "\n".join(f"- {blocked} {len(groups[blocked])}번" for blocked in order)
         prompt = f"[지금 있는 기능]\n{able}\n\n[센 것]\n{counted}\n\n[예]\n" + "\n\n".join(
             f"질문: {_short(r.question, 120)}\n결과: {r.result}({r.blocked})\n"
+            f"쓴 도구: {_used(r)}\n"
             f"모자란 것: {r.note or '-'}\n있었으면 한 기능: {r.missing or '-'}"
             for r in rows
         )
@@ -252,6 +265,22 @@ def _render_uses(uses: Sequence[Use]) -> str:
         outcome = use.note if use.ok else f"실패: {use.note}"
         lines.append(f"- {label} {_short(use.target, 160)} → {outcome}")
     return "\n".join(lines)
+
+
+def _unused(blocked: str, uses: Sequence[Use], abilities: Sequence[str]) -> bool:
+    """도구 갈래인데 그 도구가 있고 쓴 적이 없나 — 못 한 게 아니라 안 한 것이다."""
+    need = _NEEDS.get(blocked)
+    if need is None:
+        return False
+    kinds, tool = need
+    able = any(a.startswith(f"{tool}:") for a in abilities)
+    return able and not any(u.kind in kinds for u in uses)
+
+
+def _used(check: SelfCheck) -> str:
+    """정리의 예에 붙이는 쓴 도구 한 줄 — 없으면 "없음"(안 한 것과 못 한 것을 가르게)."""
+    shown = [f"{_TOOLS.get(kind, kind)}{'' if ok else '(실패)'}" for kind, _, ok, _ in check.tools]
+    return ", ".join(shown) or "없음"
 
 
 def _clip(seen: str) -> str:
