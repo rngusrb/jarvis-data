@@ -48,17 +48,21 @@ BLOCKED = (
 _TOOLS = {"search": "검색", "read": "읽기", "browse": "브라우저"}
 # 돌아볼 때 보여주는 답의 길이(자).
 ANSWER_SHOWN = 1500
+# 답할 때 본 것(기록·최근 대화)의 상한(자). 넘으면 앞(기록)과 끝(지금 질문)을 남기고 가운데를
+# 줄인다.
+SEEN_CAP = 30_000
 
 SYSTEM_PROMPT = f"""너는 자비스다. 방금 사용자에게 보낸 네 답을 스스로 돌아본다 — 물은 것을 다
 해냈나, 못 했다면 무엇에 막혔나, 어떤 기능이 있었으면 해냈을까.
 
-지금 있는 기능, 쓴 도구 기록(무엇을 찾고 읽었나, 무엇이 실패했나), 보낸 답만 근거로 본다. 답에
-"못 찾았어", "~에는 없어", "확인 못 했어" 같은 말이 있으면 막힌 것이다. 찾은 기록 없이 일정·가격
-같은 바뀌는 사실을 말했으면 "{PARTLY}"다. 쓴 도구에 그 시도가 없으면 못 한 게 아니라 안 한
-것이다 — 예: 첨부를 못 열었다는데 그 첨부를 읽은 기록이 없다. 있는 기능으로 할 수 있었는데 안
-썼으면 blocked 는 "{UNUSED}"이고 missing 은 빈 글이다 — 새 기능이 아니다. 있었으면 할 기능은
-정당한 것만 쓴다 — 로그인을 뚫거나 막힌 것을 우회하는 것은 쓰지 않는다(로그인이 필요하면
-"로그인해서 보기").
+근거는 넷이다: [지금 있는 기능], [답할 때 본 것](기록과 최근 대화 — 답을 쓸 때 본 그대로),
+[쓴 도구], [보낸 답]. [답할 때 본 것]의 기록으로 맞게 답했으면 근거가 있는 답이고 "{DONE}"이다.
+답에 "못 찾았어", "~에는 없어", "확인 못 했어" 같은 말이 있으면 막힌 것이다. [답할 때 본 것]에도
+[쓴 도구]에도 없는 바깥의 바뀌는 사실(일정·가격·뉴스)을 말했으면 "{PARTLY}"다. 쓴 도구에 그 시도가
+없으면 못 한 게 아니라 안 한 것이다 — 예: 첨부를 못 열었다는데 그 첨부를 읽은 기록이 없다. 있는
+기능으로 할 수 있었는데 안 썼으면 blocked 는 "{UNUSED}"이고 missing 은 빈 글이다 — 새 기능이
+아니다. 있었으면 할 기능은 정당한 것만 쓴다 — 로그인을 뚫거나 막힌 것을 우회하는 것은 쓰지
+않는다(로그인이 필요하면 "로그인해서 보기"). 한국어로만 쓴다.
 
 JSON 하나로만 답한다:
 {{"result": "{DONE}" | "{PARTLY}" | "{FAILED}", "blocked": "<갈래 하나>",
@@ -66,17 +70,20 @@ JSON 하나로만 답한다:
  "missing": "있었으면 해냈을 기능 한 줄(없으면 빈 글)"}}
 
 갈래(blocked): {" · ".join(BLOCKED)}
-다 했으면 result 는 "{DONE}", blocked 는 "{NONE}"."""
+다 했으면 result 는 "{DONE}", blocked 는 "{NONE}". 다 하지 못했으면 blocked 는 "{NONE}"이 아니다."""
 
 GAPS_PROMPT = f"""아래는 자비스가 스스로 돌아본, 잘 안 된 답들이다. 같은 까닭끼리 묶어 부족한
 기능을 많아야 셋 써라. 각각 한 줄: 무엇이 모자랐나(몇 번, 짧은 예 하나) — 무엇을 만들면 나아지나.
 "{UNUSED}"은 새 기능이 아니라 쓰는 법(지시문)을 고칠 일로 쓴다. 로그인을 뚫거나 막힌 것을 우회하는
 기능은 쓰지 않는다. 먼저 [지금 있는 기능]을 읽고, 거기 있는 것은 새로 만들 것으로 쓰지 않는다
 — 예: 첨부·PDF 읽기가 있으면 "첨부 읽기 기능 추가"가 아니라 "첨부를 안 열었다(쓰는 법)"로 쓴다.
-기록에 없는 것은 지어내지 않는다. 머리말 없이 목록만, 반말로."""
-# `/gaps` 가 보는 기간과 정리에 넘기는 점검 수.
+몇 번은 [센 것]의 수를 쓴다(아래 예는 갈래마다 몇 개만 골랐다). 기록에 없는 것은 지어내지 않는다.
+머리말 없이 목록만, 반말로, 한국어로만."""
+# `/gaps` 가 보는 기간, 정리에 넘기는 점검 수(갈래마다 고루), 정리의 상한(자), 보여주는 갈래 수.
 GAP_DAYS = 14
 GAP_ROWS = 30
+WRITE_CAP = 2000
+KINDS_SHOWN = 5
 
 
 @dataclass
@@ -91,15 +98,18 @@ class SelfReview:
         uses: Sequence[Use],
         at: datetime,
         abilities: Sequence[str] = (),
+        seen: str = "",
     ) -> Optional[SelfCheck]:
         """보낸 답을 돌아보고 남긴다. 못 읽은 판단은 남기지 않는다(None).
 
         `abilities` 는 지금 있는 기능(도구 이름: 설명) — 모르면 이미 있는 첨부 읽기를 "있었으면 할
-        기능"으로 적었다(2026-11-09 실측).
+        기능"으로 적었다(2026-11-09 실측). `seen` 은 답할 때 본 것(기록·최근 대화) 그대로 — 없으면
+        내 기록으로 맞게 한 답을 "지어냄·내 기록에 없음"으로 판정했다(1차 리뷰 실측 12/12).
         """
         able = "\n".join(f"- {a}" for a in abilities) or "(도구 없음 — 아는 것과 기록으로만 답한다)"
         prompt = (
-            f"[지금 있는 기능]\n{able}\n\n[질문]\n{question}\n\n[쓴 도구]\n{_render_uses(uses)}"
+            f"[지금 있는 기능]\n{able}\n\n[답할 때 본 것]\n{_clip(seen) or '(없음)'}\n\n"
+            f"[질문]\n{question}\n\n[쓴 도구]\n{_render_uses(uses)}"
             f"\n\n[보낸 답]\n{answer[:ANSWER_SHOWN]}"
         )
         reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
@@ -164,7 +174,7 @@ class GapReport:
         if not problems:
             return f"{head}\n막힌 답은 없었어.", []
         lines = [head, "", "막힌 곳:"]
-        for blocked, n in Counter(r.blocked for r in problems).most_common(5):
+        for blocked, n in Counter(r.blocked for r in problems).most_common(KINDS_SHOWN):
             last = next(r for r in reversed(problems) if r.blocked == blocked)
             lines.append(f"- {blocked} {n}번 — 예: “{_short(last.question, 40)}”")
         return "\n".join(lines), problems
@@ -177,9 +187,17 @@ class GapReport:
         `abilities` 는 지금 있는 기능 — 모르면 이미 있는 문서 읽기를 "만들 것"으로 썼다(2026-11-09
         실측).
         """
-        rows = list(problems)[-GAP_ROWS:]
+        # 갈래마다 고루, 최근 것부터 — 최근 30개만 넘겼더니 가장 많은 갈래(오래된 로그인 25번)를
+        # 빼고 썼다(1차 리뷰 재현). 몇 번인지는 센 것을 같이 준다.
+        groups: Dict[str, List[SelfCheck]] = {}
+        for check in problems:
+            groups.setdefault(check.blocked, []).append(check)
+        order = sorted(groups, key=lambda blocked: -len(groups[blocked]))
+        per = max(2, GAP_ROWS // max(1, len(groups)))
+        rows = [check for blocked in order for check in groups[blocked][-per:]]
         able = "\n".join(f"- {a}" for a in abilities) or "(도구 없음)"
-        prompt = f"[지금 있는 기능]\n{able}\n\n" + "\n\n".join(
+        counted = "\n".join(f"- {blocked} {len(groups[blocked])}번" for blocked in order)
+        prompt = f"[지금 있는 기능]\n{able}\n\n[센 것]\n{counted}\n\n[예]\n" + "\n\n".join(
             f"질문: {_short(r.question, 120)}\n결과: {r.result}({r.blocked})\n"
             f"모자란 것: {r.note or '-'}\n있었으면 한 기능: {r.missing or '-'}"
             for r in rows
@@ -192,7 +210,7 @@ class GapReport:
         if not reply or not reply.strip():
             logger.warning("부족한 기능 정리가 비었다(%d개)", len(rows))
             return f"{tally}\n\n(부족한 기능 정리가 비었어)"
-        return f"{tally}\n\n부족한 기능:\n{reply.strip()[:2000]}"
+        return f"{tally}\n\n부족한 기능:\n{reply.strip()[:WRITE_CAP]}"
 
 
 def parse_check(reply: str) -> Optional[Tuple[str, str, str, str]]:
@@ -204,10 +222,11 @@ def parse_check(reply: str) -> Optional[Tuple[str, str, str, str]]:
         data: Any = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict):
-        return None
     result, blocked = data.get("result"), data.get("blocked")
     if result not in RESULTS or blocked not in BLOCKED:
+        return None
+    if (result == DONE) != (blocked == NONE):
+        # "일부"인데 막힌 곳이 없다거나, 다 했는데 막혔다 — 어긋난 판단은 판단이 아니다.
         return None
     note, missing = _line(data, "note"), _line(data, "missing")
     if note is None or missing is None:
@@ -233,6 +252,14 @@ def _render_uses(uses: Sequence[Use]) -> str:
         outcome = use.note if use.ok else f"실패: {use.note}"
         lines.append(f"- {label} {_short(use.target, 160)} → {outcome}")
     return "\n".join(lines)
+
+
+def _clip(seen: str) -> str:
+    if len(seen) <= SEEN_CAP:
+        return seen
+    half = SEEN_CAP // 2
+    logger.info("답할 때 본 것이 길어 가운데를 줄였다(%d자 → %d자)", len(seen), SEEN_CAP)
+    return f"{seen[:half]}\n…(가운데 줄임)…\n{seen[-half:]}"
 
 
 def _tools(uses: Sequence[Use]) -> Tuple[Tuple[str, str, bool, str], ...]:

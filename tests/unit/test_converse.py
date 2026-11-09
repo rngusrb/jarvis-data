@@ -551,6 +551,8 @@ def test_a_timeout_or_blank_answer_is_kept_as_failed_without_asking(
     c.tools = None
     assert _ask(c, "빈 답이 올 질문") == converse.BLANK
     kept = checks.since(NOW - timedelta(days=1))
+    # 멈출 때까지 쓴 도구도 남는다 — 무엇에서 걸렸나.
+    assert kept[0].tools and kept[0].tools[0][0] == "search"
     assert [(k.question, k.result, k.blocked) for k in kept] == [
         ("오래 걸릴 질문", "못 함", "도구 한도·시간"),
         ("빈 답이 올 질문", "못 함", "기타"),
@@ -598,3 +600,123 @@ def test_gaps_answers_at_once_when_nothing_was_stuck_and_later_when_it_writes(
     text = asyncio.run(_await(reply.then))
     assert "로그인이 필요함 1번" in text and "로그인 세션 쓰기" in text
     assert "/gaps" in str(_ask(c, "/help"))
+
+
+def test_on_the_tool_path_the_answer_does_not_wait_either(tmp_path: Path) -> None:
+    """운영에는 늘 도구가 있다 — 그 길(도구 고리 바로·찾아본 뒤)에서도 답이 돌아보기를 안
+    기다린다(1차 리뷰: 도구 없는 길만 시험했다)."""
+    from src.brain.client import ToolCall, Turn
+    from src.brain.converse import Later
+
+    call = ToolCall(id="c1", name="web_search", arguments={"query": "q"}, raw={"id": "c1"})
+    c, _ = _with_tools(
+        tmp_path,
+        [Turn(content="바로 답"), Turn(content="", calls=(call,)), Turn(content="찾은 답")],
+    )
+    judge = Holding()
+    checks = _checked(c, tmp_path, judge)
+    _grow(tmp_path, c)
+
+    async def run() -> tuple:
+        first = await asyncio.wait_for(c.reply(Incoming(text="안녕", at=NOW, cursor=1), NOW), 2)
+        second = await asyncio.wait_for(c.reply(Incoming(text="찾아 줘", at=NOW, cursor=2), NOW), 2)
+        assert isinstance(second, Later)
+        found = await asyncio.wait_for(second.then, 2)
+        before = checks.since(NOW - timedelta(days=1))
+        judge.release.set()
+        await _settled(c)
+        return first, found, before
+
+    first, found, before = asyncio.run(run())
+    assert (first, found, before) == ("바로 답", "찾은 답", [])
+    kept = checks.since(NOW - timedelta(days=1))
+    assert [k.answer for k in kept] == ["바로 답", "찾은 답"]
+    # 답할 때 본 것(기록·지금 질문)을 돌아보기도 본다 — 기록으로 한 답을 "지어냄"으로 봤다(1차
+    # 리뷰).
+    assert "채용준비" in judge.prompts[0] and "[지금 질문]\n안녕" in judge.prompts[0]
+    assert "- 내 기록으로 답하기:" in judge.prompts[0] and "- web_search:" in judge.prompts[0]
+
+
+def test_brain_trouble_commands_and_buttons_are_not_looked_back_on(tmp_path: Path) -> None:
+    """두뇌 장애(닿지 않음·거절)는 기능이 아니라 장애, 명령어·버튼은 생각한 답이 아니다. 한 루프
+    안에서 다 돌게 둔다 — `asyncio.run` 이면 띄운 돌아보기가 시작 전에 취소돼 시험이 못 문다(1차
+    리뷰)."""
+    import httpx
+
+    from src.brain.converse import DOWN, STUCK
+    from src.brain.tools import ToolLoop
+
+    @dataclass
+    class Raising:
+        error: Exception
+
+        async def chat(self, messages, tools=None, thinking=None):  # type: ignore[no-untyped-def]
+            raise self.error
+
+    c = _build(tmp_path)
+    judge = Holding()
+    judge.release.set()
+    checks = _checked(c, tmp_path, judge)
+
+    async def run() -> List[Any]:
+        said = []
+        for error in (
+            httpx.ConnectError("down", request=httpx.Request("POST", "http://brain")),
+            RuntimeError("bad"),
+        ):
+            c.tools = ToolLoop(client=Raising(error), search=OneResult(), reader=None)  # type: ignore[arg-type]
+            said.append(await c.reply(Incoming(text="질문", at=NOW, cursor=1), NOW))
+        for text in ("/status", "/help", "/topics"):
+            said.append(await c.reply(Incoming(text=text, at=NOW, cursor=1), NOW))
+        said.append(await c.reply(Incoming(text="", at=NOW, cursor=1, action="fb:1:x"), NOW))
+        await asyncio.sleep(0.05)
+        await _settled(c)
+        return said
+
+    said = asyncio.run(run())
+    assert said[:2] == [DOWN, STUCK]
+    assert judge.prompts == [] and checks.since(NOW - timedelta(days=1)) == []
+
+
+def test_a_done_answer_is_kept_too(tmp_path: Path) -> None:
+    """다 함도 남긴다 — 안 남기면 센 것의 "다 함"이 늘 0이다."""
+    c = _build(tmp_path, CountingReasoner(answer="응"))
+    judge = Holding(reply='{"result": "다 함", "blocked": "없음"}')
+    judge.release.set()
+    checks = _checked(c, tmp_path, judge)
+
+    async def run() -> None:
+        await c.reply(Incoming(text="안녕", at=NOW, cursor=1), NOW)
+        await _settled(c)
+
+    asyncio.run(run())
+    assert [k.result for k in checks.since(NOW - timedelta(days=1))] == ["다 함"]
+
+
+def test_gaps_hands_the_write_up_what_exists_and_does_not_write_twice(tmp_path: Path) -> None:
+    """정리도 지금 있는 기능·기록 이름을 안다(없으면 있는 기록을 "연동할 기능"으로 썼다), 연달아
+    누르면 두 번 쓰지 않는다."""
+    from src.brain.converse import Later
+    from src.storage.selfchecks import SelfCheck
+
+    c, _ = _with_tools(tmp_path, [])
+    judge = Holding(reply="- 정리")
+    judge.release.set()
+    checks = _checked(c, tmp_path, judge)
+    _grow(tmp_path, c)
+    checks.add(SelfCheck(NOW, "카드 내역", "a", (), "못 함", "내 기록에 없음", "", "없음"))
+
+    async def run() -> tuple:
+        first = await c.reply(Incoming(text="/gaps", at=NOW, cursor=1), NOW)
+        again = await c.reply(Incoming(text="/gaps", at=NOW, cursor=2), NOW)
+        assert isinstance(first, Later)
+        text = await first.then
+        after = await c.reply(Incoming(text="/gaps", at=NOW, cursor=3), NOW)
+        assert isinstance(after, Later)  # 끝나면 다시 쓸 수 있다
+        await after.then
+        return again, text
+
+    again, text = asyncio.run(run())
+    assert again == "이미 돌아보는 중이야. 끝나면 보낼게." and "부족한 기능" in text
+    prompt = judge.prompts[0]
+    assert "- web_search:" in prompt and "- 내 기록으로 답하기: 요즘 관심사(주제 나무)" in prompt

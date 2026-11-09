@@ -423,8 +423,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     channel = jarvis.channel
     if isinstance(channel, TelegramChannel):
         brain = VLLMClient(settings.brain_base_url, model=settings.brain_model or None)
-        # 답을 보낸 뒤 스스로 돌아본 기록 — `/gaps` 가 모아 말한다(JAR-039·040).
+        # 답을 보낸 뒤 스스로 돌아본 기록 — `/gaps` 가 모아 말한다(JAR-039·040). 판단은 낮은 온도로
+        # — 같은 답에 갈래가 세 번에 세 가지로 흔들렸다(1차 리뷰 실측, 기본 0.6).
         checks = SQLiteSelfChecks(settings.db_path)
+        judge = VLLMClient(
+            settings.brain_base_url, model=settings.brain_model or None, temperature=0.2
+        )
         listener = ListenLoop(
             source=channel,
             responder=Conversationalist(
@@ -440,8 +444,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 reporter=reporter,
                 # 바뀌는 사실(일정·가격·뉴스)은 찾아보고 답한다. 찾기 시작하면 "찾아볼게"를 먼저.
                 tools=tools,
-                selfcheck=SelfReview(reasoner=brain, store=checks),
-                gaps=GapReport(reasoner=brain, store=checks),
+                selfcheck=SelfReview(reasoner=judge, store=checks),
+                gaps=GapReport(reasoner=judge, store=checks),
             ),
             speaker=channel,
             log=conversation,
