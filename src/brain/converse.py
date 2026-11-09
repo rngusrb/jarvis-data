@@ -9,7 +9,10 @@
     /status  /topics  /sleep      DB 조회만. LLM 을 안 부른다
     /report                        넓게 모아 → LLM 이 보고서를 쓴다(2~3분 — 다가오는 일정을 먼저
     찾는다)
-    그 밖의 말                     맥락 조립 → LLM
+    /gaps                          스스로 돌아본 기록을 센다(DB) → 막힌 게 있으면 LLM 이
+                                   부족한 기능을 묶는다
+    그 밖의 말                     맥락 조립 → LLM. 답을 보낸 뒤 따로 LLM 이 그 답을 돌아본다
+                                   (selfcheck)
 
 명령어를 따로 둔 건 흉내가 아니라 **즉답이 쓸모 있기 때문**이다. "지금 뭘
 알고 있나"는 자비스가 생각할 필요가 없는 질문이고, 3090을 데우는 동안
@@ -23,7 +26,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
-from typing import Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Union
+from typing import Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Set, Union
 
 from src.brain.client import Reasoner, unreachable
 from src.brain.context import ContextProvider, assemble, render
@@ -32,12 +35,14 @@ from src.brain.feedback import parse
 from src.brain.memory import SpeechLog
 from src.brain.prompts import is_collection
 from src.brain.report import Reporter
-from src.brain.tools import Pending, Researched, ToolLoop
+from src.brain.selfcheck import OTHER, TIME, GapReport, SelfReview
+from src.brain.tools import Pending, Researched, ToolLoop, Use
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
 from src.core.topics import TOPIC_FAMILY, Trend, standings
 from src.storage.conversation import SQLiteConversation
+from src.storage.selfchecks import SelfCheck
 from src.storage.topics import SQLiteTopicStore
 
 logger = logging.getLogger(__name__)
@@ -115,8 +120,16 @@ class Conversationalist:
     # 웹을 찾아보는 도구 고리. 있으면 바뀌는 사실(일정·가격·뉴스)을 찾아보고 답한다(2026-11-05
     # 사용자 요청). 찾기 시작하면 "찾아볼게"를 먼저 보내고 답은 따로 기다려 보낸다 — 10~40초.
     tools: Optional[ToolLoop] = None
+    # 답을 보낸 뒤 스스로 돌아보는 쪽(JAR-039)과 그것을 모아 말하는 `/gaps`(JAR-040). 돌아보기는
+    # 답을 기다리게 하지 않는다 — 사용자 결정(2026-11-09): "답은 기존처럼 내뱉고 나중에 기록해".
+    selfcheck: Optional[SelfReview] = None
+    gaps: Optional[GapReport] = None
     # 보고서를 쓰기 시작한 때. 쓰는 중에 또 부르면 하나 더 쓰지 않는다.
     _writing_since: Optional[datetime] = field(default=None, repr=False)
+    # `/gaps` 정리를 쓰기 시작한 때 — 같은 까닭(연달아 누르면 두 통).
+    _gapping_since: Optional[datetime] = field(default=None, repr=False)
+    # 도는 돌아보기들. 들고 있지 않으면 끝나기 전에 거둬질 수 있다.
+    _checks: Set["asyncio.Task[None]"] = field(default_factory=set, repr=False)
 
     def __post_init__(self) -> None:
         self.commands = {
@@ -138,6 +151,8 @@ class Conversationalist:
         if head == "/report":
             # 명령어 꼴이지만 생각을 시키는 요청이다 — DB 조회로 답이 안 나온다(brain/_GUIDE).
             return self._report(now)
+        if head == "/gaps":
+            return self._gaps(now)
         if head in self.commands:
             return self.commands[head](now)
 
@@ -151,7 +166,8 @@ class Conversationalist:
             "/status  수집이 잘 되고 있나\n"
             "/sleep   요즘 수면\n"
             "/topics  내가 너에 대해 아는 것(주제 나무)\n"
-            "/report  요즘의 너 — 보고서(2~3분 걸려)"
+            "/report  요즘의 너 — 보고서(2~3분 걸려)\n"
+            "/gaps    내가 잘 못한 것 — 스스로 돌아본 것(최근 2주)"
         )
 
     def _report(self, now: datetime) -> Union[str, Later]:
@@ -161,6 +177,32 @@ class Conversationalist:
             return "이미 쓰는 중이야. 끝나면 보낼게."
         self._writing_since = now
         return Later(now="쓰는 중이야. 2~3분 걸려.", then=self._write(self.reporter, now))
+
+    def _gaps(self, now: datetime) -> Union[str, Later]:
+        """잘 안 된 답과 부족한 기능. 막힌 게 없으면 센 것만 바로(모델 없이)."""
+        if self.gaps is None:
+            return "자기 점검은 아직 안 붙었어."
+        tally, problems = self.gaps.tally(now)
+        if not problems:
+            return tally
+        if self._gapping_since is not None and now - self._gapping_since < WRITING_FOR:
+            return "이미 돌아보는 중이야. 끝나면 보낼게."
+        self._gapping_since = now
+        # 정리하는 쪽도 지금 있는 기록의 이름을 알아야 이미 있는 것을 "만들 것"으로 안 쓴다.
+        records = [block.label for block in assemble(self.providers, None, now)]
+        return Later(
+            now="돌아보는 중이야. 잠깐만.",
+            then=self._write_gaps(tally, problems, self._abilities(records)),
+        )
+
+    async def _write_gaps(
+        self, tally: str, problems: Sequence[SelfCheck], abilities: Sequence[str]
+    ) -> str:
+        assert self.gaps is not None
+        try:
+            return await self.gaps.write(tally, problems, abilities=abilities)
+        finally:
+            self._gapping_since = None
 
     async def _write(self, reporter: Reporter, now: datetime) -> str:
         try:
@@ -251,7 +293,8 @@ class Conversationalist:
         prompt = self._prompt(text, now)
         try:
             if self.tools is None:
-                return self._said(await self.reasoner.ask(prompt, system=SYSTEM_PROMPT), text)
+                reply = await self.reasoner.ask(prompt, system=SYSTEM_PROMPT)
+                return self._answered(text, reply, (), now, prompt)
             started = await self.tools.begin(
                 [
                     {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{self.tools.guide}"},
@@ -262,12 +305,13 @@ class Conversationalist:
             logger.exception("대화 답을 못 만들었다: %.60s", text)
             return DOWN if unreachable(error) else STUCK
         if isinstance(started, Researched):
-            return self._said(started.text, text)
+            return self._answered(text, started.text, started.uses, now, prompt)
         return Later(
-            now=LOOKING if started.searching else THINKING, then=self._looked(started, text)
+            now=LOOKING if started.searching else THINKING,
+            then=self._looked(started, text, now, prompt),
         )
 
-    async def _looked(self, pending: Pending, text: str) -> str:
+    async def _looked(self, pending: Pending, text: str, now: datetime, seen: str) -> str:
         """찾아본 답. 실패하면 듣기 루프가 "마치지 못했어"를 보낸다(로그와 함께)."""
         try:
             found = await asyncio.wait_for(pending.finish(), timeout=ANSWER_LIMIT.total_seconds())
@@ -275,8 +319,69 @@ class Conversationalist:
             logger.warning(
                 "찾아본 답이 %d초를 넘겼다 — 멈춘다: %.60s", ANSWER_LIMIT.total_seconds(), text
             )
+            minutes = int(ANSWER_LIMIT.total_seconds() // 60)
+            uses = tuple(pending.state.uses)  # 멈출 때까지 쓴 도구 — 무엇에서 걸렸나
+            self._failed(text, f"찾다가 {minutes}분 상한을 넘겨 멈췄다", TIME, now, uses)
             return TOO_LONG
-        return self._said(found.text, text)
+        return self._answered(text, found.text, found.uses, now, seen)
+
+    def _answered(
+        self, text: str, reply: str, uses: Sequence[Use], now: datetime, seen: str
+    ) -> str:
+        """보낼 답. 보낸 뒤 스스로 돌아보게 한다 — 답은 그것을 기다리지 않는다.
+
+        `seen` 은 답할 때 본 것(기록·최근 대화) 그대로 — 돌아보기도 같은 것을 본다.
+        """
+        blank = not reply or not reply.strip()
+        answer = self._said(reply, text)
+        if blank:
+            self._failed(text, "답이 비었다", OTHER, now, uses)
+        elif self.selfcheck is not None:
+            task = asyncio.create_task(self._review(text, answer, uses, now, seen))
+            self._checks.add(task)
+            task.add_done_callback(self._checks.discard)
+        return answer
+
+    async def _review(
+        self, text: str, answer: str, uses: Sequence[Use], now: datetime, seen: str
+    ) -> None:
+        assert self.selfcheck is not None
+        try:
+            await self.selfcheck.review(
+                text, answer, uses, now, abilities=self._abilities(), seen=seen
+            )
+        except Exception:
+            # 답은 이미 갔다 — 돌아보기만 못 했다. 조용히 삼키지 않는다.
+            logger.exception("자기 점검을 못 했다: %.60s", text)
+
+    def _abilities(self, records: Sequence[str] = ()) -> List[str]:
+        """지금 있는 기능 — 대화가 모델에게 주는 도구 그대로(브라우저가 꺼져 있으면 빠진다)와 내
+        기록.
+
+        기록은 돌아보기엔 답할 때 본 것으로 가리키고, 정리(`/gaps`)엔 그 이름(맥락 묶음)을 준다 —
+        없으면 이미 있는 기록을 "연동할 기능"으로 썼다(1차 리뷰 실측).
+        """
+        able = (
+            [
+                f"{tool['function']['name']}: {tool['function']['description']}"
+                for tool in self.tools.offered
+            ]
+            if self.tools is not None
+            else []
+        )
+        known = ", ".join(records) if records else "[답할 때 본 것]의 기록"
+        able.append(f"내 기록으로 답하기: {known}")
+        return able
+
+    def _failed(
+        self, text: str, why: str, blocked: str, now: datetime, uses: Sequence[Use] = ()
+    ) -> None:
+        if self.selfcheck is None:
+            return
+        try:
+            self.selfcheck.failed(text, why, blocked, now, uses)
+        except Exception:
+            logger.exception("자기 점검을 못 남겼다: %.60s", text)
 
     def _said(self, reply: str, text: str) -> str:
         if not reply or not reply.strip():

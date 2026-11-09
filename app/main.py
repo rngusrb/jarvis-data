@@ -40,6 +40,7 @@ from src.brain.providers import (
 from src.brain.reflect import Reflector
 from src.brain.report import Reporter
 from src.brain.research import TopicResearch, interests
+from src.brain.selfcheck import GapReport, SelfReview
 from src.brain.tools import ToolLoop
 from src.brain.web import PageReader, SearxSearch, reader_client
 from src.channels.base import Channel
@@ -62,6 +63,7 @@ from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
 from src.storage.events import SQLiteEventStore
 from src.storage.places import SQLitePlaceStore
+from src.storage.selfchecks import SQLiteSelfChecks
 from src.storage.speech import SQLiteSpeechLog
 from src.storage.sqlite import SQLiteStore
 from src.storage.topics import SQLiteTopicStore
@@ -420,10 +422,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
     channel = jarvis.channel
     if isinstance(channel, TelegramChannel):
+        brain = VLLMClient(settings.brain_base_url, model=settings.brain_model or None)
+        # 답을 보낸 뒤 스스로 돌아본 기록 — `/gaps` 가 모아 말한다(JAR-039·040). 판단은 낮은 온도로
+        # — 같은 답에 갈래가 세 번에 세 가지로 흔들렸다(1차 리뷰 실측, 기본 0.6).
+        checks = SQLiteSelfChecks(settings.db_path)
+        judge = VLLMClient(
+            settings.brain_base_url, model=settings.brain_model or None, temperature=0.2
+        )
         listener = ListenLoop(
             source=channel,
             responder=Conversationalist(
-                reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
+                reasoner=brain,
                 topics=SQLiteTopicStore(settings.db_path),
                 catalog=catalog,
                 source=store,
@@ -435,6 +444,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 reporter=reporter,
                 # 바뀌는 사실(일정·가격·뉴스)은 찾아보고 답한다. 찾기 시작하면 "찾아볼게"를 먼저.
                 tools=tools,
+                selfcheck=SelfReview(reasoner=judge, store=checks),
+                gaps=GapReport(reasoner=judge, store=checks),
             ),
             speaker=channel,
             log=conversation,

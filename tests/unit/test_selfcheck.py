@@ -1,0 +1,315 @@
+"""자기 점검 — 보낸 답을 돌아보고 정해진 꼴로 남기기(JAR-039), 모아서 부족한 기능 말하기
+(JAR-040)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import List, Optional
+
+import pytest
+
+from src.brain.selfcheck import (
+    FAILED,
+    OTHER,
+    TIME,
+    GapReport,
+    SelfReview,
+    parse_check,
+)
+from src.brain.tools import Use
+from src.storage.selfchecks import SelfCheck, SQLiteSelfChecks
+
+NOW = datetime(2026, 11, 9, 3, 0, tzinfo=timezone.utc)
+
+
+@dataclass
+class Fixed:
+    reply: str = ""
+    error: Optional[Exception] = None
+    prompts: List[str] = field(default_factory=list)
+    systems: List[Optional[str]] = field(default_factory=list)
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.prompts.append(prompt)
+        self.systems.append(system)
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+
+def _judged(**values: str) -> str:
+    base = {
+        "result": "일부",
+        "blocked": "페이지를 못 읽음",
+        "note": "일정표가 빈 틀",
+        "missing": "",
+    }
+    base.update(values)
+    return "```json\n" + json.dumps(base, ensure_ascii=False) + "\n```"
+
+
+def test_a_sent_answer_is_looked_back_on_and_kept(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    brain = Fixed(_judged(missing="로그인된 브라우저"))
+    uses = (
+        Use("search", "정처기 실기 접수", True, "결과 5개", 5),
+        Use("read", "https://www.q-net.or.kr/a", False, "본문이 비었다(111자)"),
+    )
+    check = asyncio.run(
+        SelfReview(brain, store).review(
+            "정처기 실기 언제야?", "공지엔 없어.", uses, NOW, seen="[참고]\n수면 5.2시간"
+        )
+    )
+
+    assert check is not None and check.result == "일부" and check.blocked == "페이지를 못 읽음"
+    prompt = brain.prompts[0]
+    assert "정처기 실기 언제야?" in prompt and "공지엔 없어." in prompt
+    assert "- 검색 정처기 실기 접수 → 결과 5개" in prompt
+    assert "- 읽기 https://www.q-net.or.kr/a → 실패: 본문이 비었다(111자)" in prompt
+    assert "JSON 하나로만" in str(brain.systems[0]) and "(도구 없음" in prompt
+    # 답할 때 본 것(기록·최근 대화)도 그대로 — 없으면 기록으로 맞게 한 답을 "지어냄"으로 봤다.
+    assert "[답할 때 본 것]\n[참고]\n수면 5.2시간" in prompt
+    [kept] = store.since(NOW - timedelta(days=1))
+    assert kept.missing == "로그인된 브라우저" and kept.tools[1][2] is False
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "다 했어!",
+        _judged(result="대충"),
+        _judged(blocked="모르는 갈래"),
+        '{"result": "일부", "blocked": "기타", "note": 3}',
+        _judged(result="일부", blocked="없음"),  # 막힌 곳 없이 일부 — 어긋남
+        _judged(result="다 함", blocked="기타"),  # 다 했는데 막힘 — 어긋남
+        "[1, 2]",
+    ],
+)
+def test_a_judgment_that_does_not_fit_is_not_kept(
+    tmp_path: Path, reply: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """깨진 판단은 판단이 아니라 실패다 — 지어 채우지 않고 원문을 경고로 남긴다(brain/_GUIDE)."""
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    check = asyncio.run(SelfReview(Fixed(reply), store).review("q", "a", (), NOW))
+    assert check is None and store.since(NOW - timedelta(days=1)) == []
+    assert "자기 점검 판단을 못 읽었다" in caplog.text
+
+
+def test_parse_reads_the_fixed_form_only() -> None:
+    assert parse_check('앞말 {"result": "다 함", "blocked": "없음"} 뒷말') == (
+        "다 함",
+        "없음",
+        "",
+        "",
+    )
+    assert parse_check('{"result": "못 함", "blocked": "기타", "note": null}') == (
+        "못 함",
+        "기타",
+        "",
+        "",
+    )
+    assert parse_check("") is None
+
+
+def test_answers_that_failed_outright_are_kept_without_the_model(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    review = SelfReview(Fixed(), store)
+    review.failed("q", "찾다가 6분 상한을 넘겨 멈췄다", TIME, NOW)
+    review.failed("q2", "답이 비었다", OTHER, NOW)
+    kept = store.since(NOW - timedelta(days=1))
+    assert [(k.result, k.blocked) for k in kept] == [(FAILED, TIME), (FAILED, OTHER)]
+    with pytest.raises(ValueError):
+        review.failed("q", "?", "모르는 갈래", NOW)
+
+
+def _keep(store: SQLiteSelfChecks, question: str, result: str, blocked: str, days: int = 0) -> None:
+    store.add(
+        SelfCheck(
+            at=NOW - timedelta(days=days),
+            question=question,
+            answer="a",
+            tools=(),
+            result=result,
+            blocked=blocked,
+            missing="로그인" if blocked == "로그인이 필요함" else "",
+            note=f"{question} 막힘",
+        )
+    )
+
+
+def test_gaps_counts_without_the_model_when_nothing_was_stuck(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    report = GapReport(Fixed("쓰면 안 됨"), store)
+    assert report.tally(NOW) == ("최근 14일 동안 돌아본 답이 없어.", [])
+    _keep(store, "안녕", "다 함", "없음")
+    _keep(store, "옛 질문", "못 함", "기타", days=20)  # 14일 밖
+    tally, problems = report.tally(NOW)
+    assert problems == [] and "답 1개" in tally and "막힌 답은 없었어" in tally
+
+
+def test_gaps_counts_kinds_with_examples_and_adds_what_is_missing(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    for q in ("은행 잔고", "카드 내역"):
+        _keep(store, q, "못 함", "로그인이 필요함")
+    _keep(store, "정처기 일정", "일부", "페이지를 못 읽음")
+    _keep(store, "안녕", "다 함", "없음")
+    brain = Fixed("- 로그인이 필요한 사이트 2번(예: 카드 내역) — 로그인 세션 쓰기")
+    report = GapReport(brain, store)
+
+    tally, problems = report.tally(NOW)
+    assert "답 4개" in tally and "다 함 1 · 일부 1 · 못 함 2" in tally
+    assert "- 로그인이 필요함 2번 — 예: “카드 내역”" in tally
+    assert "- 페이지를 못 읽음 1번" in tally and len(problems) == 3
+    text = asyncio.run(report.write(tally, problems, abilities=["read_page: 첨부까지 읽는다"]))
+    assert text.startswith(tally) and "부족한 기능:\n- 로그인이 필요한 사이트" in text
+    assert "있었으면 한 기능: 로그인" in brain.prompts[0]
+    assert brain.prompts[0].startswith("[지금 있는 기능]\n- read_page: 첨부까지 읽는다")
+    assert "새로 만들 것으로 쓰지 않는다" in str(brain.systems[0])
+
+
+@pytest.mark.parametrize("brain", [Fixed(error=RuntimeError("down")), Fixed("   ")])
+def test_gaps_still_sends_the_counts_when_the_write_up_fails(
+    tmp_path: Path, brain: Fixed, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    _keep(store, "은행 잔고", "못 함", "로그인이 필요함")
+    report = GapReport(brain, store)
+    tally, problems = report.tally(NOW)
+    text = asyncio.run(report.write(tally, problems))
+    assert text.startswith(tally) and "정리" in text and "부족한 기능 정리" in caplog.text
+
+
+def test_what_jarvis_can_already_do_is_shown_so_unused_is_not_called_missing(
+    tmp_path: Path,
+) -> None:
+    """있는 기능을 몰라서 이미 있는 첨부 읽기를 "있었으면 할 기능"으로 적었다(2026-11-09 실측)."""
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    brain = Fixed(_judged(blocked="있는 기능을 안 씀"))
+    check = asyncio.run(
+        SelfReview(brain, store).review(
+            "q", "첨부는 못 열었어.", (), NOW, abilities=["read_page: 첨부까지 읽는다"]
+        )
+    )
+    assert check is not None and check.blocked == "있는 기능을 안 씀"
+    assert "[지금 있는 기능]\n- read_page: 첨부까지 읽는다" in brain.prompts[0]
+    assert "우회하는 것은 쓰지 않는다" in " ".join(str(brain.systems[0]).split())
+
+
+def test_what_was_seen_is_cut_in_the_middle_when_long(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """앞(기록)과 끝(지금 질문)을 남긴다."""
+    import src.brain.selfcheck as selfcheck
+
+    monkeypatch.setattr(selfcheck, "SEEN_CAP", 20)
+    brain = Fixed(_judged())
+    seen = "[참고]" + "가" * 100 + "[지금 질문]"
+    asyncio.run(
+        SelfReview(brain, SQLiteSelfChecks(tmp_path / "t.db")).review("q", "a", (), NOW, seen=seen)
+    )
+    shown = brain.prompts[0].split("[답할 때 본 것]\n", 1)[1].split("\n\n[질문]", 1)[0]
+    assert shown.startswith("[참고]") and shown.endswith("[지금 질문]") and "가운데 줄임" in shown
+    assert len(shown) < 60
+
+
+def test_the_write_up_gets_counts_and_examples_from_every_kind(tmp_path: Path) -> None:
+    """최근 30개만 넘겼더니 가장 많은 갈래(오래된 로그인 25번)를 빼고 썼다(1차 리뷰 재현)."""
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    for i in range(25):
+        _keep(store, f"로그인 {i}", "못 함", "로그인이 필요함", days=10)
+    for i in range(20):
+        _keep(store, f"검색 {i}", "일부", "검색 결과가 모자람", days=3)
+    for i in range(5):
+        _keep(store, f"페이지 {i}", "일부", "페이지를 못 읽음")
+    brain = Fixed("- 정리")
+    report = GapReport(brain, store)
+    tally, problems = report.tally(NOW)
+    asyncio.run(report.write(tally, problems))
+    prompt = brain.prompts[0]
+    assert (
+        "[센 것]\n- 로그인이 필요함 25번\n- 검색 결과가 모자람 20번\n- 페이지를 못 읽음 5번"
+        in prompt
+    )
+    assert "질문: 로그인 24" in prompt and "질문: 검색 19" in prompt and "질문: 페이지 4" in prompt
+    # 갈래마다 고루(30 // 3 = 10개씩) — 최근 30개만이면 로그인은 다섯만, 검색은 스물이 다 간다.
+    assert "질문: 로그인 15\n" in prompt and "질문: 로그인 14\n" not in prompt
+    assert "질문: 검색 9\n" not in prompt and prompt.count("질문: ") <= 30
+
+
+def test_the_shown_kinds_and_the_write_up_are_capped(tmp_path: Path) -> None:
+    from src.brain.selfcheck import BLOCKED, KINDS_SHOWN, NONE, WRITE_CAP
+
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    kinds = [b for b in BLOCKED if b != NONE]
+    for kind in kinds:
+        _keep(store, kind, "못 함", kind)
+    report = GapReport(Fixed("가" * (WRITE_CAP + 500)), store)
+    tally, problems = report.tally(NOW)
+    assert tally.count("번 — 예:") == KINDS_SHOWN < len(kinds)
+    text = asyncio.run(report.write(tally, problems))
+    assert text.endswith("가" * WRITE_CAP) and "가" * (WRITE_CAP + 1) not in text
+
+
+@pytest.mark.parametrize(
+    "blocked,uses,abilities,expected",
+    [
+        ("검색 결과가 모자람", (), ["web_search: 찾는다"], "있는 기능을 안 씀"),
+        (
+            "검색 결과가 모자람",
+            (Use("search", "q", True, "0개"),),
+            ["web_search: 찾는다"],
+            "검색 결과가 모자람",
+        ),
+        ("검색 결과가 모자람", (), [], "검색 결과가 모자람"),  # 검색이 없으면 안 쓴 게 아니다
+        (
+            "파일을 못 읽음",
+            (Use("search", "q", True, "3개"),),
+            ["read_page: 읽는다"],
+            "있는 기능을 안 씀",
+        ),
+        (
+            "페이지를 못 읽음",
+            (Use("browse", "u", False, "막힘"),),
+            ["read_page: 읽는다"],
+            "페이지를 못 읽음",
+        ),
+        ("로그인이 필요함", (), ["web_search: 찾는다"], "로그인이 필요함"),
+    ],
+)
+def test_a_tool_kind_said_without_using_the_tool_is_called_unused(
+    tmp_path: Path, blocked: str, uses: tuple, abilities: list, expected: str
+) -> None:
+    """모델은 검색을 안 해 놓고 "검색 결과가 모자람"이라 했다(2차 리뷰 5/5) — 있는 기능을 안 쓴
+    것이다."""
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    brain = Fixed(_judged(result="못 함", blocked=blocked, missing="새 기능"))
+    check = asyncio.run(SelfReview(brain, store).review("q", "a", uses, NOW, abilities=abilities))
+    assert check is not None and check.blocked == expected
+    assert check.missing == ("" if expected == "있는 기능을 안 씀" else "새 기능")
+
+
+def test_the_write_up_examples_say_which_tools_were_used(tmp_path: Path) -> None:
+    store = SQLiteSelfChecks(tmp_path / "t.db")
+    _keep(store, "안 찾은 것", "못 함", "있는 기능을 안 씀")
+    store.add(
+        SelfCheck(
+            NOW,
+            "찾은 것",
+            "a",
+            (("search", "q", True, "3개"), ("read", "u", False, "막힘")),
+            "일부",
+            "페이지를 못 읽음",
+            "",
+            "막힘",
+        )
+    )
+    brain = Fixed("- 정리")
+    report = GapReport(brain, store)
+    tally, problems = report.tally(NOW)
+    asyncio.run(report.write(tally, problems))
+    assert "질문: 안 찾은 것\n결과: 못 함(있는 기능을 안 씀)\n쓴 도구: 없음" in brain.prompts[0]
+    assert "쓴 도구: 검색, 읽기(실패)" in brain.prompts[0]

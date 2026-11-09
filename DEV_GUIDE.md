@@ -91,6 +91,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 읽는 파일 종류(PDF·한글·오피스) | `src/brain/files.py` — `kind_of`·`text_of`, 분석 프로세스의 상한은 `extract`·`_child`, 첨부 버튼은 `src/brain/web.py` — `links_of` |
 | 말 걸기·보고서 전에 찾아 두는 것 | `src/brain/research.py` — `TopicResearch`·`interests` |
 | 한 주기에 같은 줄기 신호를 묶는 법 | `src/runtime/loop.py` — `_together`, 신호의 줄기는 각 트리거의 `FAMILY` |
+| 답한 뒤 자기 점검·`/gaps` 의 갈래·지시문·기간 | `src/brain/selfcheck.py` — `BLOCKED`·`SYSTEM_PROMPT`·`GAPS_PROMPT`·`GAP_DAYS`, 답에 붙이는 곳은 `src/brain/converse.py` — `_answered` |
 | `/report` 보고서의 재료·지시문 | `app/main.py` — `build_reporter`, `src/brain/report.py` — `SYSTEM_PROMPT` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
