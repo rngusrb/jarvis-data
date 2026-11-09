@@ -32,7 +32,7 @@ from src.brain.feedback import parse
 from src.brain.memory import SpeechLog
 from src.brain.prompts import is_collection
 from src.brain.report import Reporter
-from src.brain.tools import GUIDE, Pending, Researched, ToolLoop
+from src.brain.tools import Pending, Researched, ToolLoop
 from src.channels.base import Incoming
 from src.core.clock import local, shown
 from src.core.models import ObservationCatalog, ObservationSource
@@ -81,8 +81,9 @@ LOOKING = "찾아볼게. 잠깐만."
 # 첫 차례가 빈 답이라 한 차례 더 묻는다(검색은 안 한다) — "찾아볼게"라고 하면 거짓말이다.
 THINKING = "잠깐만."
 # 찾아본 답의 전체 시간 상한. 실측 최장 85초(검색 4·읽기 2) — 넘으면 무엇이 멈췄는지 말한다.
-# 상한이 없으면 "찾아볼게"만 가고 답도 로그도 안 올 수 있었다(JAR-031 리뷰).
-ANSWER_LIMIT = timedelta(minutes=4)
+# 상한이 없으면 "찾아볼게"만 가고 답도 로그도 안 올 수 있었다(JAR-031 리뷰). 브라우저로 직접
+# 다루면 그 몫(최대 3분 반)이 더해진다(JAR-038).
+ANSWER_LIMIT = timedelta(minutes=6)
 TOO_LONG = "미안, 찾다가 너무 오래 걸려서 멈췄어. 조금 뒤에 다시 물어봐 줘."
 # 빈 답 — 그대로 보내면 사용자는 아무 일도 안 일어난 걸로 본다.
 BLANK = "미안, 지금 생각이 안 나. 다시 물어봐 줄래?"
@@ -253,7 +254,7 @@ class Conversationalist:
                 return self._said(await self.reasoner.ask(prompt, system=SYSTEM_PROMPT), text)
             started = await self.tools.begin(
                 [
-                    {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{GUIDE}"},
+                    {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{self.tools.guide}"},
                     {"role": "user", "content": prompt},
                 ]
             )

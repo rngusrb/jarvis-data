@@ -20,6 +20,9 @@ import httpx
 from fastapi import FastAPI
 
 from src.brain.agent import JarvisAgent
+from src.brain.badsites import BadSites
+from src.brain.browse import BrowseAgent
+from src.brain.browser import Browser
 from src.brain.client import VLLMClient
 from src.brain.converse import Conversationalist
 from src.brain.feedback import FeedbackProvider
@@ -114,11 +117,16 @@ def build_reflector(settings: Settings) -> Reflector:
 
 
 def build_tools(
-    settings: Settings, searches: int = 4, rounds: int = 4, reads: int = 3
+    settings: Settings,
+    searches: int = 4,
+    rounds: int = 4,
+    reads: int = 3,
+    browse: Optional[BrowseAgent] = None,
 ) -> Optional[ToolLoop]:
     """웹을 찾아보는 도구 고리. 검색 주소가 없으면 None — 자비스는 아는 것으로만 답한다.
 
     대화·보고서·관심사 준비가 쓴다. vLLM 이 도구 호출을 켜고 떠 있어야 한다(SETUP — `qwen3_coder`).
+    브라우저(`browse`)는 대화만 붙인다 — 오래 걸린다(`build_browse`).
     """
     if not settings.search_base_url:
         return None
@@ -139,6 +147,38 @@ def build_tools(
         searches=searches,
         rounds=rounds,
         reads=reads,
+        browse=browse,
+    )
+
+
+def build_browse(settings: Settings) -> Optional[BrowseAgent]:
+    """브라우저를 다루는 손(JAR-036~038). 꺼져 있거나 playwright 가 없으면 None — 이유를 남긴다.
+
+    손은 사용자의 기록을 안 본다(목표만 받는다). 크롬은 보안 격리를 켜고 뜬다 — 우분투 23.10+ 는
+    AppArmor 프로필이 있어야 한다(SETUP). 못 뜨면 쓸 때마다 시끄럽게 실패한다.
+    """
+    if not settings.browser:
+        logger.info("브라우저 끔 — JARVIS_BROWSER=0")
+        return None
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        logger.warning("브라우저 끔 — playwright 가 없다(docs/SETUP.md 의 브라우저)")
+        return None
+    # 문제를 일으킨 사이트는 30일 동안 안 간다. 지난번 브라우저로 보다 자비스가 쓰러졌으면
+    # 그 사이트도 이제 적는다.
+    bad = BadSites(settings.db_path.parent / "browser_bad_sites.json")
+    bad.recover()
+    return BrowseAgent(
+        # 누를 곳을 고르는 차례는 짧다 — 생각 없이, 답 상한도 작게.
+        client=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            max_tokens=2048,
+            timeout=90.0,
+            temperature=0.2,
+        ),
+        browser=Browser(browsers_path=settings.browsers_path, bad=bad),
     )
 
 
@@ -333,7 +373,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.places = places
 
     # 웹 검색 도구 고리 — 대화가 쓴다. 관심사 준비와 보고서는 따로, 낮은 한도로(`_research`).
-    tools = build_tools(settings)
+    tools = build_tools(settings, browse=build_browse(settings))
     if tools is None:
         logger.info("웹 검색 끔 — JARVIS_SEARCH_URL 이 비었다")
     # 대화 기록. 듣는 루프가 주고받은 말을, 반응 루프가 먼저 건 말을 적는다 — 둘이 한 흐름이어야

@@ -87,5 +87,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 2026-11-05 | [4단계 셋째: 신호에 줄기, 같은 줄기는 한 판단으로, 먼저 건 말도 대화 기록에](docs/sprints/2026-11-05-phase4-speech-families.md) |
 | 2026-11-05 | [4단계 넷째: 자비스가 스스로 웹 검색](docs/sprints/2026-11-05-phase4-web-search.md) |
 | 2026-11-06 | [4단계 다섯째: 일정표 먼저 읽기, 어떤 파일이든 읽는 리더](docs/sprints/2026-11-06-phase4-file-reader.md) |
+| 2026-11-06 | [4단계 여섯째: 자비스가 브라우저를 다룬다(보기·누르기·검색창), 문제 사이트 30일](docs/sprints/2026-11-06-phase4-browser.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.
