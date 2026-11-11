@@ -81,6 +81,17 @@ def find_profile(root: Path = CHROME_ROOT) -> Path:
 
     found = sorted(root.glob("*/History"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not found:
+        # 권한이 막혀도 glob 은 빈 목록을 준다. "못 찾았다"로 적으면 폴더가 없는 것처럼 읽힌다 —
+        # macOS 27.2 뒤 이틀을 그렇게 적었다(collectors/_GUIDE 사고 이력, 2026-11-10).
+        try:
+            root.iterdir().__next__()
+        except PermissionError:
+            raise SystemExit(
+                f"크롬 폴더를 읽을 권한이 없다: {root} — macOS 개인정보 보호가 막는다. 전체 디스크"
+                " 접근 권한에 /usr/bin/python3 를 더한다(docs/SETUP.md 맥 수집기)"
+            ) from None
+        except (OSError, StopIteration):
+            pass
         raise SystemExit(f"크롬 프로필을 찾지 못했다: {root}")
     return found[0]
 

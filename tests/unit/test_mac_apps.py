@@ -9,7 +9,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from collectors.mac_apps import Span, Tracker, to_line
+import pytest
+
+from collectors.mac_apps import Span, Tracker, app_name, to_line
 
 # 10:00 KST
 T0 = datetime(2026, 10, 30, 1, 0, tzinfo=timezone.utc)
@@ -102,3 +104,16 @@ def test_보낼_줄은_배달부가_읽는_모양이다() -> None:
     assert line["kind"] == "mac_app"
     assert line["traces"][0]["text"] == "Google Chrome 12분"
     assert line["traces"][0]["meta"]["seconds"] == 720
+
+
+def test_앱_이름은_옛_모양과_macOS_27_모양을_다_읽는다() -> None:
+    """macOS 27.2(2026-11-10 업데이트)에서 `lsappinfo info -only name` 의 모양이 바뀌었다. 옛
+    파서는 None 을 돌려줘 이틀 동안 "앞 앱 없음"으로 조용히 아무것도 안 적었다."""
+    assert app_name('"LSDisplayName"="Cursor"\n') == "Cursor"
+    assert app_name('"Claude" ASN:0x0-0xad0ad: (in front) \n    bundleID=[ NULL ]\n') == "Claude"
+    assert app_name("") is None  # 앞 앱이 없다
+
+
+def test_모르는_모양이면_조용히_넘기지_않고_예외() -> None:
+    with pytest.raises(RuntimeError, match="lsappinfo 출력이 바뀌었나"):
+        app_name("name=Claude\n")

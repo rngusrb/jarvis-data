@@ -161,16 +161,30 @@ def to_line(spans: List[Span]) -> str:
 
 
 def front_app() -> Optional[str]:
-    """앞에 떠 있는 앱 이름. 못 읽으면 None — 잠금 화면이나 로그인 창일 때 그렇다."""
+    """앞에 떠 있는 앱 이름. 앞 앱이 없으면 None(잠금 화면은 `loginwindow` 로 온다)."""
     asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=5)
     front = asn.stdout.strip()
-    if not front:
+    if not front.startswith("ASN:"):
         return None
     info = subprocess.run(
         ["lsappinfo", "info", "-only", "name", front], capture_output=True, text=True, timeout=5
     )
-    found = re.search(r'"LSDisplayName"="([^"]*)"', info.stdout)
-    return found.group(1) if found else None
+    return app_name(info.stdout)
+
+
+def app_name(info: str) -> Optional[str]:
+    """`lsappinfo info -only name` 의 출력에서 앱 이름.
+
+    macOS 26 까지는 `"LSDisplayName"="Claude"`, 27.2 부터는 첫 줄이 `"Claude" ASN:0x0-0xad0ad:
+    (in front)` 다. 출력이 있는데 둘 다 아니면 예외 — None 을 돌려주면 "앞 앱 없음"과 구별되지
+    않아 수집이 조용히 멈춘다(collectors/_GUIDE 사고 이력, 2026-11-10).
+    """
+    found = re.search(r'"LSDisplayName"="([^"]*)"', info) or re.match(r'\s*"([^"]+)"\s+ASN:', info)
+    if found:
+        return found.group(1)
+    if not info.strip():
+        return None
+    raise RuntimeError(f"앱 이름을 못 읽었다 — lsappinfo 출력이 바뀌었나: {info.strip()[:80]!r}")
 
 
 def idle_time() -> timedelta:

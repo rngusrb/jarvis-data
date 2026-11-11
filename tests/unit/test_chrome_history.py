@@ -365,3 +365,20 @@ def test_검색_사이트마다_보통_페이지가_아닌_경로를_적어_둔�
 
     assert set(NOT_PAGES) == set(SEARCH_HOSTS)
     assert set(REDIRECTS) <= set(SEARCH_HOSTS)
+
+
+def test_권한이_막히면_못_찾았다가_아니라_권한이라고_적는다(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS 27.2(2026-11-10)부터 launchd 의 파이썬이 크롬 폴더를 못 읽는다. glob 은 빈 목록을
+    줘서 이틀 동안 "프로필을 찾지 못했다"고만 적었다."""
+
+    def blocked(self: Path) -> Any:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "iterdir", blocked)
+    with pytest.raises(SystemExit, match="권한이 없다"):
+        chrome_history.find_profile(tmp_path)
+    monkeypatch.undo()
+    with pytest.raises(SystemExit, match="찾지 못했다"):
+        chrome_history.find_profile(tmp_path)  # 빈 폴더는 그대로
