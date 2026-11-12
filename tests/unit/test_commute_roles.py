@@ -85,3 +85,38 @@ def test_근거는_탭_수가_아니라_날_수다() -> None:
     found = {r.name: r for r in roles(days)}
 
     assert "집" not in found and "아침에 갈아타는 곳" not in found
+
+
+def test_공휴일도_세지_않고_집_좌표를_꺼낸다() -> None:
+    """추석 사흘의 아침은 평일이어도 출근 루틴이 아니다 — 평소에 안 넣는다(JAR-043). 날씨는 그렇게
+    찾은 집의 좌표로 예보를 받는다."""
+    from datetime import date
+
+    from src.core.days import set_holidays
+    from src.core.places import Place
+    from src.sectors.commute.places import home_now, home_spot
+
+    week = _week([0, 1, 2])
+    assert {r.name for r in roles(week)} >= {"집"}
+    set_holidays({date(2026, 9, 7): "임시", date(2026, 9, 8): "임시", date(2026, 9, 9): "임시"})
+    assert roles(week) == []
+    set_holidays({})
+    seen = MONDAY
+    home = Place(id=HOME, lat=37.5, lon=127.0, visits=3, first_seen=seen, last_seen=seen)
+    assert home_spot(week, [home]) == (37.5, 127.0)
+    assert home_spot(_week([0, 1]), [home]) is None  # 집을 아직 모른다(사흘 미만)
+    assert home_spot(week, []) is None  # 장소 표에 없으면
+
+    class Events:
+        def recent(self, kind: str, since: datetime) -> List[Event]:
+            assert kind == "location"
+            return [e for e in week if e.at >= since]
+
+    class Places:
+        def all(self) -> List[Place]:
+            return [home]
+
+    assert home_now(Events(), Places(), MONDAY + timedelta(days=10)) == (37.5, 127.0)
+    assert (
+        home_now(Events(), Places(), MONDAY + timedelta(days=60)) is None
+    )  # 42일보다 오래된 것은 안 본다

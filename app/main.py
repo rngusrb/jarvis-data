@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import time, timedelta
-from typing import AsyncIterator, List, Optional
+from datetime import datetime, time, timedelta, timezone
+from typing import AsyncIterator, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI
@@ -47,20 +47,29 @@ from src.channels.base import Channel
 from src.channels.console import ConsoleChannel
 from src.channels.telegram import TelegramChannel
 from src.core.config import Settings, load_settings
+from src.core.days import set_holidays
 from src.core.events import EventRegistry
-from src.core.logs import hide_in_logs
+from src.core.logs import hide_in_logs, url_forms
 from src.core.metrics import MetricRegistry
 from src.core.topics import Trend
 from src.core.traces import TraceRegistry
 from src.runtime.daily import DailyLoop
 from src.runtime.ingest import router as ingest_router
 from src.runtime.listen import ListenLoop
-from src.runtime.loop import JarvisLoop
-from src.sectors import commute, health, interest
+from src.runtime.loop import JarvisLoop, Preparer
+from src.runtime.pull import Puller, PullLoop
+from src.sectors import commute, health, interest, money, weather
+from src.sectors.commute.naming import PlaceNaming
+from src.sectors.commute.places import home_now
+from src.sectors.commute.subway import TrainArrivals
 from src.sectors.commute.triggers import FAMILY as COMMUTE_FAMILY
+from src.sectors.commute.triggers import TRAIN_FAMILY, TrainAheadTrigger
 from src.sectors.health.triggers import FAMILY as HEALTH_FAMILY
+from src.sectors.weather import FAMILY as WEATHER_FAMILY
+from src.sectors.weather.pull import ForecastPull, HolidayPull
 from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
+from src.storage.days import SQLiteHolidays
 from src.storage.events import SQLiteEventStore
 from src.storage.places import SQLitePlaceStore
 from src.storage.selfchecks import SQLiteSelfChecks
@@ -76,7 +85,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 # 켜져 있는 섹터. 각 섹터는 METRICS 와 TRIGGERS 를 내보낸다.
-SECTORS = [health, commute, interest]
+SECTORS = [health, commute, interest, weather, money]
 
 # 매일 회고가 도는 시각(한국 시간). 하루는 새벽 5시에 바뀐다(interest 의 하루 요약) — 그 뒤라
 # 어제가 다 들어와 있고, 아침에 일어나기 전이라 그날 자비스의 맥락에 새 나무가 들어간다.
@@ -231,7 +240,14 @@ def build_reporter(settings: Settings) -> Reporter:
             RecentValuesProvider(
                 source=store, metrics=metrics.all(), window=timedelta(days=90), max_points=90
             ),
-            EventDigestProvider(events=events, kinds=event_kinds.all(), days=14),
+            EventDigestProvider(
+                events=events,
+                kinds=event_kinds.all(),
+                days=14,
+                places=SQLitePlaceStore(settings.db_path),
+            ),
+            # 쓴 돈 — 대화와 같은 블록(JAR-045). 결제 흔적이 없으면 안 보인다.
+            money.SpendingProvider(source=traces),
             # 접은 지표는 뺀다 — 보고서가 그걸 "모르는 것"으로 적었다(providers 참고).
             CollectionStatusProvider(
                 catalog=MergedCatalog(store, traces, events), cards=cards, retired=False
@@ -244,10 +260,71 @@ def build_reporter(settings: Settings) -> Reporter:
     )
 
 
+def outside_client() -> httpx.AsyncClient:
+    """바깥 API(공공데이터포털·카카오·서울 지하철)에 쓰는 연결 하나 — 서버가 꺼질 때 닫는다."""
+    return httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0))
+
+
+def build_pullers(
+    settings: Settings,
+    store: SQLiteStore,
+    holidays: SQLiteHolidays,
+    events: SQLiteEventStore,
+    places: SQLitePlaceStore,
+    client: httpx.AsyncClient,
+) -> List[Puller]:
+    """서버가 가져올 것들 — 키가 있는 것만. 공공데이터포털: 공휴일·예보, 카카오: 장소 이름.
+
+    예보는 집 근처(이동 섹터의 "집") 것을 받는다 — 섹터끼리 모르니 여기서 잇는다.
+    """
+    pullers: List[Puller] = []
+    if settings.data_go_key:
+        pullers.append(HolidayPull(client=client, key=settings.data_go_key, store=holidays))
+        pullers.append(
+            ForecastPull(
+                client=client,
+                key=settings.data_go_key,
+                where=lambda: home_now(events, places, datetime.now(timezone.utc)),
+                store=store,
+            )
+        )
+    if settings.kakao_key:
+        pullers.append(
+            PlaceNaming(client=client, key=settings.kakao_key, events=events, places=places)
+        )
+    return pullers
+
+
+def build_preparers(
+    settings: Settings, places: SQLitePlaceStore, client: httpx.AsyncClient
+) -> Dict[str, Preparer]:
+    """섹터 신호에 판단 전에 붙일 준비. 열차 알림은 실시간 도착(서울 지하철 키), 방향을 정할 역
+    자리(카카오 키), 탈 열차를 가를 시간표(서울 열린데이터 일반 인증키)가 다 있어야 한다 — 하나라도
+    없으면 빈 것(신호를 끈다). 실시간 두 열차만으로는 탈 열차를 못 정했다(리뷰 JAR-044)."""
+    if not (settings.seoul_key and settings.kakao_key and settings.seoul_open_key):
+        return {}
+    arrivals = TrainArrivals(
+        client=client,
+        key=settings.seoul_key,
+        kakao_key=settings.kakao_key,
+        open_key=settings.seoul_open_key,
+        places=places,
+    )
+    return {TrainAheadTrigger.name: Preparer(arrivals, required=True)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
-    hide_in_logs(settings.telegram_bot_token, settings.ingest_token)
+    hide_in_logs(
+        settings.telegram_bot_token,
+        settings.ingest_token,
+        # 공공데이터포털 키는 주소에 풀렸다 다시 싸인 꼴로 찍힌다 — 셋 다(`url_forms`).
+        *url_forms(settings.data_go_key),
+        settings.seoul_key,
+        settings.kakao_key,
+        settings.seoul_open_key,
+    )
     store = SQLiteStore(settings.db_path)
 
     # 섹터를 켜는 유일한 자리. 새 섹터를 추가하려면 위 import 와 이 목록에
@@ -282,6 +359,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     traces = SQLiteTraceStore(settings.db_path)
     events = SQLiteEventStore(settings.db_path)
     places = SQLitePlaceStore(settings.db_path)
+    # 공휴일 표 — 받아 둔 것을 먼저 올린다(이동 섹터가 공휴일 아침을 출근으로 안 본다). 비었으면
+    # 주말만 쉬는 날이다 — 가져오기가 채운다.
+    holidays = SQLiteHolidays(settings.db_path)
+    set_holidays(holidays.load())
     catalog = MergedCatalog(store, traces, events)
     # 지표·흔적·사건 카드를 한 줄로. 수집 경로 현황과 /status 가 같이 본다.
     cards: List[Collected] = [*metrics.all(), *trace_kinds.all(), *event_kinds.all()]
@@ -303,6 +384,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         hints={
             "아이폰": "아이폰에서 Tailscale이 켜져 있는지",
             "맥": "맥이 켜져 있는지, 맥 수집기(launchd)가 도는지",
+            "서버": "서버가 공공데이터포털에 닿는지, 키가 맞는지(서버 로그의 '기상청 예보')",
         },
     )
     # 발화 기억은 DB에 남긴다. 메모리에만 두면 재시작할 때마다 쿨다운이
@@ -335,6 +417,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             TOPIC_FAMILY: timedelta(hours=6),
             HEALTH_FAMILY: timedelta(hours=6),
             COMMUTE_FAMILY: timedelta(hours=6),
+            # 비·눈은 같은 날 한 번(신호의 at 이 그날 0시) — 줄기 간격은 다른 줄기와 같게.
+            WEATHER_FAMILY: timedelta(hours=6),
+            # 열차 알림은 이동과 따로 센다 — 늦게 나선 날에도 열차 도착은 쓸모가 있다. 한 아침에
+            # 하나.
+            TRAIN_FAMILY: timedelta(hours=6),
         },
     )
     agent = JarvisAgent(
@@ -360,7 +447,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             FeedbackProvider(log=gate.log),
             # 어제·오늘 위치 사건 — 사건은 출근 트리거만 보고 맥락엔 없어서 "어제 몇 시에
             # 나갔지?"에 답할 재료가 없었다(JAR-028).
-            EventDigestProvider(events=events, kinds=event_kinds.all()),
+            EventDigestProvider(events=events, kinds=event_kinds.all(), places=places),
+            # 쓴 돈 — 결제 흔적에서 코드가 센 오늘·어제·이번 주·이번 달(JAR-045). 결제는 민감하지만
+            # 실험 단계라 자비스가 보게 한다(허들을 낮춘다 — 2026-11-02 사용자 결정). 답은
+            # 텔레그램으로 나간다.
+            money.SpendingProvider(source=traces),
         ),
     )
     # `/report` — 넓게 모아 "요즘의 너"를 쓴다(JAR-027). 손으로 시험할 때도 같은 조립을 쓴다.
@@ -381,6 +472,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 대화 기록. 듣는 루프가 주고받은 말을, 반응 루프가 먼저 건 말을 적는다 — 둘이 한 흐름이어야
     # 사용자가 먼저 건 말에 답할 때 자비스가 무슨 말에 대한 답인지 안다(2026-11-05 사용자 결정).
     conversation = SQLiteConversation(settings.db_path)
+    outside = outside_client()
+    preparers = build_preparers(settings, places, outside)
+    if not preparers:
+        # 도착 없이 열차 얘기는 쓸모가 없다 — 신호를 끈다.
+        event_triggers = [t for t in event_triggers if not isinstance(t, TrainAheadTrigger)]
+        logger.info("서울 지하철·카카오·서울 열린데이터 키 중 하나가 없다 — 열차 알림을 끈다")
     jarvis = JarvisLoop(
         source=store,
         triggers=sector_triggers,
@@ -396,6 +493,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         transcript=conversation,
         # 관심사로 말 걸기 전에 지금 도움이 될 것(다가오는 일정 등)을 찾아 둔다 — 주 두 번쯤.
         research=_research(settings),
+        # 열차 알림은 판단 전에 실시간 도착과 시간표를 붙인다(키 셋 — 서울 지하철·카카오·서울
+        # 열린데이터 — 이 다 있을 때만, 없으면 신호를 끈다).
+        prepare_for=preparers,
     )
     # 수집 훅(app/ingest)이 데이터를 받자마자 이걸 한 번 더 돌린다.
     app.state.jarvis = jarvis
@@ -417,6 +517,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(jarvis.run_forever(settings.loop_interval_sec)),
         asyncio.create_task(daily.run_forever()),
     ]
+    # 네 번째 루프 — 서버가 바깥에서 가져온다(기상청 예보·공휴일). 키가 없으면 안 띄운다.
+    pullers = build_pullers(
+        settings, store=store, holidays=holidays, events=events, places=places, client=outside
+    )
+    app.state.pullers = pullers
+    if pullers:
+        tasks.append(asyncio.create_task(PullLoop(pullers).run_forever()))
+    else:
+        logger.info("바깥 API 키가 없다 — 날씨·공휴일·장소 이름을 안 받는다")
 
     # 세 번째 루프. 앞의 둘은 시계가 돌리고 이건 사용자가 돌린다.
     # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
@@ -466,6 +575,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         for running in tasks:
             running.cancel()
+        await outside.aclose()
 
 
 app = FastAPI(title="jarvis", lifespan=lifespan)

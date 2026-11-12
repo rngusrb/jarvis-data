@@ -4,7 +4,7 @@
 시각을 아는 이 섹터가 정한다. 이건 **이름 후보**다 — 근거 수와 함께 내고, 사람이나 LLM 이
 붙인 이름이 있으면 그쪽이 이긴다.
 
-규칙(한국 시각, 평일만):
+규칙(한국 시각, 평일만 — 공휴일은 쉬는 날이라 뺀다, `core/days`):
   집              아침에 "집 나섬"(leave_home)이 가장 많이 찍힌 곳
   아침에 타는 곳   그날 아침 첫 지갑 탭이 가장 자주 찍힌 곳
   아침에 갈아타는 곳 그날 아침 첫 탭과 마지막 탭 사이에 찍힌 곳
@@ -21,13 +21,17 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
-from typing import Dict, Iterable, List, Optional, Sequence
+from datetime import date, datetime, timedelta
+from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 from src.core.clock import local
+from src.core.days import is_workday
 from src.core.models import Event
+from src.core.places import Place
 
 LEAVE_HOME = "leave_home"
+# 위치 사건의 종류 이름(events.py 의 카드와 같다).
+LOCATION_KIND = "location"
 WALLET = "wallet"
 
 MORNING = range(5, 11)  # 05:00~10:59
@@ -35,6 +39,9 @@ EVENING = range(16, 22)  # 16:00~21:59
 
 # 이보다 적으면 우연이다. 사흘은 같아야 "평소"라 부른다.
 MIN_DAYS = 3
+# 평소를 볼 기간 — 폰 데이터가 띄엄띄엄 와서(52일 중 9일) 평일 기록이 모이려면 넓어야 한다. 트리거·
+# 이름 붙이기·집 좌표가 같은 기간을 본다.
+LOOKBACK = timedelta(days=42)
 
 
 @dataclass(frozen=True)
@@ -47,7 +54,7 @@ class Role:
 
 
 def roles(events: Iterable[Event]) -> List[Role]:
-    weekday = [e for e in events if e.place_id is not None and local(e.at).weekday() < 5]
+    weekday = [e for e in events if e.place_id is not None and is_workday(local(e.at).date())]
     found: List[Role] = []
 
     # 근거는 탭 수가 아니라 **날 수**다. 지오펜스를 들락날락하면 "집 나섬"이 한 아침에 두 번,
@@ -58,7 +65,7 @@ def roles(events: Iterable[Event]) -> List[Role]:
         if e.label == LEAVE_HOME and local(e.at).hour in MORNING:
             home_days.setdefault(local(e.at).date(), set()).add(e.place_id)
     home = Counter(place for places in home_days.values() for place in places)
-    found += _winner("집", home, len(home_days))
+    found += _winner(HOME, home, len(home_days))
 
     mornings = _taps_by_day(weekday, MORNING)
     first = Counter(taps[0].place_id for taps in mornings.values())
@@ -99,3 +106,31 @@ def _winner(name: str, counts: "Counter[Optional[int]]", of: int) -> List[Role]:
     if place_id is None or days < MIN_DAYS:
         return []
     return [Role(name, place_id, days, of)]
+
+
+HOME = "집"
+
+
+def home_spot(events: Iterable[Event], places: Iterable[Place]) -> Optional[Tuple[float, float]]:
+    """집 장소의 좌표(위도, 경도) — 집을 아직 모르면 None. 날씨 섹터가 조립을 거쳐 쓴다(집 근처
+    예보)."""
+    found = next((r for r in roles(events) if r.name == HOME), None)
+    if found is None:
+        return None
+    place = next((p for p in places if p.id == found.place_id), None)
+    return (place.lat, place.lon) if place is not None else None
+
+
+class RecentEvents(Protocol):
+    def recent(self, kind: str, since: datetime) -> Sequence[Event]: ...
+
+
+class AllPlaces(Protocol):
+    def all(self) -> Sequence[Place]: ...
+
+
+def home_now(
+    events: RecentEvents, places: AllPlaces, now: datetime
+) -> Optional[Tuple[float, float]]:
+    """저장소에서 지금의 집 좌표 — 트리거와 같은 기간(42일)의 위치 사건으로 찾는다."""
+    return home_spot(events.recent(LOCATION_KIND, now - LOOKBACK), places.all())

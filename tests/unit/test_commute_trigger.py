@@ -165,3 +165,15 @@ def test_늦게_들어온_아침도_받은_직후에는_판단한다() -> None:
 
     assert LateDepartureTrigger().check(_usual() + late, now) is not None
     assert LateDepartureTrigger().check(_usual() + stale, now) is None
+
+
+def test_공휴일_아침은_늦게_나섬도_다른_곳에서_탐도_아니다() -> None:
+    """공휴일은 출근이 아니다(JAR-043) — 같은 아침이 평일이면 말할 거리였다."""
+    from src.core.days import set_holidays
+
+    late = _usual() + _morning(6, 7.75)
+    assert LateDepartureTrigger().check(late, _now(6)) is not None
+    set_holidays({_day(6).date(): "임시공휴일"})
+    assert LateDepartureTrigger().check(late, _now(6)) is None
+    elsewhere = _usual() + _morning(6, 7.0, board_place=OTHER)
+    assert UnusualBoardingTrigger().check(elsewhere, _now(6)) is None

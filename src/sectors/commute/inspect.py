@@ -17,8 +17,10 @@ from typing import Dict, List, Sequence, Tuple
 
 from src.core.clock import local
 from src.core.config import load_settings
+from src.core.days import set_holidays
 from src.core.models import Event
 from src.sectors.commute.places import roles
+from src.storage.days import SQLiteHolidays
 from src.storage.events import SQLiteEventStore
 from src.storage.places import SQLitePlaceStore
 
@@ -52,6 +54,9 @@ def by_trigger(points: Sequence[Event]) -> Dict[str, List[Event]]:
 
 def main() -> int:
     db = load_settings().db_path
+    # 공휴일 표는 프로세스에 하나다(`core/days`) — 서버처럼 받아 둔 표를 올려야 공휴일을 평일로 안
+    # 센다.
+    set_holidays(SQLiteHolidays(db).load())
     placed = SQLitePlaceStore(db).assign_new()
     # 역할은 사흘 이상 모여야 나온다. 폰 데이터가 띄엄띄엄 와서(52일 중 9일) 60일로는
     # 모자랐다 — 반년을 본다.

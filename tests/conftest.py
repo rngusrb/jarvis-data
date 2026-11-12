@@ -7,6 +7,7 @@ from typing import Iterator
 import pytest
 
 from src.brain import web
+from src.core.days import set_holidays
 
 # 시험에서 "이 집의 공인 주소"(NAT 헤어핀으로 막는 주소). 시험 주소들과 겹치지 않는 공개 주소.
 OWN_ADDRESS = "1.2.3.4"
@@ -40,3 +41,11 @@ def _limits_untouched() -> Iterator[None]:
     assert after == before, (
         f"시험이 이 프로세스의 자원 상한을 바꿨다({before} → {after}) — setrlimit 을 막고 부른다"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_holidays() -> Iterator[None]:
+    """공휴일 표는 프로세스에 하나다(`core/days`) — 시험마다 비우고 시작해 서로 섞이지 않게."""
+    set_holidays({})
+    yield
+    set_holidays({})

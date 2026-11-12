@@ -83,3 +83,21 @@ def test_nothing_to_show_is_no_block() -> None:
     retired = EventKind(kind="location", label="위치")
     found = [_event("wallet", 7, 43)]
     assert EventDigestProvider(events=Events(found), kinds=[retired]).fetch(None, NOW) is None
+
+
+def test_named_places_read_with_their_names() -> None:
+    """ "장소 #5"로는 어디인지 모른다 — 카카오로 붙인 이름을 같이(JAR-044)."""
+    from src.core.places import Place
+
+    class Places:
+        def all(self) -> List[Place]:
+            seen = datetime(2026, 11, 1, tzinfo=KST)
+            return [
+                Place(5, 37.5, 126.8, 9, seen, seen, "가람역 5호선"),
+                Place(3, 37.5, 126.8, 9, seen, seen),
+            ]
+
+    events = Events([_event("wallet", 7, 9, place=5), _event("leave_home", 7, 0, place=3)])
+    block = EventDigestProvider(events=events, kinds=[CARD], places=Places()).fetch(None, NOW)
+    assert block is not None
+    assert "(장소 #5 가람역 5호선)" in block.body and "(장소 #3)" in block.body

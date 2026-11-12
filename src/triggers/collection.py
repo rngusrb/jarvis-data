@@ -78,8 +78,12 @@ class CollectionWatch:
             oldest = max(oldest, *ages.values())
             listed = ", ".join(f"{s.label}({_age(ages[s.kind])})" for s in stale)
 
-            fine = [s for s in sources if s not in stale]
             times = [last_seen[s.kind] for s in stale]
+            # 같은 기기에서 **끊긴 것들보다 뒤에** 들어온 것만 "연결은 산다"의 근거다. 끊김 기준이
+            # 긴 종류 (결제 14일)는 연결이 끊겨도 한동안 "정상"이라, 그걸 근거로 삼자 폰 Tailscale
+            # 이 끊긴 4~14일 내내 "연결 문제는 아니다"라고 했다(JAR-045 2차 리뷰 재현 — 10-03~15
+            # 사고와 같은 틀린 조언).
+            fine = [s for s in sources if s not in stale and last_seen[s.kind] > max(times)]
             together = max(times) - min(times) <= self.together_within
             if not fine and len(stale) > 1 and together:
                 hint = self.hints.get(via, f"{_josa(via, '과', '와')} 서버 사이 연결")
