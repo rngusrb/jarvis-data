@@ -54,6 +54,15 @@ class SQLitePlaceStore:
             ).fetchall()
         return [_to_place(r) for r in rows]
 
+    def name(self, place_id: int, name: str) -> bool:
+        """이름이 아직 없는 장소에만 이름을 붙인다 — 사람이 붙인 이름(이나 먼저 붙인 이름)이 이긴다.
+        붙였으면 True."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE places SET name = ? WHERE id = ? AND name = ''", (name.strip(), place_id)
+            )
+            return cursor.rowcount > 0
+
     def assign_new(self, radius: float = SAME_PLACE_METERS) -> int:
         """아직 장소가 없는 좌표 사건을 붙인다. 붙인 사건 수를 돌려준다.
 

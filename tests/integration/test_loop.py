@@ -1060,3 +1060,90 @@ def test_only_topics_are_researched() -> None:
     loop.research = research
     assert asyncio.run(loop.run_once()) == 1
     assert research.seen == []
+
+
+@dataclass
+class TrainSignal:
+    name: str = "train_ahead"
+    kind: str = "location"
+    lookback: timedelta = timedelta(days=42)
+
+    def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
+        return Insight(
+            trigger=f"{self.name}:5:0710",
+            summary="가람역에 07:10쯤",
+            severity=Severity.NOTABLE,
+            at=now,
+            family="train",
+        )
+
+
+@dataclass
+class Arrivals:
+    found: Optional[str]
+    asked: List[str] = field(default_factory=list)
+
+    async def prepare(self, insight: Insight, now: datetime) -> Optional[Any]:
+        from src.brain.context import ContextBlock
+
+        self.asked.append(insight.trigger)
+        return ContextBlock(label="열차 도착", body=self.found) if self.found else None
+
+
+@dataclass
+class SeesPrompt:
+    prompts: List[str] = field(default_factory=list)
+
+    async def ask(self, prompt: str, system: Optional[str] = None) -> str:
+        self.prompts.append(prompt)
+        return '{"speak": true, "message": "5호선 3분 뒤"}'
+
+
+def _train_loop(prepare: Any, brain: Any, channel: RecordingChannel) -> JarvisLoop:
+
+    now = datetime.now(timezone.utc)
+    return JarvisLoop(
+        source=FakeSource([]),
+        triggers=[],
+        agent=JarvisAgent(reasoner=brain),
+        channel=channel,
+        event_triggers=[TrainSignal()],
+        events=FakeEvents([Event(source="s", kind="location", at=now)]),
+        prepare_for=prepare,
+    )
+
+
+def test_섹터_신호의_준비가_판단_맥락에_들어가고_꼭_필요한데_못_하면_말하지_않는다() -> None:
+    """열차 알림은 실시간 도착을 받아 판단한다 — 못 받으면 말하지 않는다(JAR-044). 꼭 필요하지 않은
+    준비는 못 해도 판단한다."""
+    from src.runtime.loop import Preparer
+
+    brain, channel = SeesPrompt(), RecordingChannel()
+    found = Arrivals("- 하행 동끝행: 3분 후")
+    loop = _train_loop({"train_ahead": Preparer(found, required=True)}, brain, channel)
+    assert asyncio.run(loop.run_once()) == 1
+    assert found.asked == ["train_ahead:5:0710"] and "하행 동끝행: 3분 후" in brain.prompts[0]
+
+    brain, channel = SeesPrompt(), RecordingChannel()
+    loop = _train_loop({"train_ahead": Preparer(Arrivals(None), required=True)}, brain, channel)
+    assert asyncio.run(loop.run_once()) == 0 and brain.prompts == [] and channel.sent == []
+
+    brain, channel = SeesPrompt(), RecordingChannel()
+    loop = _train_loop({"train_ahead": Preparer(Arrivals(None))}, brain, channel)
+    assert asyncio.run(loop.run_once()) == 1  # 꼭 필요하지 않으면 찾은 것 없이 판단
+
+
+@dataclass
+class BrokenArrivals:
+    async def prepare(self, insight: Insight, now: datetime) -> Optional[Any]:
+        raise RuntimeError("서울 지하철 시간 초과")
+
+
+def test_a_required_preparation_that_breaks_keeps_quiet() -> None:
+    """운영에서 가장 흔할 실패(API 오류·시간 초과)의 길 — 도착 없이 말하게 바꿔도 시험이
+    통과했다(리뷰 JAR-044)."""
+    from src.runtime.loop import Preparer
+
+    brain, channel = SeesPrompt(), RecordingChannel()
+    loop = _train_loop({"train_ahead": Preparer(BrokenArrivals(), required=True)}, brain, channel)
+    assert asyncio.run(loop.run_once()) == 0 and brain.prompts == [] and channel.sent == []

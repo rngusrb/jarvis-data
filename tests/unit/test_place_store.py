@@ -96,3 +96,16 @@ def test_동시에_붙여도_한_곳이_두_번호가_되지_않는다(tmp_path:
     found = places.all()
     assert len(found) == 10
     assert sum(p.visits for p in found) == 200
+
+
+def test_이름은_비어_있을_때만_붙는다(tmp_path: Path) -> None:
+    """카카오로 붙인 이름보다 사람이 붙인 이름(이나 먼저 붙인 이름)이 이긴다(JAR-044)."""
+    db = tmp_path / "t.db"
+    events, store = SQLiteEventStore(db), SQLitePlaceStore(db)
+    events.write([_event(FAR, 0)])
+    store.assign_new()
+    [place] = store.all()
+    assert store.name(place.id, "가람역 5호선") is True
+    assert store.name(place.id, "다른 이름") is False
+    assert store.all()[0].name == "가람역 5호선"
+    assert store.name(999, "없는 장소") is False

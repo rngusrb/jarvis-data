@@ -89,5 +89,6 @@ maker-review-loop 사용 (Reviewer PASS 없이 sprint-close 금지)
 | 2026-11-06 | [4단계 다섯째: 일정표 먼저 읽기, 어떤 파일이든 읽는 리더](docs/sprints/2026-11-06-phase4-file-reader.md) |
 | 2026-11-06 | [4단계 여섯째: 자비스가 브라우저를 다룬다(보기·누르기·검색창), 문제 사이트 30일](docs/sprints/2026-11-06-phase4-browser.md) |
 | 2026-11-09 | [4단계 일곱째: 답한 뒤 스스로 돌아보기, `/gaps` 부족한 기능](docs/sprints/2026-11-09-phase4-selfcheck.md) |
+| 2026-11-12 | [5단계 첫째: 날씨·공휴일, 장소 이름·출근 열차(시간표), 쓴 돈 받기(보기만)](docs/sprints/2026-11-12-phase5-weather-train-money.md) |
 
 > ⚠️ 여기에 상세 이력을 쓰지 말 것. 한 줄, 상세는 아카이브에.

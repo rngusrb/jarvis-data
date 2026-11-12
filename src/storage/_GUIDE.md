@@ -110,6 +110,7 @@ tests:
   - tests/unit/test_trace_store.py
   - tests/unit/test_topic_store.py
   - tests/unit/test_selfchecks.py
+  - tests/unit/test_days.py
   - tests/integration/test_listen_loop.py
 ```
 
@@ -131,4 +132,5 @@ python scripts/harness.py src/storage/
 | `topics.py` | 주제 나무 저장소 — 주제·근거 연결·변경 기록·메모·회고 기록. 나무를 바꾸는 길은 `apply` 하나(검사한 나무와의 차이를 한 트랜잭션에, 낡은 나무면 `StaleTree`). 지우지 않고 접고 뗀다. 되감기 사본의 나무를 번호째 들인다(`adopt` — 나무가 있으면 거절, 근거 흔적이 다르면 하나도 안 들임) |
 | `events.py` | 사건 저장소. (source, kind, at, label) 중복 무시, 시각은 쓸 때 UTC. 받은 때는 처음 받은 때(11-02 에 관측치에서 옮긴 위치 75건은 모름 — 비어 있다. 옛 74건 + 재시작 전 옛 코드가 받은 1건) |
 | `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면(옮기는 중) 늦은 쪽을 쓰고 경고를 남긴다 |
-| `places.py` | 장소 저장소. 장소 없는 좌표 사건을 붙인다(`assign_new`, 쓰기 잠금 먼저) |
+| `days.py` | 공휴일 표(`SQLiteHolidays`). 해마다 다시 받아 날짜마다 덮어쓴다(지우지 않는다 — 늦게 생긴 대체공휴일이 더해진다), 해마다 마지막으로 받은 때(`fetched`) |
+| `places.py` | 장소 저장소. 장소 없는 좌표 사건을 붙인다(`assign_new`, 쓰기 잠금 먼저). 이름은 비어 있을 때만 붙인다(`name` — 사람이 붙인 이름이 이긴다) |

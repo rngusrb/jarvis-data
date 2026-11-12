@@ -41,6 +41,15 @@ class Settings:
     browser: bool = False
     # 크롬이 있는 폴더(비우면 Playwright 기본 자리 — 개발 맥).
     browsers_path: str = ""
+    # 바깥 API 키(2026-11-09 사용자가 받아 서버 `.env` 에 넣음). 비면 그 일을 안 한다 — 시험이
+    # 만드는 설정은 비어 있다. 공공데이터포털: 기상청 예보·특일(공휴일)·버스 도착. 서울 열린데이터:
+    # 실시간 지하철. 카카오: 장소·주소·가까운 역.
+    data_go_key: str = ""
+    seoul_key: str = ""
+    kakao_key: str = ""
+    # 서울 열린데이터광장 일반 인증키 — 지하철 시간표(열차 알림이 세 번째 열차부터 안다, 2026-11-11
+    # 결정).
+    seoul_open_key: str = ""
 
     @property
     def telegram_enabled(self) -> bool:
@@ -63,4 +72,8 @@ def load_settings() -> Settings:
         search_base_url=os.getenv("JARVIS_SEARCH_URL", DEFAULT_SEARCH_URL).rstrip("/"),
         browser=os.getenv("JARVIS_BROWSER", "1").strip().lower() not in ("0", "false", "off", ""),
         browsers_path=os.getenv("JARVIS_BROWSERS_PATH", DEFAULT_BROWSERS_PATH).strip(),
+        data_go_key=os.getenv("JARVIS_DATA_GO_KEY", "").strip(),
+        seoul_key=os.getenv("JARVIS_SEOUL_KEY", "").strip(),
+        kakao_key=os.getenv("JARVIS_KAKAO_KEY", "").strip(),
+        seoul_open_key=os.getenv("JARVIS_SEOUL_OPEN_KEY", "").strip(),
     )

@@ -42,6 +42,18 @@ class Research(Protocol):
     async def prepare(self, insight: Insight, now: datetime) -> Optional[ContextBlock]: ...
 
 
+@dataclass(frozen=True)
+class Preparer:
+    """섹터 신호에 붙일 준비 — 신호 이름의 앞부분("train_ahead:5:6:0708:0711" → "train_ahead")으로
+    고른다.
+
+    `required` 면 못 찾을 때 말하지 않는다 — 열차 도착 없이 열차 얘기는 쓸모가 없다(JAR-044). 아니면
+    찾은 것 없이 판단한다(관심사 준비처럼 — 찾기가 말 걸기를 막지 않는다)."""
+
+    research: Research
+    required: bool = False
+
+
 class Transcript(Protocol):
     """대화 기록. 먼저 건 말도 여기 적어야 사용자가 거기에 답할 때 대화가 이어진다."""
 
@@ -71,6 +83,8 @@ class JarvisLoop:
     # 관심사 신호가 게이트를 통과하면 판단 전에 웹에서 찾아 둔다(일정을 지어내지 않게). 없으면 안
     # 찾는다.
     research: Optional[Research] = None
+    # 섹터 신호에 붙일 준비(신호 이름 앞부분 → 준비). 열차 알림이 판단 전에 실시간 도착을 받는다.
+    prepare_for: Mapping[str, Preparer] = field(default_factory=dict)
     # 지금. 관심사 신호는 시간대(깨어 있는 시간)를 보므로 시험에서 정할 수 있어야 한다.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
     # 주기 실행과 수집 훅이 동시에 들어올 수 있다. 겹치면 같은 신호로 두 번
@@ -121,7 +135,10 @@ class JarvisLoop:
                     heard.append(insight)
 
         for lead, rest in self._together(heard, now):
-            sent += await self._speak(lead, now, rest)
+            extra = await self._prepared(lead, now)
+            if extra is None:
+                continue
+            sent += await self._speak(lead, now, rest, extra)
 
         if self.topic_watch is not None and self.topics is not None:
             try:
@@ -208,6 +225,24 @@ class JarvisLoop:
             logger.exception("관심사 준비 실패 — 찾아본 것 없이 판단한다: %s", insight.trigger)
             return ()
         return (block,) if block is not None else ()
+
+    async def _prepared(self, insight: Insight, now: datetime) -> Optional[Sequence[ContextBlock]]:
+        """섹터 신호의 준비. 꼭 있어야 하는 준비를 못 하면 None — 이번엔 말하지 않는다(판단 기록도
+        안 남겨 다음 주기에 다시 본다)."""
+        preparer = self.prepare_for.get(insight.trigger.split(":")[0])
+        if preparer is None:
+            return ()
+        try:
+            block = await preparer.research.prepare(insight, now)
+        except Exception:
+            logger.exception("신호 준비 실패: %s", insight.trigger)
+            block = None
+        if block is not None:
+            return (block,)
+        if preparer.required:
+            logger.info("준비를 못 해 말하지 않는다: %s", insight.trigger)
+            return None
+        return ()
 
     async def _speak(
         self,

@@ -56,6 +56,29 @@ def test_아이폰_것이_한꺼번에_끊기면_연결을_의심한다() -> Non
     assert insight.severity is Severity.URGENT
 
 
+def test_끊김_기준이_긴_종류는_끊긴_뒤에_들어온_것만_연결의_근거다() -> None:
+    """결제(끊김 14일)는 폰 연결이 끊겨도 한동안 "정상"이다. 그걸 근거로 "연결 문제는 아니다"라고
+    하면 10월 사고의 틀린 조언이 되풀이된다(JAR-045 2차 리뷰 재현)."""
+    pay = Watched(
+        "card_sms", "카드 승인 문자", "아이폰 메시지 자동화", "아이폰", timedelta(days=14)
+    )
+    watch = CollectionWatch(sources=[SLEEP, HEART, PLACE, WEB, pay], hints=HINTS)
+    seen = {
+        "sleep_hours": datetime(2026, 10, 10, 0, 0, tzinfo=KST),
+        "resting_heart_rate": datetime(2026, 10, 10, 0, 0, tzinfo=KST),
+        "location": datetime(2026, 10, 10, 8, 0, tzinfo=KST),
+        "card_sms": datetime(2026, 10, 9, 19, 0, tzinfo=KST),  # 끊기기 전에 온 것
+        "web_visit": NOW - timedelta(hours=2),
+    }
+    insight = watch.check(seen, NOW)
+    assert insight is not None and "연결 문제일 가능성이 크다" in insight.summary
+    assert "정상이라" not in insight.summary
+    # 끊긴 뒤에도 결제가 들어왔다면 연결은 산다 — 그 수집 경로들을 짚는다
+    seen["card_sms"] = datetime(2026, 10, 14, 12, 0, tzinfo=KST)
+    alive = watch.check(seen, NOW)
+    assert alive is not None and "정상이라 연결 문제는 아니다" in alive.summary
+
+
 def test_하나만_끊기면_그_수집_경로를_짚는다() -> None:
     seen = {
         "sleep_hours": NOW - timedelta(hours=10),

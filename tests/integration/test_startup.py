@@ -98,6 +98,15 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         # 반응·대화의 수집 현황은 접은 지표도 보인다 — 빼면 버린 지표를 되살리라고 조른다.
         status = [p for p in jarvis.agent.providers if isinstance(p, CollectionStatusProvider)]
         assert len(status) == 1 and status[0].retired is True
+        # 날씨 섹터가 켜지고 줄기로 센다. 키가 없으면 서버가 가져오는 것도 없다(JAR-043).
+        assert "weather_forecast" in {m.kind for m in client.app.state.metrics.all()}
+        assert "weather" in jarvis.agent.gate.family_cooldowns
+        assert client.app.state.pullers == []
+        # 서울 지하철 키가 없으면 열차 알림 신호를 끈다 — 도착 없이 열차 얘기는 쓸모가 없다.
+        assert "train" in jarvis.agent.gate.family_cooldowns
+        assert jarvis.prepare_for == {}
+        assert "train_ahead" not in {t.name for t in jarvis.event_triggers}
+        assert "late_departure" in {t.name for t in jarvis.event_triggers}
 
 
 def test_reporter_leaves_retired_metrics_out(tmp_path: Path) -> None:
@@ -170,3 +179,67 @@ def test_the_chrome_folder_defaults_to_a_root_owned_place_on_linux(monkeypatch: 
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_pullers_are_built_only_with_the_public_data_key(tmp_path: Path) -> None:
+    """공공데이터포털 키가 있으면 공휴일·예보를 서버가 가져온다 — 예보는 이동 섹터의 집 근처."""
+    from dataclasses import replace
+
+    from app.main import build_pullers, outside_client
+    from src.storage.days import SQLiteHolidays
+    from src.storage.events import SQLiteEventStore
+    from src.storage.places import SQLitePlaceStore
+    from src.storage.sqlite import SQLiteStore
+
+    db = tmp_path / "t.db"
+    parts = dict(
+        store=SQLiteStore(db),
+        holidays=SQLiteHolidays(db),
+        events=SQLiteEventStore(db),
+        places=SQLitePlaceStore(db),
+        client=outside_client(),
+    )
+    assert build_pullers(_settings(tmp_path), **parts) == []  # type: ignore[arg-type]
+    pullers = build_pullers(replace(_settings(tmp_path), data_go_key="k%2B"), **parts)  # type: ignore[arg-type]
+    assert [p.name for p in pullers] == ["공휴일", "기상청 예보"]
+    assert pullers[1].where() is None  # type: ignore[attr-defined]  # 위치 사건이 없으면 집을 모른다
+    named = build_pullers(replace(_settings(tmp_path), kakao_key="kk"), **parts)  # type: ignore[arg-type]
+    assert [p.name for p in named] == ["장소 이름"]
+
+
+def test_the_train_preparation_is_built_only_with_the_subway_key(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from app.main import build_preparers, outside_client
+    from src.storage.places import SQLitePlaceStore
+
+    places, client = SQLitePlaceStore(tmp_path / "t.db"), outside_client()
+    assert build_preparers(_settings(tmp_path), places, client) == {}
+    # 방향을 정할 역 자리(카카오)와 탈 열차를 가를 시간표(서울 열린데이터)도 있어야 한다 — 하나라도
+    # 없으면 끈다(실시간 두 열차만으로는 탈 열차를 못 정했다 — 리뷰 JAR-044).
+    assert build_preparers(replace(_settings(tmp_path), seoul_key="sk"), places, client) == {}
+    two = replace(_settings(tmp_path), seoul_key="sk", kakao_key="kk")
+    assert build_preparers(two, places, client) == {}
+    every = replace(two, seoul_open_key="ok")
+    built = build_preparers(every, places, client)
+    assert list(built) == ["train_ahead"] and built["train_ahead"].required is True
+
+
+def test_the_saved_holidays_are_loaded_at_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """받아 둔 공휴일 표를 시작할 때 올린다 — 지워도 시험이 통과했다(리뷰 JAR-043). 안 올리면 다시
+    받기 전까지 공휴일 아침이 출근으로 보인다."""
+    from datetime import date, datetime, timezone
+
+    from src.core.days import holiday
+    from src.storage.days import SQLiteHolidays
+
+    SQLiteHolidays(tmp_path / "t.db").save(
+        2026, {date(2026, 9, 24): "추석"}, datetime(2026, 9, 1, tzinfo=timezone.utc)
+    )
+    monkeypatch.setattr("app.main.load_settings", lambda: _settings(tmp_path))
+    from app.main import app
+
+    with TestClient(app):
+        assert holiday(date(2026, 9, 24)) == "추석"

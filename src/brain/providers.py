@@ -8,6 +8,7 @@ ScheduleProvider 같은 게 여기 늘어난다.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
@@ -18,6 +19,7 @@ from src.core.clock import KST, WEEKDAYS, local
 from src.core.events import EventKind, EventSource
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
+from src.core.places import Place
 from src.core.topics import RECENT_DAYS, Ground, Tree, Trend, standings
 from src.core.traces import TraceKind
 from src.storage.topics import Note
@@ -43,6 +45,9 @@ class ObservationTrendProvider:
         kind = recent[0].kind
         lines = [f"- {local(o.at):%m/%d} {o.value:g}" for o in recent]
         return ContextBlock(label=f"{kind} 최근 추이", body="\n".join(lines))
+
+
+logger = logging.getLogger(__name__)
 
 
 class Collected(Protocol):
@@ -174,6 +179,16 @@ class RecentValuesProvider:
             rows = sorted(self.source.recent(metric.kind, now - self.window), key=lambda o: o.at)
             if not rows:
                 continue
+            if metric.describe is not None:
+                # 예보처럼 값 하나로 안 읽히는 지표 — 섹터가 가장 최근 것을 풀어 쓴다. 풀어 쓰기가
+                # 터져도 이 블록의 다른 지표(수면·심박)는 남는다 — 숫자 줄로 보인다.
+                try:
+                    said = metric.describe(rows[-1], now)
+                except Exception:
+                    logger.exception("%s 을 풀어 쓰지 못했다 — 숫자로 보인다", metric.kind)
+                else:
+                    chunks.append(f"- {metric.label}({metric.kind}): {said}")
+                    continue
             recent = rows[-self.max_points :]
             values = " · ".join(f"{local(o.at):%m/%d} {o.value:g}" for o in recent)
             chunks.append(f"- {metric.label}({metric.kind}): {values}")
@@ -287,6 +302,10 @@ class TopicProvider:
         return ContextBlock(label="요즘 관심사(주제 나무)", body="\n".join(lines))
 
 
+class NamedPlaces(Protocol):
+    def all(self) -> Sequence[Place]: ...
+
+
 @dataclass
 class EventDigestProvider:
     """최근 사건(위치 등)을 날마다 한 줄로 — 언제 어디를 벗어났고 어디서 탭했나.
@@ -304,12 +323,15 @@ class EventDigestProvider:
     name: str = "event_digest"
     # 어제와 오늘. 보고서는 2주를 본다.
     days: int = 2
+    # 장소 이름(카카오로 붙인 "가람역 5호선" 등). 없으면 번호만 — "장소 #5"로는 어디인지 모른다.
+    places: Optional["NamedPlaces"] = None
 
     def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
         today = local(now).date()
         first = today - timedelta(days=self.days - 1)
         since = datetime.combine(first, time(0), tzinfo=KST)
         lines: List[str] = []
+        names = {p.id: p.name for p in self.places.all() if p.name} if self.places else {}
         for card in self.kinds:
             if not card.active:
                 continue
@@ -322,7 +344,8 @@ class EventDigestProvider:
             by_day: Dict[date, List[str]] = {}
             for e in found:
                 when = local(e.at)
-                place = f"(장소 #{e.place_id})" if e.place_id is not None else ""
+                named = f" {names[e.place_id]}" if e.place_id in names else ""
+                place = f"(장소 #{e.place_id}{named})" if e.place_id is not None else ""
                 by_day.setdefault(when.date(), []).append(
                     f"{when:%H:%M} {card.describe(e.label)}{place}"
                 )

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import List, Optional
+from urllib.parse import quote, unquote
 
 
 class HideSecrets(logging.Filter):
@@ -31,6 +32,16 @@ class HideSecrets(logging.Filter):
         if hidden != message:
             record.msg, record.args = hidden, ()
         return True
+
+
+def url_forms(secret: str) -> List[str]:
+    """주소에 들어가는 비밀값의 꼴들 — 그대로, 풀린 것, 다시 싼 것. 공공데이터포털 키는 "인코딩"된
+    꼴로 받아 `.env` 에 들어 있고, 풀어서 보내면 httpx 가 다시 싸서 요청 로그에 찍는다(2026-11-11).
+    """
+    if not secret:
+        return []
+    plain = unquote(secret)
+    return list(dict.fromkeys([secret, plain, quote(plain, safe="")]))
 
 
 def hide_in_logs(*secrets: Optional[str], logger: Optional[logging.Logger] = None) -> None:

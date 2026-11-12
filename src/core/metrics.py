@@ -12,9 +12,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional
+
+if TYPE_CHECKING:
+    from src.core.models import Observation
 
 
 class Fold(str, Enum):
@@ -63,6 +66,10 @@ class Metric:
     # 어느 기기를 거쳐 오나 (예: 아이폰, 맥). 같은 기기에서 오는 것들이 비슷한 때
     # 한꺼번에 끊기면, 수집 경로 하나가 아니라 그 기기와 서버 사이 연결을 의심한다.
     via: Optional[str] = None
+    # 숫자 줄 대신 보여줄 말. 값 하나로 안 읽히는 관측치(예보처럼 meta 에 시간별 값을 든 것)를
+    # 섹터가 풀어 쓴다 — 플랫폼은 meta 의 키를 모른다(흔적 카드의 `digest` 와 같은 자리).
+    # 맥락(최근 값)은 이게 있는 지표를 가장 최근 것 하나로, 이 말로 보인다.
+    describe: Optional[Callable[["Observation", datetime], str]] = None
 
     @property
     def active(self) -> bool:

@@ -20,6 +20,8 @@
 │  sectors/health/     수면 · 휴식기 심박                 │
 │  sectors/commute/    위치 · 이동 패턴                   │
 │  sectors/interest/   브라우저 흔적 → 관심사              │
+│  sectors/weather/    날씨 예보 · 공휴일 (서버가 가져옴)   │
+│  sectors/money/      쓴 돈 — 카드 문자 · 애플페이 (보기만) │
 │  (예정) shopping · schedule                            │
 └───────────────────────────────────────────────────────┘
                       ↑
@@ -39,6 +41,7 @@
 | 수집 (pull) | 한 시간마다 · 계속 | 맥 크롬 기록 · 앞에 뜬 앱 → `/ingest/traces` |
 | 수집 (백필) | 수동 | `export.xml` → `src/sectors/health/backfill.py` |
 | 자비스 (반응) | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
+| 가져오기 (서버 pull) | 예보 한 시간마다(새 발표만) · 공휴일 12시간마다(해마다 새로) · 장소 이름 6시간마다 | 공공데이터포털 → `src/runtime/pull.py` → 섹터의 `Puller` (`src/sectors/weather/pull.py`) |
 | 회고 | 매일 05:30 (꺼져 있었으면 켜진 뒤) | 오래 잠잠한 주제 접기 → 나무 + 안 붙은 흔적 → LLM 연산 → 검사 → 한 트랜잭션 |
 
 애플 건강은 **push 만 가능하다** — HealthKit 은 기기 밖 조회 API가 없다.
@@ -93,6 +96,13 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 한 주기에 같은 줄기 신호를 묶는 법 | `src/runtime/loop.py` — `_together`, 신호의 줄기는 각 트리거의 `FAMILY` |
 | 답한 뒤 자기 점검·`/gaps` 의 갈래·지시문·기간 | `src/brain/selfcheck.py` — `BLOCKED`·`SYSTEM_PROMPT`·`GAPS_PROMPT`·`GAP_DAYS`, 답에 붙이는 곳은 `src/brain/converse.py` — `_answered` |
 | `/report` 보고서의 재료·지시문 | `app/main.py` — `build_reporter`, `src/brain/report.py` — `SYSTEM_PROMPT` |
+| 비·눈 신호의 시간대·기준 | `src/sectors/weather/triggers.py` — `EVENING`·`MORNING`·`COMMUTE_HOURS`·`DAY_HOURS`, 기준은 `kma.py` — `LIKELY_POP` |
+| 서버가 가져오는 것·간격 | 섹터의 `Puller`(`src/sectors/weather/pull.py`), 조립은 `app/main.py` — `build_pullers`, 루프는 `src/runtime/pull.py` |
+| 열차 알림(언제·어느 역·탈 열차) | `src/sectors/commute/triggers.py` — `TrainAheadTrigger`(`TRAIN_FRESH`), 붙이는 열차는 `subway.py` — `TrainArrivals`(`PLATFORM`)·`render_plan`, 가르기는 `timetable.py` — `plan`·`lateness` |
+| 장소에 이름 붙이기 | `src/sectors/commute/naming.py` — `PlaceNaming`(`STATION_METERS`), 이름은 `storage/places.py` — `name` |
+| 섹터 신호에 판단 전 준비 붙이기 | `src/runtime/loop.py` — `Preparer`·`prepare_for`, 조립은 `app/main.py` — `build_preparers` |
+| 쉬는 날(공휴일) | `src/core/days.py` — `is_workday`, 받는 건 `src/sectors/weather/pull.py` — `HolidayPull` |
+| 쓴 돈 — 결제 읽기·같은 결제 합치기·기간 합계 | `src/sectors/money/payments.py` — `from_sms`·`from_wallet`·`merge`·`summarize`, 맥락은 `context.py` — `SpendingProvider` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
 | 감지 기준 바꾸기 | `src/triggers/` — 백테스트 수치를 근거로 |
@@ -111,14 +121,16 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |---------|------|------|
 | `Channel` | 텔레그램 | iOS 푸시 |
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
-| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 · 최근 사건 | 캘린더 · 프로필 |
+| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 · 최근 사건 · 쓴 돈(money 섹터가 들고 옴) | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
-| `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 | 쇼핑 |
-| `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 (위치 사건) | 앱·웹 사건 |
+| `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 · 비·눈 예보 | 쇼핑 |
+| `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 · 출근 열차 (위치 사건) | 앱·웹 사건 |
 | `Watch` | 수집 중단 (종류별 마지막 수신) | — |
 | `TopicWatch` | 뜨는 관심사 (주제 나무에서, 후보 여럿) | 루틴 변화 |
 | `SpeechLog` | SQLite | — (메모리 구현은 테스트용) |
 | `Fold` | 구간 · 합계 · 평균 | 최대/최소 등 |
+| `Puller` | 기상청 예보 · 공휴일 · 장소 이름(카카오) | 캘린더 · 메일 |
+| `Preparer` | 열차 알림의 실시간 도착 + 평일 시간표(꼭 필요) | 버스 도착 |
 
 ---
 
@@ -141,6 +153,11 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 브라우저 기록 | pull (맥 크롬 DB → `/ingest/traces`) | ✅ |
 | 맥 앱 사용 | pull (`lsappinfo` 30초 표본 → `/ingest/traces`) | ✅ 코드 |
 | 걸음수 / 원본 심박 | — | 접음 (표본 수 폭발) |
+| 날씨 예보 | pull (서버 → 기상청 단기예보, 집의 5km 격자) | ✅ JAR-043 |
+| 공휴일 | pull (서버 → 특일 정보, 해마다) | ✅ JAR-043 |
+| 장소 이름 | pull (서버 → 카카오, 역할이 있는 장소만 — 집 좌표는 안 보냄) | ✅ JAR-044 |
+| 실시간 지하철 도착 | pull (열차 알림 직전, 서울 열린데이터 — 방향·지금 늦음) | ✅ JAR-044 |
+| 지하철 시간표 | pull (열차 알림 직전·하루 한 번, 서울 열린데이터 일반 인증키 — 탈 열차) | 코드 ✅, 키 ✅(11-12), 리뷰 PASS — 운영 아침 실측 전 |
 | 캘린더 | pull (CalDAV/.ics) | 미착수 — 수면의 "왜"를 알려줄 후보 |
 | 충전 시작 시각 | push (단축어) | 미착수 — 워치 미착용 밤을 메움 |
 | 사진 메타데이터 | push (단축어) | 미착수 — 스크린샷 급증이 의도 신호 |

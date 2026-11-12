@@ -51,3 +51,25 @@ def test_접힌_지표는_빼고_보여준다(tmp_path: Path) -> None:
 def test_값이_하나도_없으면_침묵한다(tmp_path: Path) -> None:
     empty = SQLiteStore(tmp_path / "empty.db")
     assert RecentValuesProvider(source=empty, metrics=[SLEEP]).fetch(None, NOW) is None
+
+
+def test_풀어_쓰는_지표는_가장_최근_것을_그_말로(tmp_path: Path) -> None:
+    """예보처럼 값 하나로 안 읽히는 관측치는 섹터가 풀어 쓴 한 줄로 — 숫자 줄로 보이면
+    "강수확률 70"만 남는다(JAR-043)."""
+    store = SQLiteStore(tmp_path / "t.db")
+    now = datetime(2026, 11, 11, 21, 0, tzinfo=timezone.utc)
+    store.write(
+        [
+            Observation(source="kma", kind="forecast", value=v, at=now - timedelta(hours=h))
+            for v, h in ((20.0, 6), (70.0, 3))
+        ]
+    )
+    described = Metric(
+        kind="forecast",
+        label="예보",
+        fold=Fold.RAW,
+        collector="서버",
+        describe=lambda o, at: f"{o.value:g}% 발표 하나",
+    )
+    block = RecentValuesProvider(source=store, metrics=[described]).fetch(None, now)
+    assert block is not None and block.body == "- 예보(forecast): 70% 발표 하나"

@@ -17,16 +17,19 @@ from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from src.core.clock import local
+from src.core.days import is_workday
 from src.core.models import Event, Insight, Severity
 from src.core.places import meters_between
-from src.sectors.commute.places import MORNING, WALLET, roles
+from src.sectors.commute.places import LEAVE_HOME, LOOKBACK, MORNING, WALLET, roles
 
 
 def _weekday_mornings(events: Iterable[Event]) -> Dict[date, List[Event]]:
+    """평일(공휴일 빼고) 아침마다의 사건. 공휴일 아침은 출근이 아니다 — 늦게 나섬·다른 곳에서 탐의
+    판단에도, 평소(baseline)에도 안 넣는다(`core/days`)."""
     days: Dict[date, List[Event]] = {}
     for e in sorted(events, key=lambda e: e.at):
         when = local(e.at)
-        if when.weekday() < 5 and when.hour in MORNING:
+        if is_workday(when.date()) and when.hour in MORNING:
             days.setdefault(when.date(), []).append(e)
     return days
 
@@ -94,7 +97,7 @@ class LateDepartureTrigger:
     name: str = "late_departure"
     kind: str = "location"
     # 폰 데이터가 띄엄띄엄 와서(52일 중 9일) 평일 기록이 모이려면 창이 넓어야 한다.
-    lookback: timedelta = timedelta(days=42)
+    lookback: timedelta = LOOKBACK
     baseline_days: int = 10
     # 나흘은 모여야 "평소"다. 그보다 적으면 그 평소가 우연이다.
     min_days: int = 4
@@ -134,7 +137,7 @@ class UnusualBoardingTrigger:
 
     name: str = "unusual_boarding"
     kind: str = "location"
-    lookback: timedelta = timedelta(days=42)
+    lookback: timedelta = LOOKBACK
     baseline_days: int = 10
     min_days: int = 4
     # 최근 평일의 이만큼은 같은 곳에서 타야 "평소 타는 곳"이 있다고 본다.
@@ -182,6 +185,111 @@ def _as(role: Optional[str]) -> str:
     return f" — {role}" if role else ""
 
 
+# 열차 알림의 줄기 — 늦게 나섬·다른 곳에서 탐(이동)과 따로 센다. 같은 아침에 둘 다 쓸모가 있다.
+TRAIN_FAMILY = "train"
+# 출발이 이보다 오래면 열차 얘기는 늦었다(타는 곳 → 갈아타는 곳 평소 5~8분 — 2026-11-11 실측. 아침
+# 탭은 서버에 바로 닿는다 — 받은 때와 일어난 때가 같았다).
+TRAIN_FRESH = timedelta(minutes=10)
+BOARD, TRANSFER, ALIGHT = "아침에 타는 곳", "아침에 갈아타는 곳", "아침에 내리는 곳"
+
+
+def _minute_up(at: datetime) -> datetime:
+    """분으로 올린다 — 07:12:50 → 07:13, 07:12:00 → 07:12."""
+    whole = at.replace(second=0, microsecond=0)
+    return whole if whole == at else whole + timedelta(minutes=1)
+
+
+@dataclass
+class TrainAheadTrigger:
+    """평일 아침 나서자마자 — 탈 역의 열차 도착을 알려 줄 때(계획형, JAR-044).
+
+    갈아타는 곳이 있으면(버스 → 지하철) 오늘 타는 곳의 첫 탭이 출발이고 갈아타는 곳이 역이다.
+    없으면 집을 나선 때가 출발이고 타는 곳이 역이다. 역에 닿는 때는 한 시각이 아니라 범위다 — 최근
+    평일의 "출발 → 역" 걸린 시간의 가장 짧은~가장 긴 것. 그곳이 정말 지하철역인지, 어느 방향인지,
+    어느 열차를 탈지는 장소 이름·자리·시간표를 아는 준비(`subway.TrainArrivals`)가 본다 — 트리거는
+    순수 함수라 장소 표를 못 본다. 그래서 신호 이름에 역의 장소 번호, 방향을 정할 내리는 곳, 역에
+    닿는 범위를 싣는다(`train_ahead:<역>:<내리는 곳>:<빠른 HHMM>:<늦은 HHMM>`).
+    """
+
+    name: str = "train_ahead"
+    kind: str = "location"
+    lookback: timedelta = LOOKBACK
+    baseline_days: int = 10
+    min_days: int = 3
+    fresh_for: timedelta = TRAIN_FRESH
+    # 볼일이 있던 아침처럼 튀는 날은 범위에서 뺀다 — 걸린 시간의 중앙값에서 이만큼 넘게 벗어난 날.
+    # 하루 80분이 섞이자 범위가 07:09~08:23 이 되어 16줄 중 14줄이 "빠듯"이었다(3차 리뷰 재현).
+    # "평균 대신 중앙값"을 쓰게 된 늦게 나섬의 사고와 같은 꼴이다.
+    outlier: timedelta = timedelta(minutes=10)
+
+    def check(self, events: Sequence[Event], now: datetime) -> Optional[Insight]:
+        mornings = _weekday_mornings(events)
+        today = local(now).date()
+        if today not in mornings:
+            return None
+        named = {r.name: r.place_id for r in roles(events)}
+        board, goal = named.get(BOARD), named.get(ALIGHT)
+        if board is None or goal is None:
+            return None  # 내리는 곳을 모르면 방향을 못 정한다
+        transfer = named.get(TRANSFER)
+        station = transfer if transfer is not None else board
+
+        def start_of(morning: List[Event]) -> Optional[Event]:
+            if transfer is not None:
+                first = next((e for e in morning if e.label == WALLET), None)
+                return first if first is not None and first.place_id == board else None
+            return next((e for e in morning if e.label == LEAVE_HOME), None)
+
+        start = start_of(mornings[today])
+        if start is None or now - start.at > self.fresh_for:
+            return None
+        rides = []
+        for day in sorted(d for d in mornings if d < today)[-self.baseline_days :]:
+            began = start_of(mornings[day])
+            if began is None:
+                continue
+            reached = next(
+                (
+                    e
+                    for e in mornings[day]
+                    if e.label == WALLET and e.place_id == station and e.at > began.at
+                ),
+                None,
+            )
+            if reached is not None:
+                rides.append((reached.at - began.at).total_seconds() / 60)
+        middle = median(rides) if rides else 0.0
+        rides = [r for r in rides if abs(r - middle) <= self.outlier.total_seconds() / 60]
+        if len(rides) < self.min_days:
+            return None
+        # 그날 역에 닿는 때는 한 시각이 아니라 범위다 — 최근 평일의 가장 빠른~가장 늦은 걸린
+        # 시간(중앙값 하나로는 "탈 수 있다/없다"를 못 가렸다 — 리뷰 JAR-044, 실제 차이
+        # −1.9~+2.5분).
+        early = start.at + timedelta(minutes=min(rides))
+        late = start.at + timedelta(minutes=max(rides))
+        if now >= early:
+            return None  # 빨리 닿는 날이면 이미 역이다
+        began_as = BOARD if transfer is not None else "집을 나섬"
+        reached_as = TRANSFER if transfer is not None else BOARD
+        # 신호에는 분까지만 싣는다 — 둘 다 올린다. 내리면 범위가 최대 59초 앞당겨져, 가장 늦은 날엔
+        # 놓칠 열차가 "여유"가 되고 가장 빠른 날에도 못 탈 열차가 "빠듯"이 된다(3차 리뷰 재현: 늦은
+        # 끝 07:12:50 을 07:12 로 싣자 07:12:20 열차가 "여유"). 올리면 틀려도 덜 약속하는 쪽이다.
+        first, last = _minute_up(local(early)), _minute_up(local(late))
+        return Insight(
+            trigger=f"{self.name}:{station}:{goal}:{first:%H%M}:{last:%H%M}",
+            summary=(
+                f"평일 아침 — 오늘 {local(start.at):%H:%M} {began_as}에서 출발했다. "
+                # 장소 번호는 신호 이름에만 — 요약에 두니 "장소 #5 가람역"이 말로 샜다(15번 중 1).
+                f"평소 {min(rides):.0f}~{max(rides):.0f}분 뒤 {reached_as}에 "
+                f"닿는다({first:%H:%M}~{last:%H:%M}쯤, 최근 {len(rides)}일). "
+                "그 역에서 탈 열차를 알려 줄 때다."
+            ),
+            severity=Severity.NOTABLE,
+            at=start.at,
+            family=TRAIN_FAMILY,
+        )
+
+
 # 관측치를 보는 트리거는 지금 없다.
 TRIGGERS: list = []
-EVENT_TRIGGERS = [LateDepartureTrigger(), UnusualBoardingTrigger()]
+EVENT_TRIGGERS = [LateDepartureTrigger(), UnusualBoardingTrigger(), TrainAheadTrigger()]
