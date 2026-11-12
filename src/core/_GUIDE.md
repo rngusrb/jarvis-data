@@ -81,6 +81,7 @@ tests:
   - tests/unit/test_clock.py
   - tests/unit/test_days.py
   - tests/unit/test_topics.py
+  - tests/unit/test_findings.py
   - tests/invariants/test_boundaries.py
 ```
 
@@ -192,3 +193,4 @@ URL 을 통째로 찍었다. 듣기 루프가 30초마다 돌아 journalctl 에 
 | `logs.py` | 로그에서 비밀값 지우기. 처리기 거름망이라 다른 로거에서 올라온 기록도 지운다. 주소에 들어가는 키는 세 꼴로(`url_forms` — 받은 꼴·풀린 꼴·다시 싼 꼴) |
 | `events.py` | 사건 카드(`EventKind`) + 레지스트리, 점 → 사건 변환(`event_from_point`, 수신구와 옮기기가 같이 쓴다). 사건 이름의 뜻(`labels`·`describe` — 섹터가 단다) |
 | `places.py` | 장소 계산 — 거리, 반경 안 가장 가까운 곳, 중심 옮기기. 번호가 바뀌지 않게 하나씩 붙인다 |
+| `findings.py` | 스스로 알아본 것의 꼴(`Finding`, `Fact` — 날짜는 절대 날짜 칸에만, 코드가 원자료에서 뽑은 것과 그 원문 줄 `quote`, 해가 확실하지 않으면 날짜 없이 원문만 `no_year`), 값어치(알릴 것·기록만·없음), 줄기 `finding`, 날짜 옆 거리(`day_label` — "11/16(월), 4일 뒤", 코드가 센다), 날짜 옆에 붙이는 말 하나(`when_label` — 거리와 원문, 해 모름이면 "해 모름"과 원문, 맥락·신호·`/found` 가 같이 쓴다) |

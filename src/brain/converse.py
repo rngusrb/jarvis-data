@@ -39,6 +39,7 @@ from src.brain.selfcheck import OTHER, TIME, GapReport, SelfReview
 from src.brain.tools import Pending, Researched, ToolLoop, Use
 from src.channels.base import Incoming
 from src.core.clock import local, shown
+from src.core.findings import NOTHING, TELL, FindingSource, when_label
 from src.core.models import ObservationCatalog, ObservationSource
 from src.core.topics import TOPIC_FAMILY, Trend, standings
 from src.storage.conversation import SQLiteConversation
@@ -98,6 +99,11 @@ STUCK = "미안, 지금 답을 못 만들었어(이유는 자비스 로그에). 
 
 # 보고서를 쓰는 중이라고 보는 최대 시간. 쓰다가 죽어 표시가 남아도 이만큼 지나면 다시 쓸 수 있다.
 WRITING_FOR = timedelta(minutes=15)
+# `/found` 가 보이는 기간과 수.
+FOUND_DAYS = timedelta(days=3)
+FOUND_SHOWN = 8
+IDEA_DAYS = timedelta(days=14)
+IDEAS_SHOWN = 5
 
 
 @dataclass
@@ -124,6 +130,8 @@ class Conversationalist:
     # 답을 기다리게 하지 않는다 — 사용자 결정(2026-11-09): "답은 기존처럼 내뱉고 나중에 기록해".
     selfcheck: Optional[SelfReview] = None
     gaps: Optional[GapReport] = None
+    # 스스로 알아본 것(탐색 루프, JAR-046) — `/found` 가 최근 것과 떠오른 기능 아이디어를 보인다.
+    findings: Optional[FindingSource] = None
     # 보고서를 쓰기 시작한 때. 쓰는 중에 또 부르면 하나 더 쓰지 않는다.
     _writing_since: Optional[datetime] = field(default=None, repr=False)
     # `/gaps` 정리를 쓰기 시작한 때 — 같은 까닭(연달아 누르면 두 통).
@@ -138,6 +146,7 @@ class Conversationalist:
             # 주제 나무 전에는 믿음이었다. 손에 익은 명령을 버리지 않는다.
             "/beliefs": self._topics,
             "/sleep": self._sleep,
+            "/found": self._found,
             "/help": self._help,
             "/start": self._help,
         }
@@ -167,8 +176,32 @@ class Conversationalist:
             "/sleep   요즘 수면\n"
             "/topics  내가 너에 대해 아는 것(주제 나무)\n"
             "/report  요즘의 너 — 보고서(2~3분 걸려)\n"
-            "/gaps    내가 잘 못한 것 — 스스로 돌아본 것(최근 2주)"
+            "/gaps    내가 잘 못한 것 — 스스로 돌아본 것(최근 2주)\n"
+            "/found   내가 시키지 않아도 알아본 것(최근 3일)"
         )
+
+    def _found(self, now: datetime) -> str:
+        """스스로 알아본 것 — 최근 3일(없음·실패는 뺌)과 떠오른 기능 아이디어(2주). 모델 없이."""
+        if self.findings is None:
+            return "탐색은 아직 안 붙었어."
+        recent = self.findings.since(now - FOUND_DAYS)
+        kept = [f for f in recent if f.worth != NOTHING and not f.note]
+        today = local(now).date()
+        lines = [
+            f"최근 {FOUND_DAYS.days}일 동안 {len(recent)}번 알아봤고, 남길 만한 건 {len(kept)}개야."
+        ]
+        for f in reversed(kept[-FOUND_SHOWN:]):
+            mark = "📌" if f.worth == TELL else "·"
+            lines.append(f"{mark} {local(f.at):%m/%d %H:%M} {f.subject} — {f.summary}")
+            for fact in f.facts[:2]:
+                label = when_label(fact, today)
+                when = f" ({label})" if label else ""
+                lines.append(f"   - {fact.text}{when}")
+        ideas = [f.idea for f in self.findings.since(now - IDEA_DAYS) if f.idea]
+        if ideas:
+            lines.append("\n알아보다 떠오른 '있으면 좋을 기능':")
+            lines.extend(f"- {idea}" for idea in list(dict.fromkeys(ideas))[-IDEAS_SHOWN:])
+        return "\n".join(lines)
 
     def _report(self, now: datetime) -> Union[str, Later]:
         if self.reporter is None:

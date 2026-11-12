@@ -111,6 +111,7 @@ tests:
   - tests/unit/test_topic_store.py
   - tests/unit/test_selfchecks.py
   - tests/unit/test_days.py
+  - tests/unit/test_findings.py
   - tests/integration/test_listen_loop.py
 ```
 
@@ -134,3 +135,4 @@ python scripts/harness.py src/storage/
 | `catalog.py` | 여러 저장소의 마지막 수신을 한 장으로(`MergedCatalog`). 같은 이름이 두 표에 있으면(옮기는 중) 늦은 쪽을 쓰고 경고를 남긴다 |
 | `days.py` | 공휴일 표(`SQLiteHolidays`). 해마다 다시 받아 날짜마다 덮어쓴다(지우지 않는다 — 늦게 생긴 대체공휴일이 더해진다), 해마다 마지막으로 받은 때(`fetched`) |
 | `places.py` | 장소 저장소. 장소 없는 좌표 사건을 붙인다(`assign_new`, 쓰기 잠금 먼저). 이름은 비어 있을 때만 붙인다(`name` — 사람이 붙인 이름이 이긴다) |
+| `findings.py` | 스스로 알아본 것(`SQLiteFindings`, JAR-046) — 한 줄이 한 번의 탐색(씨앗 갈래·표·주제, 요약, 사실 — 날짜는 절대 날짜만과 그 원문 줄, 출처·검색어, 값어치, 기능 아이디어, 실패 까닭). 지우지 않는다. 씨앗 표마다 마지막 때(`explored`), 제대로 알아본 횟수(`tries` — 실패는 안 셈), 쓴 검색어(`queries_since` — 되풀이 막기·하루 상한) |

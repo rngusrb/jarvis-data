@@ -429,7 +429,16 @@ class FakeBrowse:
             from src.brain.browser import BrowserUnavailable
 
             raise BrowserUnavailable("크롬의 보안 격리(sandbox)가 막혀 못 띄웠다")
-        return Browsed(text="3회 접수 9.21~9.28 (큐넷 시험일정 탭)", url=url, files=self.files)
+        return Browsed(
+            text="3회 접수 9.21~9.28 (큐넷 시험일정 탭)",
+            url=url,
+            files=self.files,
+            seen=(
+                "[브라우저 화면 — 시험일정]\n3회 원서접수 2026.09.21~09.28",
+                "[브라우저 화면 — 검색]\n'정처기 11월 13일' 검색 결과 없음",
+            ),
+            typed=("정처기 11월 13일",),
+        )
 
 
 def test_browse_is_offered_only_with_a_browser() -> None:
@@ -476,6 +485,15 @@ def test_browse_starts_only_from_found_addresses_and_its_files_become_readable()
     assert "브라우저 한도에 닿았다" in results[2]
     assert reader.urls == [pdf] and done.text == "9.21~9.28 이야."
     assert [u.kind for u in done.uses] == ["search", "browse", "read"]
+    # 원자료: 검색 결과 하나씩(제목·요약), 손이 본 화면 그대로, 읽은 페이지 — 정리한 글은 아니다
+    assert done.material == (
+        "큐넷 일정\n1회 1.12",
+        "[브라우저 화면 — 시험일정]\n3회 원서접수 2026.09.21~09.28",
+        # 손이 검색창에 친 말(모델이 쓴 것)을 화면이 되비춘 곳은 지운다(3차 리뷰)
+        "[브라우저 화면 — 검색]\n'…' 검색 결과 없음",
+        "제목\n" + "본문 " * 100,
+    )
+    assert all("큐넷 시험일정 탭" not in m for m in done.material)
 
 
 def test_a_browser_that_fails_is_told_and_recorded(caplog: pytest.LogCaptureFixture) -> None:
@@ -539,3 +557,21 @@ def test_files_from_the_browser_are_capped_in_the_loop_too() -> None:
     )
     asyncio.run(loop.run(ASK))
     assert reader.urls == ["https://www.q-net.or.kr/f9.pdf"]
+
+
+def test_only_typed_words_with_letters_are_blanked_from_screens() -> None:
+    from src.brain.tools import _unecho
+
+    view = "[브라우저 화면]\n'가나 채용' 검색 결과 · 2026.11.16(월) 마감"
+    assert (
+        _unecho(view, ("가나 채용", "2026"))
+        == "[브라우저 화면]\n'…' 검색 결과 · 2026.11.16(월) 마감"
+    )
+
+
+def test_typed_dates_are_blanked_too() -> None:
+    from src.brain.tools import _unecho
+
+    assert _unecho("'2026.11.13' 결과 없음 · 2026.11.16(월)", ("2026.11.13", "2026")) == (
+        "'…' 결과 없음 · 2026.11.16(월)"
+    )

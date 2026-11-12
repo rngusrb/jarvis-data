@@ -104,9 +104,13 @@ class VLLMClient:
         # 쿨다운)은 이미 게이트가 끝냈다. 남은 판단에 사고 1000토큰을 쓰는 건
         # 비싸서 기본은 끈다. 품질을 비교해보고 싶으면 켜면 된다.
         enable_thinking: bool = False,
+        # 답의 꼴(JSON 스키마). 주면 `ask` 의 답이 이 꼴로만 나온다(vLLM 구조화 출력). 탐색
+        # 판단이 값어치 칸에 제목을 쓰고, 사실을 늘어놓다 잘렸다(JAR-046 서버 실측 셋 중 둘).
+        schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model or None
+        self._schema = schema
         # 연결은 따로 짧게. 데스크탑이 꺼져 Tailscale 이 패킷을 버리면 연결 시도가 한도(보고서는
         # 10분)를 다 쓰고, 그동안 듣기 루프가 멈춘다(JAR-027 리뷰 재현). 긴 건 연결 뒤의 읽기다.
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
@@ -157,6 +161,11 @@ class VLLMClient:
             # Qwen3는 기본이 사고 켜짐이라 끌 때만 보낸다. 이 키를 모르는
             # 모델에 굳이 보내서 거절당할 이유가 없다.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if self._schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "answer", "schema": self._schema},
+            }
 
         response = await self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
         response.raise_for_status()

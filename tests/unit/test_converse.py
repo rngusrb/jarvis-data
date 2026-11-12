@@ -723,3 +723,44 @@ def test_gaps_hands_the_write_up_what_exists_and_does_not_write_twice(tmp_path: 
     assert again == "이미 돌아보는 중이야. 끝나면 보낼게." and "부족한 기능" in text
     prompt = judge.prompts[0]
     assert "- web_search:" in prompt and "- 내 기록으로 답하기: 요즘 관심사(주제 나무)" in prompt
+
+
+def test_found_lists_what_jarvis_looked_up_and_its_ideas_without_the_model(tmp_path: Path) -> None:
+    """`/found` — 스스로 알아본 것(최근 3일)과 떠오른 기능 아이디어. 없음·실패는 센
+    수에만(JAR-046)."""
+    from datetime import date
+
+    from src.core.findings import NOTHING, TELL, Fact, Finding
+    from src.storage.findings import SQLiteFindings
+
+    reasoner = CountingReasoner()
+    c = _build(tmp_path, reasoner)
+    assert _ask(c, "/found") == "탐색은 아직 안 붙었어."
+    store = SQLiteFindings(tmp_path / "t.db")
+    store.write(
+        Finding(
+            at=NOW - timedelta(hours=2),
+            kind="관심사",
+            key="interest:1",
+            subject="취업",
+            summary="가나은행 하반기 서류 마감",
+            facts=(
+                Fact("가나은행 서류 마감", date(2026, 10, 6), "가나은행 채용", "마감 10.6(화)"),
+            ),
+            sources=(),
+            queries=("가나은행 채용",),
+            worth=TELL,
+            idea="채용 마감 달력",
+        )
+    )
+    store.write(
+        Finding(
+            NOW - timedelta(hours=1), "자유", "free:1", "s", "", (), (), (), NOTHING, note="오류"
+        )
+    )
+    c.findings = store
+    out = _ask(c, "/found")
+    assert out is not None
+    assert out.startswith("최근 3일 동안 2번 알아봤고, 남길 만한 건 1개야.")
+    assert "📌" in out and '가나은행 서류 마감 (10/06(화), 4일 뒤 — 원문 "마감 10.6(화)")' in out
+    assert "채용 마감 달력" in out and reasoner.calls == 0

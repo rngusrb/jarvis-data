@@ -93,6 +93,8 @@ SHOT = "(자비스 안의 말) 방금 찍은 화면이다."
 _CHANGING = {"click", "type_search", "choose", "scroll", "back"}
 STALE = "앞 동작으로 화면이 바뀌어 건너뛰었다 — 새 목록을 보고 다시 부른다."
 _HEAD = "[브라우저 화면"
+# 돌려줄 본 화면 — 마지막 몇 장, 한 장에 이만큼까지.
+SEEN, SEEN_CHARS = 4, 30_000
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,9 @@ class Browsed:
     steps: int = 0
     typed: Tuple[str, ...] = ()
     shots: int = 0
+    # 손이 본 화면 그대로(마지막 `SEEN` 장) — `text` 는 손이 정리한 글이라,
+    # 날짜처럼 모델이 바꿔 쓰면 안 되는 것은 이것으로 확인한다(탐색 — brain/dates).
+    seen: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -133,9 +138,11 @@ class BrowseAgent:
             except (Refused, asyncio.TimeoutError) as error:
                 why = str(error) or "시간 안에 안 열렸다"
                 return Browsed(text=f"시작 페이지를 못 열었다: {why}", url=short(url))
+            first = render(view)
+            views: List[str] = [first]
             convo: List[Dict[str, Any]] = [
                 {"role": "system", "content": GUIDE},
-                {"role": "user", "content": f"목표: {goal}\n지금: {shown(now)}\n\n{render(view)}"},
+                {"role": "user", "content": f"목표: {goal}\n지금: {shown(now)}\n\n{first}"},
             ]
             shots = 0
             steps = 0
@@ -145,7 +152,7 @@ class BrowseAgent:
                 text = (turn.content or "").strip()
                 if not turn.calls:
                     if text:
-                        return self._done(text, session, steps, shots)
+                        return self._done(text, session, steps, shots, views)
                     logger.warning("다루는 손 — %d번째 차례에 빈 답, 정리한다", steps)
                     break
                 convo.append(
@@ -164,6 +171,8 @@ class BrowseAgent:
                         result, image = await self._timed(session, call)
                         # 거절·실패는 화면을 안 바꿨다 — 새 화면이 나왔을 때만.
                         changed = changed or (call.name in _CHANGING and result.startswith(_HEAD))
+                        if result.startswith(_HEAD):
+                            views.append(result)
                     convo.append({"role": "tool", "tool_call_id": call.id, "content": result})
                     shot = image or shot
                 if shot is not None:
@@ -186,9 +195,11 @@ class BrowseAgent:
             convo.append({"role": "user", "content": FINISH})
             last = await self.client.chat(convo, tools=None, thinking=self.thinking)
             text = (last.content or "").strip() or "찾지 못했다(정리한 답이 비었다)."
-            return self._done(text, session, steps, shots)
+            return self._done(text, session, steps, shots, views)
 
-    def _done(self, text: str, session: Session, steps: int, shots: int) -> Browsed:
+    def _done(
+        self, text: str, session: Session, steps: int, shots: int, views: List[str]
+    ) -> Browsed:
         logger.info(
             "다루는 손 끝 — 차례 %d, 입력 %d번, 캡처 %d장, 파일 %d개, 답 %d자",
             steps,
@@ -204,6 +215,7 @@ class BrowseAgent:
             steps=steps,
             typed=tuple(session.typed),
             shots=shots,
+            seen=tuple(v[:SEEN_CHARS] for v in views[-SEEN:]),
         )
 
     async def _timed(self, session: Session, call: ToolCall) -> Tuple[str, Optional[bytes]]:

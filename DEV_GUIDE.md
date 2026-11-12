@@ -43,6 +43,7 @@
 | 자비스 (반응) | 30분 + 수집 직후 | 관측 조회 → 트리거 → 게이트 → LLM → 발송 |
 | 가져오기 (서버 pull) | 예보 한 시간마다(새 발표만) · 공휴일 12시간마다(해마다 새로) · 장소 이름 6시간마다 | 공공데이터포털 → `src/runtime/pull.py` → 섹터의 `Puller` (`src/sectors/weather/pull.py`) |
 | 회고 | 매일 05:30 (꺼져 있었으면 켜진 뒤) | 오래 잠잠한 주제 접기 → 나무 + 안 붙은 흔적 → LLM 연산 → 검사 → 한 트랜잭션 |
+| 탐색 | 깨어 있는 08~24시 10분마다 · 밤 한 시간마다(대화 중이면 미룸) | 씨앗 무작위(관심사·못 한 답·최근 검색어) → 검색·읽기·브라우저 → 판단(꼴, 날짜는 원자료에서 코드가 뽑은 것만) → 알아본 것 → 오늘의 "알릴 것"은 반응 루프가 먼저 말함 |
 
 애플 건강은 **push 만 가능하다** — HealthKit 은 기기 밖 조회 API가 없다.
 iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/sectors/<x>/` 에 수집기를 둔다.
@@ -103,6 +104,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 | 섹터 신호에 판단 전 준비 붙이기 | `src/runtime/loop.py` — `Preparer`·`prepare_for`, 조립은 `app/main.py` — `build_preparers` |
 | 쉬는 날(공휴일) | `src/core/days.py` — `is_workday`, 받는 건 `src/sectors/weather/pull.py` — `HolidayPull` |
 | 쓴 돈 — 결제 읽기·같은 결제 합치기·기간 합계 | `src/sectors/money/payments.py` — `from_sms`·`from_wallet`·`merge`·`summarize`, 맥락은 `context.py` — `SpendingProvider` |
+| 무작위 탐색 — 씨앗 갈래 몫·무게·쉬는 시간, 하루 검색 상한, 날짜 받는 법 | `src/brain/explore.py` — `SHARES`, `Explorer`(`again`·`daily_searches`·`limit`·`browse_limit`), `date_table`·`parse_judged`·`RELATIVE_WORDS`, 날짜 뽑기는 `src/brain/dates.py`(`dates_in`), 간격은 `JARVIS_EXPLORE_EVERY`, 조립은 `app/main.py` — `build_explorer` |
 | **섹터 추가** (예: 쇼핑) | `src/sectors/shopping/` 폴더 + `app/main.py` 등록 한 줄 |
 | 접는 법 바꾸기 | `src/core/folding.py` — 백필·수신구가 같이 쓴다 |
 | 감지 기준 바꾸기 | `src/triggers/` — 백테스트 수치를 근거로 |
@@ -121,7 +123,7 @@ iMessage·캘린더·GitHub 처럼 서버에서 pull 이 되는 소스는 `src/s
 |---------|------|------|
 | `Channel` | 텔레그램 | iOS 푸시 |
 | `Reasoner` | vLLM 직접 | 도구가 필요하면 LangGraph(:8001) |
-| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 · 최근 사건 · 쓴 돈(money 섹터가 들고 옴) | 캘린더 · 프로필 |
+| `ContextProvider` | 관측 추이 · 발화 기록 · 수집 현황 · 흔적 하루 요약 · 요즘 관심사(주제 나무) · 내 말에 대한 👍👎 · 최근 사건 · 쓴 돈(money 섹터가 들고 옴) · 스스로 알아본 것 | 캘린더 · 프로필 |
 | `ObservationSource` | SQLite | PostgreSQL |
 | `Trigger` | 수면 급감 · 만성 수면 부족 · 늦게 잠듦 · 비·눈 예보 | 쇼핑 |
 | `EventTrigger` | 평일 아침 늦게 나섬 · 평소와 다른 곳에서 탐 · 출근 열차 (위치 사건) | 앱·웹 사건 |

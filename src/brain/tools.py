@@ -21,7 +21,7 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from src.brain.browse import BrowseAgent, Browsed
@@ -75,7 +75,7 @@ TOOLS: List[Dict[str, Any]] = [
     },
 ]
 
-# 브라우저로 직접 다루기(JAR-038). 대화에서만 준다 — 오래 걸린다(1~2분).
+# 브라우저로 직접 다루기(JAR-038). 대화와 무작위 탐색에만 준다 — 오래 걸린다(1~2분).
 BROWSE: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -158,6 +158,9 @@ class Researched:
     text: str
     uses: Tuple[Use, ...] = ()
     pages: Tuple[Page, ...] = ()
+    # 바깥에서 온 글 그대로 — 검색 결과 하나씩(제목·요약), 읽은 페이지, 브라우저가 본 화면. 모델이
+    # 쓴 글(`text`)과 달리 날짜 같은 것을 확인할 원자료다(탐색의 날짜 뽑기 — brain/dates).
+    material: Tuple[str, ...] = ()
 
     @property
     def searched(self) -> bool:
@@ -176,6 +179,7 @@ class _State:
     found: Set[str] = field(default_factory=set)
     uses: List[Use] = field(default_factory=list)
     pages: List[Page] = field(default_factory=list)
+    material: List[str] = field(default_factory=list)
     browsed: int = 0
 
 
@@ -214,7 +218,8 @@ class ToolLoop:
     # 3월쯤
     # 나올 것"처럼 지난 달을 말했고 존댓말로 끌려갔다(2026-11-05 실측). 대신 10~40초 걸린다.
     thinking: bool = True
-    # 브라우저로 직접 다루기. 대화에서만 붙인다(오래 걸린다). 없으면 도구도 지시문도 안 준다.
+    # 브라우저로 직접 다루기. 대화와 무작위 탐색에만 붙인다(오래 걸린다). 없으면 도구도
+    # 지시문도 안 준다.
     browse: Optional[BrowseAgent] = None
     browses: int = 1
     # 다루는 손의 시간 상한(손 자신의 상한 + 정리 몫). 넘기면 멈추고 그렇다고 돌려준다.
@@ -325,6 +330,10 @@ class ToolLoop:
             state.uses.append(Use("browse", url, False, why[:120]))
             return f"브라우저 실패({type(error).__name__}). 다른 결과를 읽거나 찾은 것으로 답한다."
         state.uses.append(Use("browse", url, True, f"{len(done.text)}자", len(done.text)))
+        # 다룬 손이 정리한 글(`done.text`)은 모델이 쓴 것이다 — 원자료는 손이 본 화면 그대로. 손이
+        # 검색창에 친 말은 화면이 되비춘다("'… 11월 13일' 검색 결과 없음") — 그것도 모델이 쓴 것이라
+        # 지운다(3차 리뷰).
+        state.material.extend(_unecho(view, done.typed) for view in done.seen)
         # 브라우저에서 만난 파일은 읽을 수 있다 — 주소는 페이지가 준 것이다(모델이 쓴 게 아니다).
         # 손 쪽에서 이미 거르지만(같은 사이트·길이·10개) 여기서도 한 겹 더.
         files = [link for link in done.files if len(link.url) <= LINK_ENCODED][:LINKS]
@@ -339,7 +348,12 @@ class ToolLoop:
                 state.read,
                 len(text),
             )
-        return Researched(text=text, uses=tuple(state.uses), pages=tuple(state.pages))
+        return Researched(
+            text=text,
+            uses=tuple(state.uses),
+            pages=tuple(state.pages),
+            material=tuple(state.material),
+        )
 
     async def _use(self, call: ToolCall, state: _State) -> str:
         """도구 하나를 실행해 모델에게 돌려줄 글.
@@ -367,6 +381,7 @@ class ToolLoop:
             state.seen.update((_norm(f.url), f.url) for f in found)
             state.found.update(f.url for f in found)
             state.uses.append(Use("search", query, True, f"{len(found)}개", len(found)))
+            state.material.extend(f"{f.title}\n{f.snippet}" for f in found)
             return render_found(query, found)
         if call.name == "read_page":
             asked = str(call.arguments.get("url") or "").strip()
@@ -395,11 +410,21 @@ class ToolLoop:
                 page = replace(page, links=())
             state.seen.update((_norm(link.url), link.url) for link in page.links)
             state.pages.append(page)
+            state.material.append(f"{page.title}\n{page.text}")
             return render_page(page, browsable=self.browse is not None)
         if call.name == "browse" and self.browse is not None:
             return await self._browse(call, state)
         logger.warning("모르는 도구를 불렀다: %s", call.name)
         return f"그런 도구는 없다: {call.name}"
+
+
+def _unecho(view: str, typed: Sequence[str]) -> str:
+    """손이 친 말을 화면에서 지운다 — 글자가 든 말이나 날짜 꼴("2026.11.13")만. "2026"처럼 숫자만
+    친 말을 지우면 화면의 "2026.11.16(월)"까지 지워진다(4차 리뷰)."""
+    for words in typed:
+        if len(words.strip()) >= 2 and re.search(r"[가-힣A-Za-z]|\d[./-]\d", words):
+            view = view.replace(words, "…")
+    return view
 
 
 def render_found(query: str, found: List[Found]) -> str:
