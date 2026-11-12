@@ -126,6 +126,7 @@ tests:
   - tests/integration/test_ingest_samples.py
   - tests/unit/test_daily_loop.py
   - tests/unit/test_pull_loop.py
+  - tests/unit/test_explore_loop.py
 ```
 
 ```bash
@@ -142,4 +143,5 @@ python scripts/harness.py src/runtime/
 | `loop.py` | 자비스 루프. 주기 실행 + 수집 훅, 중복 발화 잠금. 관측치 트리거·사건 트리거의 신호를 모아 줄기로 묶어 판단(`_together` — 게이트를 통과한 것 중 가장 무거운 것 + 같은 줄기 나머지) → 관심사 신호(나무에서, 한 주기에 하나, 묶지 않는다 — 판단 전에 웹에서 찾아 둔다(`research`), 못 찾거나 터지면 없이 판단) → 감시 순서, 하나가 터져도 나머지는 돈다. 먼저 건 말에 👍👎 와 표, 대화 기록에도(`transcript`). 섹터 신호의 준비(`prepare_for` — 신호 이름 앞부분으로 `Preparer`, 꼭 필요한데 못 하면(`required`) 그 신호는 말하지 않는다 — 열차 알림) |
 | `listen.py` | 듣는 루프. 받자마자 커서를 민다. 버튼 누름에는 새 메시지 대신 버튼 위 알림으로 답한다(`ack` — 👍 하나에 알림이 또 울리지 않게). 오래 걸리는 답(`Later` — 보고서, 웹을 찾아보는 답)은 지금 말("쓰는 중")을 먼저 보내고 나중 말은 따로 기다려 보낸다 — 그동안 다른 말과 버튼에 답한다 |
 | `pull.py` | 서버가 바깥에서 가져오는 루프(`PullLoop`) — 섹터가 내는 `Puller` 를 각자 간격마다, 시작하자마자 한 번. 실패는 로그를 남기고 10분 뒤 다시(간격이 더 짧으면 간격대로), 준비 안 됨(`NotReady` — 날씨를 받을 집을 모른다 등)은 경고 한 줄 뒤 간격대로. 하나가 터져도 나머지는 돌고 한 바퀴가 터져도 루프는 안 끝난다 |
+| `explore.py` | 탐색 루프의 시계(`ExploreLoop`, JAR-046) — 깨어 있는 08~24시엔 `every`(기본 10분), 밤엔 `night_every`(한 시간)마다. 대화 중이면 미루고, 마지막으로 알아본 때(저장소)를 봐서 재시작 때마다 바로 또 돌지 않는다. 켜지고 10분 뒤부터, 실패해도 계속 |
 | `ingest.py` | 수신구(`/ingest`, `/ingest/spans`, `/ingest/samples`, `/ingest/traces`) + `/health`. 사건 카드가 있는 종류는 표본 문으로 와도 사건 표에 담고, 좌표가 있으면 장소에 붙인다 |

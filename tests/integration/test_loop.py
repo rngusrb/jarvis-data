@@ -1147,3 +1147,49 @@ def test_a_required_preparation_that_breaks_keeps_quiet() -> None:
     brain, channel = SeesPrompt(), RecordingChannel()
     loop = _train_loop({"train_ahead": Preparer(BrokenArrivals(), required=True)}, brain, channel)
     assert asyncio.run(loop.run_once()) == 0 and brain.prompts == [] and channel.sent == []
+
+
+def test_a_finding_to_tell_is_spoken_once_on_the_day_it_was_found(tmp_path: Path) -> None:
+    """탐색이 "알릴 것"으로 남긴 것을 그날 먼저 말한다 — 한 번만(JAR-046)."""
+    from datetime import date
+
+    from src.core.findings import TELL, Fact, Finding
+    from src.storage.findings import SQLiteFindings
+    from src.triggers.findings import FindingWatch
+
+    db = tmp_path / "t.db"
+    findings = SQLiteFindings(db)
+    findings.write(
+        Finding(
+            at=AFTERNOON - timedelta(hours=1),
+            kind="관심사",
+            key="interest:1",
+            subject="해커톤",
+            summary="해커톤 접수 마감이 다가온다",
+            facts=(Fact("해커톤 접수 마감", date(2026, 11, 8), "주최 사이트"),),
+            sources=(),
+            queries=("해커톤 접수",),
+            worth=TELL,
+        )
+    )
+    channel = RecordingChannel()
+    gate = Gate(log=SQLiteSpeechLog(db), family_cooldowns={"finding": timedelta(hours=6)})
+    loop = JarvisLoop(
+        source=FakeSource([]),
+        triggers=[],
+        agent=JarvisAgent(reasoner=FakeReasoner(), gate=gate),
+        channel=channel,
+        finding_watch=FindingWatch(),
+        findings=findings,
+        clock=lambda: AFTERNOON,
+    )
+    assert asyncio.run(loop.run_once()) == 1
+    assert asyncio.run(loop.run_once()) == 0  # 알아본 것 하나는 한 번만
+    with pytest.raises(ValueError, match="알아본 것 저장소"):
+        JarvisLoop(
+            source=FakeSource([]),
+            triggers=[],
+            agent=JarvisAgent(reasoner=FakeReasoner(), gate=gate),
+            channel=channel,
+            finding_watch=FindingWatch(),
+        )

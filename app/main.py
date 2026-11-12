@@ -25,12 +25,14 @@ from src.brain.browse import BrowseAgent
 from src.brain.browser import Browser
 from src.brain.client import VLLMClient
 from src.brain.converse import Conversationalist
+from src.brain.explore import JUDGED, Explorer
 from src.brain.feedback import FeedbackProvider
 from src.brain.gate import Gate
 from src.brain.providers import (
     Collected,
     CollectionStatusProvider,
     EventDigestProvider,
+    FindingsProvider,
     ObservationTrendProvider,
     RecentValuesProvider,
     SpeechHistoryProvider,
@@ -54,6 +56,7 @@ from src.core.metrics import MetricRegistry
 from src.core.topics import Trend
 from src.core.traces import TraceRegistry
 from src.runtime.daily import DailyLoop
+from src.runtime.explore import ExploreLoop
 from src.runtime.ingest import router as ingest_router
 from src.runtime.listen import ListenLoop
 from src.runtime.loop import JarvisLoop, Preparer
@@ -65,12 +68,15 @@ from src.sectors.commute.subway import TrainArrivals
 from src.sectors.commute.triggers import FAMILY as COMMUTE_FAMILY
 from src.sectors.commute.triggers import TRAIN_FAMILY, TrainAheadTrigger
 from src.sectors.health.triggers import FAMILY as HEALTH_FAMILY
+from src.sectors.interest.digest import SEARCH as SEARCH_PREFIX
+from src.sectors.interest.traces import WEB_VISIT
 from src.sectors.weather import FAMILY as WEATHER_FAMILY
 from src.sectors.weather.pull import ForecastPull, HolidayPull
 from src.storage.catalog import MergedCatalog
 from src.storage.conversation import SQLiteConversation
 from src.storage.days import SQLiteHolidays
 from src.storage.events import SQLiteEventStore
+from src.storage.findings import SQLiteFindings
 from src.storage.places import SQLitePlaceStore
 from src.storage.selfchecks import SQLiteSelfChecks
 from src.storage.speech import SQLiteSpeechLog
@@ -78,6 +84,8 @@ from src.storage.sqlite import SQLiteStore
 from src.storage.topics import SQLiteTopicStore
 from src.storage.traces import SQLiteTraceStore
 from src.triggers.collection import CollectionWatch, Watched
+from src.triggers.findings import FAMILY as FINDING_FAMILY
+from src.triggers.findings import FindingWatch
 from src.triggers.topics import FAMILY as TOPIC_FAMILY
 from src.triggers.topics import TopicWatch
 
@@ -137,8 +145,8 @@ def build_tools(
     """웹을 찾아보는 도구 고리. 검색 주소가 없으면 None — 자비스는 아는 것으로만 답한다.
 
     대화·보고서·관심사 준비가 쓴다. vLLM 이 도구 호출을 켜고 떠 있어야 한다(SETUP — `qwen3_coder`).
-    브라우저(`browse`)는 대화만 붙인다 — 오래 걸린다(`build_browse`).
-    """
+    브라우저(`browse`)는 대화와 무작위 탐색만 붙인다 — 오래 걸린다(`build_browse`). 관심사
+    준비·보고서는 사용자가 기다려서 뺀다."""
     if not settings.search_base_url:
         return None
     web = httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0))
@@ -201,6 +209,56 @@ def _research(
     return TopicResearch(tools, limit=limit) if tools is not None else None
 
 
+# 대화 중이라고 볼 시간 — 탐색은 그동안 미룬다(같은 모델·같은 브라우저를 쓴다).
+TALKING = timedelta(minutes=10)
+
+
+def build_explorer(
+    settings: Settings, findings: SQLiteFindings, conversation: SQLiteConversation
+) -> Optional[ExploreLoop]:
+    """무작위 탐색과 그 시계(JAR-046). 간격이 0 이거나 검색이 없으면 None."""
+    if settings.explore_every_min <= 0:
+        logger.info("무작위 탐색 끔 — JARVIS_EXPLORE_EVERY=0")
+        return None
+    # 탐색은 기다리는 사람이 없어 브라우저까지 붙인다(사용자 요청: 크롬 서치). 한 번에 검색 둘·읽기
+    # 둘 — 10분마다 도니 하루 검색 상한(Explorer.daily_searches)에 걸리지 않을 만큼.
+    tools = build_tools(settings, searches=2, rounds=3, reads=2, browse=build_browse(settings))
+    if tools is None:
+        logger.info("무작위 탐색 끔 — 검색(JARVIS_SEARCH_URL)이 없다")
+        return None
+    explorer = Explorer(
+        # 판단은 정해진 꼴로만(`JUDGED`) — 지시문만으론 꼴이 깨지고 사실을 늘어놓다 잘렸다.
+        reasoner=VLLMClient(
+            settings.brain_base_url,
+            model=settings.brain_model or None,
+            temperature=0.2,
+            max_tokens=4096,
+            schema=JUDGED,
+        ),
+        tools=tools,
+        findings=findings,
+        topics=SQLiteTopicStore(settings.db_path),
+        checks=SQLiteSelfChecks(settings.db_path),
+        traces=SQLiteTraceStore(settings.db_path),
+        # 자유 씨앗은 크롬 검색 흔적 — 그 종류와 앞말은 interest 섹터의 것이다
+        # (수집기와 시험이 묶는다).
+        search_kind=WEB_VISIT.kind,
+        search_prefix=SEARCH_PREFIX,
+    )
+
+    def busy(now: datetime) -> bool:
+        last = conversation.recent(1)
+        return bool(last) and now - last[-1].at < TALKING
+
+    logger.info("무작위 탐색 — 깨어 있는 시간 %d분마다", settings.explore_every_min)
+    return ExploreLoop(
+        job=explorer.explore_once,
+        every=timedelta(minutes=settings.explore_every_min),
+        busy=busy,
+        last=findings.last_at,
+    )
+
+
 def build_reporter(settings: Settings) -> Reporter:
     """`/report` 를 조립한다 — 넓게 본다. 서버와 손으로 돌리는 시험이 같은 조립을 쓴다."""
     metrics = MetricRegistry()
@@ -248,6 +306,8 @@ def build_reporter(settings: Settings) -> Reporter:
             ),
             # 쓴 돈 — 대화와 같은 블록(JAR-045). 결제 흔적이 없으면 안 보인다.
             money.SpendingProvider(source=traces),
+            # 스스로 알아본 것(JAR-046) — 보고서의 "다음 한 주"에 쓸 재료.
+            FindingsProvider(source=SQLiteFindings(settings.db_path)),
             # 접은 지표는 뺀다 — 보고서가 그걸 "모르는 것"으로 적었다(providers 참고).
             CollectionStatusProvider(
                 catalog=MergedCatalog(store, traces, events), cards=cards, retired=False
@@ -422,8 +482,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 열차 알림은 이동과 따로 센다 — 늦게 나선 날에도 열차 도착은 쓸모가 있다. 한 아침에
             # 하나.
             TRAIN_FAMILY: timedelta(hours=6),
+            # 스스로 알아본 것(JAR-046) — 말한 뒤 6시간, 10~21시라 하루 두 번까지(사용자에게 보인
+            # 기본안).
+            FINDING_FAMILY: timedelta(hours=6),
         },
     )
+    # 스스로 알아본 것 — 탐색 루프가 남기고 신호·맥락·`/found` 가 읽는다(JAR-046).
+    findings = SQLiteFindings(settings.db_path)
+    app.state.findings = findings
     agent = JarvisAgent(
         reasoner=VLLMClient(settings.brain_base_url, model=settings.brain_model or None),
         gate=gate,
@@ -452,6 +518,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 실험 단계라 자비스가 보게 한다(허들을 낮춘다 — 2026-11-02 사용자 결정). 답은
             # 텔레그램으로 나간다.
             money.SpendingProvider(source=traces),
+            # 스스로 알아본 것(JAR-046) — 대화가 "요즘 뭐 알아봤어?"에 답하고 판단이 겹치는 말을
+            # 피한다.
+            FindingsProvider(source=findings),
         ),
     )
     # `/report` — 넓게 모아 "요즘의 너"를 쓴다(JAR-027). 손으로 시험할 때도 같은 조립을 쓴다.
@@ -490,6 +559,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 회고가 가꾸는 나무에서 요즘 뜨는 관심사로 먼저 말을 건다(한 주기에 하나).
         topic_watch=TopicWatch(),
         topics=SQLiteTopicStore(settings.db_path),
+        # 스스로 알아본 것 중 오늘의 "알릴 것"으로 먼저 말을 건다(한 주기에 하나, JAR-046).
+        finding_watch=FindingWatch(),
+        findings=findings,
         transcript=conversation,
         # 관심사로 말 걸기 전에 지금 도움이 될 것(다가오는 일정 등)을 찾아 둔다 — 주 두 번쯤.
         research=_research(settings),
@@ -527,6 +599,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("바깥 API 키가 없다 — 날씨·공휴일·장소 이름을 안 받는다")
 
+    # 다섯 번째 루프 — 무작위 탐색(JAR-046, 사용자 요청 2026-11-12 "거의 항시"). 검색이 없으면 안
+    # 띄운다.
+    explorer = build_explorer(settings, findings, conversation)
+    if explorer is not None:
+        tasks.append(asyncio.create_task(explorer.run_forever()))
+
     # 세 번째 루프. 앞의 둘은 시계가 돌리고 이건 사용자가 돌린다.
     # 텔레그램이 없으면 들을 곳도 없으므로 그때는 안 띄운다.
     channel = jarvis.channel
@@ -555,6 +633,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 tools=tools,
                 selfcheck=SelfReview(reasoner=judge, store=checks),
                 gaps=GapReport(reasoner=judge, store=checks),
+                findings=findings,
             ),
             speaker=channel,
             log=conversation,

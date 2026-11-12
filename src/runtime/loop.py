@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from src.brain.agent import JarvisAgent
@@ -27,10 +27,13 @@ from src.brain.context import ContextBlock
 from src.brain.feedback import buttons, new_token
 from src.brain.providers import TopicSource
 from src.channels.base import Channel
+from src.core.clock import KST, local
 from src.core.events import EventSource
+from src.core.findings import FindingSource
 from src.core.models import Insight, ObservationSource
 from src.core.topics import standings
 from src.triggers.base import EventTrigger, Trigger, Watch
+from src.triggers.findings import FindingWatch
 from src.triggers.topics import TopicWatch, muted
 
 logger = logging.getLogger(__name__)
@@ -78,6 +81,9 @@ class JarvisLoop:
     # 관심사 신호와 그 재료(회고가 가꾸는 주제 나무).
     topic_watch: Optional[TopicWatch] = None
     topics: Optional[TopicSource] = None
+    # 스스로 알아본 것 신호와 그 재료(탐색 루프가 남긴 것, JAR-046).
+    finding_watch: Optional[FindingWatch] = None
+    findings: Optional[FindingSource] = None
     # 먼저 건 말을 대화 기록에도 적는다(2026-11-05 사용자 결정). 없으면 발화 기억에만 남는다.
     transcript: Optional[Transcript] = None
     # 관심사 신호가 게이트를 통과하면 판단 전에 웹에서 찾아 둔다(일정을 지어내지 않게). 없으면 안
@@ -98,6 +104,8 @@ class JarvisLoop:
             raise ValueError("사건 트리거가 있는데 사건 저장소를 안 넘겼다")
         if self.topic_watch is not None and self.topics is None:
             raise ValueError("관심사 신호가 있는데 주제 나무를 안 넘겼다")
+        if self.finding_watch is not None and self.findings is None:
+            raise ValueError("알아본 것 신호가 있는데 알아본 것 저장소를 안 넘겼다")
 
     async def run_once(self) -> int:
         """한 주기를 돈다. 실제로 발송한 메시지 수를 돌려준다."""
@@ -148,6 +156,15 @@ class JarvisLoop:
                 insight = None
             if insight is not None:
                 sent += await self._speak(insight, now, extra=await self._prepare(insight, now))
+
+        if self.finding_watch is not None and self.findings is not None:
+            try:
+                insight = self._finding(now)
+            except Exception:
+                logger.exception("알아본 것 신호 실패 — 건너뛴다")
+                insight = None
+            if insight is not None:
+                sent += await self._speak(insight, now)
 
         if self.watches and self.snapshot is not None:
             try:
@@ -210,6 +227,15 @@ class JarvisLoop:
         rated = self.agent.gate.log.rated(now - self.topic_watch.mute_for)
         quiet = muted((r.trigger, r.feedback) for r in rated)
         candidates = self.topic_watch.check(board, notes, now, quiet)
+        return self.agent.first_allowed(candidates, now)
+
+    def _finding(self, now: datetime) -> Optional[Insight]:
+        """오늘 알아본 "알릴 것" 중 게이트를 통과하는 첫 것 하나(한 주기에 하나만 판단)."""
+        assert self.finding_watch is not None and self.findings is not None
+        if not self.finding_watch.awake(now):
+            return None
+        today = datetime.combine(local(now).date(), time(0), tzinfo=KST)
+        candidates = self.finding_watch.check(self.findings.since(today), now)
         return self.agent.first_allowed(candidates, now)
 
     async def _prepare(self, insight: Insight, now: datetime) -> Sequence[ContextBlock]:

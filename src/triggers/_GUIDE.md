@@ -124,6 +124,7 @@ message: "트리거는 순수 함수다 — 네트워크·DB 금지"
 tests:
   - tests/unit/test_collection_watch.py
   - tests/unit/test_topic_watch.py
+  - tests/unit/test_findings.py
 ```
 
 ```bash
@@ -139,3 +140,4 @@ python scripts/harness.py src/triggers/
 | `base.py` | `Trigger`(지표 하나의 최근 구간), `EventTrigger`(사건 종류 하나의 최근 구간), `Watch`(종류별 마지막 수신 시각) 계약 |
 | `collection.py` | 수집 감시. 끊긴 것을 기기별로 모아 원인과 함께 하나의 신호로 |
 | `topics.py` | 관심사 신호. 주제 나무에서 뜨는 중이고 최근 7일 중 이틀 이상, 깨어난 지 2주 안인 주제를 후보 여럿으로(트리거 `topic:<번호>`, `at` 은 깨어난 때). 줄기와 가지가 함께 뜨면 가지만. 깨어 있는 시간(10~21시)에만, 👎 받은 주제와 그 아래 가지는 누른 때부터 30일 뺀다 |
+| `findings.py` | 알아본 것 신호(`FindingWatch`, JAR-046) — **오늘** 알아본 "알릴 것"(실패 까닭 없는 것)을 10~21시에 후보 여럿으로, 최근 것부터. 사실의 날짜 옆 거리는 지금에 맞춰 코드가 세고, 그 날짜가 적혀 있던 원문 줄을 같이 보인다(다른 일에 잘못 붙었으면 판단이 알아채게). 보낼 말은 판단이 그때 새로 쓴다 |

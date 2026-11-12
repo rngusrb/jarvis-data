@@ -10,7 +10,9 @@ from src.brain.client import VLLMClient
 MODELS = {"data": [{"id": "Qwen/Qwen3.8-27B-FP8"}]}
 
 
-def _client(reply: Dict[str, Any], sent: List[Dict[str, Any]] | None = None) -> VLLMClient:
+def _client(
+    reply: Dict[str, Any], sent: List[Dict[str, Any]] | None = None, **options: Any
+) -> VLLMClient:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/v1/models"):
             return httpx.Response(200, json=MODELS)
@@ -21,7 +23,7 @@ def _client(reply: Dict[str, Any], sent: List[Dict[str, Any]] | None = None) -> 
         return httpx.Response(200, json=reply)
 
     transport = httpx.MockTransport(handler)
-    return VLLMClient("http://vllm", client=httpx.AsyncClient(transport=transport))
+    return VLLMClient("http://vllm", client=httpx.AsyncClient(transport=transport), **options)
 
 
 def test_사고하다_잘리면_입을_다문다() -> None:
@@ -68,6 +70,21 @@ def test_기본은_사고를_끄고_보낸다() -> None:
     reply = {"choices": [{"message": {"content": "응"}}]}
     asyncio.run(_client(reply, sent).ask("안녕"))
     assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_꼴을_주면_그_꼴로만_답하게_보낸다() -> None:
+    """탐색 판단이 값어치 칸에 제목을 쓰고 사실을 늘어놓다 잘렸다(JAR-046 서버 실측)."""
+    schema = {"type": "object", "properties": {"worth": {"enum": ["a", "b"]}}}
+    sent: List[Dict[str, Any]] = []
+    reply = {"choices": [{"message": {"content": '{"worth": "a"}'}}]}
+    assert asyncio.run(_client(reply, sent, schema=schema).ask("판단해")) == '{"worth": "a"}'
+    assert sent[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "answer", "schema": schema},
+    }
+    plain: List[Dict[str, Any]] = []
+    asyncio.run(_client(reply, plain).ask("안녕"))
+    assert "response_format" not in plain[0]  # 주지 않으면 보내지 않는다
 
 
 def test_시스템_프롬프트를_접지_않는다() -> None:

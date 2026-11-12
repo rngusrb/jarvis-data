@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 
 import pytest
 from fastapi.testclient import TestClient
@@ -106,6 +106,11 @@ def test_the_app_actually_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         assert "train" in jarvis.agent.gate.family_cooldowns
         assert jarvis.prepare_for == {}
         assert "train_ahead" not in {t.name for t in jarvis.event_triggers}
+        # 스스로 알아본 것(JAR-046) — 줄기 간격(하루 두 번), 맥락, 신호가 붙는다. 검색이 없으면
+        # 탐색은 안 띄운다(시험 설정은 검색 주소가 비었다).
+        assert "finding" in jarvis.agent.gate.family_cooldowns
+        assert "findings" in names
+        assert jarvis.finding_watch is not None and jarvis.findings is not None
         assert "late_departure" in {t.name for t in jarvis.event_triggers}
 
 
@@ -243,3 +248,77 @@ def test_the_saved_holidays_are_loaded_at_start(
 
     with TestClient(app):
         assert holiday(date(2026, 9, 24)) == "추석"
+
+
+def test_the_explorer_waits_while_talking_and_resumes_from_its_store(tmp_path: Path) -> None:
+    """탐색의 시계는 대화 중이면 미루고, 재시작해도 마지막으로 알아본 때부터 센다(JAR-046)."""
+    from dataclasses import replace
+    from datetime import datetime, timedelta, timezone
+
+    from app.main import TALKING, build_explorer
+    from src.core.findings import KEEP, Finding
+    from src.storage.conversation import SQLiteConversation
+    from src.storage.findings import SQLiteFindings
+
+    settings = replace(_settings(tmp_path), search_base_url="http://search.test")
+    findings = SQLiteFindings(settings.db_path)
+    conversation = SQLiteConversation(settings.db_path)
+    loop = build_explorer(settings, findings, conversation)
+    assert loop is not None and loop.every == timedelta(minutes=10)
+    now = datetime(2026, 11, 12, 5, 0, tzinfo=timezone.utc)
+    assert loop.busy(now) is False
+    conversation.add("user", now - timedelta(minutes=3), "안녕")
+    assert loop.busy(now) is True and loop.busy(now + TALKING) is False
+    assert loop.last() is None
+    findings.write(Finding(now, "자유", "free:1", "s", "", (), (), (), KEEP))
+    assert loop.last() == now
+    assert build_explorer(replace(settings, explore_every_min=0), findings, conversation) is None
+    assert build_explorer(replace(settings, search_base_url=""), findings, conversation) is None
+
+
+def test_the_explorer_judges_in_a_fixed_shape(tmp_path: Path, monkeypatch: Any) -> None:
+    """판단 두뇌는 정해진 꼴로만 답한다 — 지시문만으론 값어치 칸에 제목을 쓰고 사실을 늘어놓다
+    잘렸다(JAR-046 서버 실측)."""
+    from dataclasses import replace
+
+    import app.main as main
+    from src.brain.explore import JUDGED
+    from src.storage.conversation import SQLiteConversation
+    from src.storage.findings import SQLiteFindings
+
+    made: List[Dict[str, Any]] = []
+    real = main.VLLMClient
+
+    def recording(*args: Any, **options: Any) -> Any:
+        made.append(options)
+        return real(*args, **options)
+
+    monkeypatch.setattr(main, "VLLMClient", recording)
+    settings = replace(_settings(tmp_path), search_base_url="http://search.test")
+    loop = main.build_explorer(
+        settings, SQLiteFindings(settings.db_path), SQLiteConversation(settings.db_path)
+    )
+    assert loop is not None
+    judges = [o for o in made if o.get("schema") is not None]
+    assert len(judges) == 1 and judges[0]["schema"] is JUDGED
+    assert judges[0]["max_tokens"] >= 4096
+
+
+def test_free_seeds_follow_the_sectors_search_traces(tmp_path: Path) -> None:
+    """자유 씨앗은 크롬 검색 흔적 — 종류와 앞말을 섹터에서 받는다. 탐색에 박아 두면
+    섹터 쪽이 바뀔 때 자유 씨앗이 로그 없이 사라졌다(2차 리뷰 재현)."""
+    from dataclasses import replace
+
+    from app.main import build_explorer
+    from src.sectors.interest.digest import SEARCH
+    from src.sectors.interest.traces import WEB_VISIT
+    from src.storage.conversation import SQLiteConversation
+    from src.storage.findings import SQLiteFindings
+
+    settings = replace(_settings(tmp_path), search_base_url="http://search.test")
+    loop = build_explorer(
+        settings, SQLiteFindings(settings.db_path), SQLiteConversation(settings.db_path)
+    )
+    assert loop is not None
+    explorer = loop.job.__self__  # type: ignore[attr-defined]
+    assert (explorer.search_kind, explorer.search_prefix) == (WEB_VISIT.kind, SEARCH)

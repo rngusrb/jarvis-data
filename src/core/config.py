@@ -50,6 +50,9 @@ class Settings:
     # 서울 열린데이터광장 일반 인증키 — 지하철 시간표(열차 알림이 세 번째 열차부터 안다, 2026-11-11
     # 결정).
     seoul_open_key: str = ""
+    # 무작위 탐색의 간격(분, 깨어 있는 시간 — 밤엔 한 시간). 0 이면 끈다(JAR-046, 사용자 요청
+    # 2026-11-12 "거의 항시").
+    explore_every_min: int = 10
 
     @property
     def telegram_enabled(self) -> bool:
@@ -76,4 +79,5 @@ def load_settings() -> Settings:
         seoul_key=os.getenv("JARVIS_SEOUL_KEY", "").strip(),
         kakao_key=os.getenv("JARVIS_KAKAO_KEY", "").strip(),
         seoul_open_key=os.getenv("JARVIS_SEOUL_OPEN_KEY", "").strip(),
+        explore_every_min=int(os.getenv("JARVIS_EXPLORE_EVERY", "10") or "0"),
     )

@@ -17,6 +17,7 @@ from src.brain.context import ContextBlock
 from src.brain.memory import SpeechLog
 from src.core.clock import KST, WEEKDAYS, local
 from src.core.events import EventKind, EventSource
+from src.core.findings import NOTHING, TELL, FindingSource, when_label
 from src.core.metrics import Metric
 from src.core.models import Insight, ObservationCatalog, ObservationSource, Trace
 from src.core.places import Place
@@ -357,4 +358,52 @@ class EventDigestProvider:
         if not lines:
             return None
         label = f"최근 {self.days}일 사건(날은 자정에 바뀐다, 오늘은 지금까지)"
+        return ContextBlock(label=label, body="\n".join(lines))
+
+
+@dataclass
+class FindingsProvider:
+    """스스로 알아본 것(탐색 루프, JAR-046) — 대화·먼저 말 걸기 판단·보고서가 같이 본다.
+
+    사실의 날짜 옆 거리("4일 뒤")는 볼 때마다 코드가 지금에 맞춰 센다 — 저장한 글에는 날짜 말을 두지
+    않는다(core/findings 머리말). "없음"과 제대로 판단하지 못한 것은 뺀다.
+    """
+
+    source: FindingSource
+    name: str = "findings"
+    window: timedelta = timedelta(days=7)
+    # 알릴 것을 먼저, 그다음 기록만 — 최근 것부터 이만큼. 10분마다 쌓이니 "최근 것"만 세면 두세
+    # 시간치뿐이었다(1차 리뷰). 글자 상한도 둔다.
+    limit: int = 12
+    facts: int = 3
+    chars: int = 3000
+
+    def fetch(self, insight: Optional[Insight], now: datetime) -> Optional[ContextBlock]:
+        found = [
+            f for f in self.source.since(now - self.window) if f.worth != NOTHING and not f.note
+        ]
+        if not found:
+            return None
+        today = local(now).date()
+        ranked = sorted(found, key=lambda f: (f.worth != TELL, -f.at.timestamp()))
+        lines: List[str] = []
+        size = 0
+        for f in ranked[: self.limit]:
+            # 모델이 쓴 긴 글은 다른 날 보이지 않는다 — 날짜 없는 제목과 사실 한
+            # 줄씩만(core/findings).
+            head = f"- {local(f.at):%m/%d} {f.kind} — {f.subject}" + (
+                f": {f.summary}" if f.summary else ""
+            )
+            chunk = [head] + [
+                f"  · {fact.text}" + (f" ({label})" if (label := when_label(fact, today)) else "")
+                for fact in f.facts[: self.facts]
+            ]
+            size += sum(len(line) for line in chunk)
+            if size > self.chars and lines:
+                break
+            lines.extend(chunk)
+        label = (
+            f"스스로 알아본 것(최근 {self.window.days}일, 알릴 것 먼저 — 날짜 옆 거리는"
+            " 오늘 기준으로 코드가 셈)"
+        )
         return ContextBlock(label=label, body="\n".join(lines))

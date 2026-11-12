@@ -125,6 +125,19 @@ def test_the_hand_sees_only_the_goal_and_the_pages() -> None:
     assert client.asked[0]["tools"] == TOOLS
     assert done.text == "3회 접수 9.21~9.28 (공지)" and done.url == "https://q.example/1"
     assert session.done == ["open https://q.example/a", "click 1"] and done.steps == 2
+    # 본 화면 그대로도 돌려준다 — 정리한 글(`text`)은 모델이 쓴 것이라 날짜를 확인할 원자료가
+    # 아니다(탐색 — brain/dates).
+    assert len(done.seen) == 2 and all(v.startswith("[브라우저 화면") for v in done.seen)
+    assert "본문" in done.seen[0] and "누른 뒤 1" in done.seen[1]
+
+
+def test_only_the_last_screens_come_back_as_seen() -> None:
+    from src.brain.browse import SEEN
+
+    clicks = [Turn(content="", calls=(_call("click", n, ref=n),)) for n in range(1, SEEN + 2)]
+    agent, _, _ = _agent([*clicks, Turn(content="끝")], steps=SEEN + 3)
+    done = asyncio.run(agent.run("https://q.example/a", "일정", NOW))
+    assert len(done.seen) == SEEN and f"누른 뒤 {SEEN + 1}" in done.seen[-1]
 
 
 def test_old_screens_fold_and_only_the_last_shot_stays() -> None:
