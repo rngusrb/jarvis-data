@@ -12,7 +12,7 @@
 서버로 보내는 건 배달부(`collectors.forward`)가 한다 — 맥 앱 수집기와 같은 길이다.
 한 시간마다 자동으로 돌리려면 `collectors/install.sh` 를 쓴다.
 
-## 알아둘 함정 다섯
+## 알아둘 함정 여섯
 
 **DB가 잠긴다.** 크롬이 켜져 있으면 SQLite 잠금이 걸린다. 그래서 파일을
 복사한 뒤 복사본을 읽는다. 크롬을 끄라고 하는 건 수집기로서 실격이다.
@@ -35,6 +35,11 @@ id 는 AUTOINCREMENT 라 다시 쓰이지 않고, 늦게 들어온 줄도 새 �
 1부터 다시 붙는다. 커서를 그대로 두면 새 방문이 전부 커서 아래로 숨어, 매시간
 "흔적 0개"로 조용히 멈춘다. 번호의 최고 기록(sqlite_sequence)이 커서보다 작으면
 처음부터 다시 읽는다.
+
+**페이지가 스스로 다시 열린다.** 켜 둔 탭은 사람이 없어도 10분마다 자기 주소를 다시 연다
+(네이버 첫 화면, 채용 사이트 지원서 페이지, 상태 페이지). 크롬은 이걸 같은 주소의 앞 방문에서
+넘어온 CLIENT_REDIRECT 로 적는다. 새로고침(RELOAD)도 사람이 눌렀는지 페이지가 했는지 모른다.
+둘 다 일부러 연 방문으로 세지 않는다(`meta.opened`). 줄은 그대로 보낸다 — 거르는 건 읽는 쪽이다.
 """
 
 from __future__ import annotations
@@ -194,11 +199,16 @@ STATE_NAME = "chrome_history"
 
 # 같은 칸 안에서 같은 페이지를 다시 열면 새 흔적이 아니라 같은 행동으로 본다.
 # 새로고침·뒤로가기가 흔해서 접지 않으면 한 페이지가 프롬프트를 다섯 줄씩
-# 먹는다. 몇 번 봤는지는 meta 에 남겨 관심의 강도를 잃지 않는다.
+# 먹는다. 몇 번 열렸는지(visits)와 그중 일부러 연 횟수(opened)는 meta 에 남긴다.
 GRID = timedelta(minutes=30)
 
 # 한 요청에 너무 많이 싣지 않는다. 며칠 끊겼다 몰아 보낼 때 수천 건이 된다.
 CHUNK = 500
+
+# 크롬이 방문마다 적는 "어떻게 열렸나"(visits.transition). 아래 8비트가 종류, 위 비트가 덧붙은 표시.
+CORE_MASK = 0xFF
+RELOAD = 8
+CLIENT_REDIRECT = 0x40000000
 
 
 @dataclass(frozen=True)
@@ -208,6 +218,20 @@ class Visit:
     url: str
     title: str
     other_device: bool
+    # 사람이 일부러 열었는지 알 수 없는 방문 — 새로고침, 또는 페이지가 스스로 자기 주소를 연 것.
+    auto: bool = False
+
+
+def is_auto(transition: int, from_same_page: bool) -> bool:
+    """새로고침이거나, 같은 주소의 앞 방문에서 넘어온 CLIENT_REDIRECT 인가.
+
+    CLIENT_REDIRECT 는 다 거르면 안 된다. 짧은 주소를 눌러 기사로 넘어가는 것처럼 **다른 주소에서**
+    넘어온 건 사람이 연 페이지의 도착점이다. 크롬은 표시를 부호 있는 32비트로 적어 음수일 수 있다.
+    """
+    value = transition & 0xFFFFFFFF
+    if value & CORE_MASK == RELOAD:
+        return True
+    return bool(value & CLIENT_REDIRECT) and from_same_page
 
 
 def floor_grid(at: datetime) -> datetime:
@@ -248,19 +272,36 @@ def _select(conn: sqlite3.Connection, where: str, params: Tuple[Any, ...]) -> Li
     other = (
         "COALESCE(v.originator_cache_guid, '') != ''" if "originator_cache_guid" in columns else "0"
     )
+    # 어떻게 열렸나와 어디서 넘어왔나. 넘어온 앞 방문이 같은 주소면 페이지가 스스로 다시 연 것이다.
+    if {"transition", "from_visit"} <= columns:
+        how = "v.transition, COALESCE(p.url = v.url, 0)"
+        came_from = "LEFT JOIN visits p ON p.id = v.from_visit"
+    else:
+        how, came_from = "0, 0", ""
     rows = conn.execute(
-        f"SELECT v.id, v.visit_time, u.url, u.title, {other} "
-        f"FROM visits v JOIN urls u ON u.id = v.url WHERE {where} ORDER BY v.id",
+        f"SELECT v.id, v.visit_time, u.url, u.title, {other}, {how} "
+        f"FROM visits v JOIN urls u ON u.id = v.url {came_from} WHERE {where} ORDER BY v.id",
         params,
     ).fetchall()
     return [
-        Visit(int(i), webkit_to_datetime(int(t)), str(url), str(title or ""), bool(o))
-        for i, t, url, title, o in rows
+        Visit(
+            int(i),
+            webkit_to_datetime(int(t)),
+            str(url),
+            str(title or ""),
+            bool(o),
+            is_auto(int(how_opened or 0), bool(same)),
+        )
+        for i, t, url, title, o, how_opened, same in rows
     ]
 
 
 def fold(visits: Iterable[Visit]) -> List[Dict[str, Any]]:
-    """같은 칸 안의 같은 페이지는 하나로 접는다. 시각은 **처음 본 때**를 남긴다."""
+    """같은 칸 안의 같은 페이지는 하나로 접는다. 시각은 **처음 본 때**를 남긴다.
+
+    `opened` 는 그중 일부러 연 방문 수다. 0 이면 그 줄은 저절로 열린 것뿐이고, 읽는 쪽이 거른다.
+    없는 줄(이 표시 전에 보낸 것)은 셌는지 모르는 것이다.
+    """
     groups: Dict[Tuple[datetime, str], List[Visit]] = {}
     for visit in sorted(visits, key=lambda v: (v.at, v.id)):
         text = describe(visit.url, visit.title)
@@ -277,6 +318,7 @@ def fold(visits: Iterable[Visit]) -> List[Dict[str, Any]]:
             "host": urlparse(first.url).hostname or "",
             # 폰으로 본 것과 맥으로 본 것은 다른 시간을 보낸 것이다.
             "device": "맥" if not others else "다른 기기" if others == len(group) else "둘 다",
+            "opened": sum(not v.auto for v in group),
         }
         if len(group) > 1:
             meta["visits"] = len(group)
@@ -372,15 +414,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             file=sys.stderr,
         )
     traces = found.traces
+    # 저절로 열린 줄도 보내되 몇 줄인지 매번 적는다 — 거르는 쪽이 조용히 많이 버리면 여기서 보인다.
+    auto_lines = sum(1 for t in traces if t["meta"].get("opened") == 0)
     print(
         f"{datetime.now():%m-%d %H:%M} 프로필 {profile_label(history)} · "
         f"커서 {after_id} → {found.after_id} · "
-        f"흔적 {len(traces)}개 · 안 닫힌 칸이라 미룬 방문 {found.waiting}건"
+        f"흔적 {len(traces)}개(그중 저절로 열린 줄 {auto_lines}개) · "
+        f"안 닫힌 칸이라 미룬 방문 {found.waiting}건"
     )
 
     if args.dry_run:
         for item in traces[-40:]:
-            print(f"  {item['at'][:16]}  {item['meta']['device']:<5} {item['text'][:80]}")
+            mark = "저절로" if item["meta"].get("opened") == 0 else item["meta"]["device"]
+            print(f"  {item['at'][:16]}  {mark:<5} {item['text'][:80]}")
         return 0
 
     # 직접 보내지 않고 보낼 상자에 적는다. 직접 보내면 덩어리가 여럿인 실행이 중간에

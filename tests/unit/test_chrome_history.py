@@ -25,19 +25,38 @@ def at(minutes: float) -> datetime:
     return T0 + timedelta(minutes=minutes)
 
 
+# 크롬이 visits.transition 에 적는 값 중 시험에 쓰는 것.
+LINK, FORM_SUBMIT = 0, 7
+CHAIN_START, CHAIN_END = 0x10000000, 0x20000000
+
+
 class FakeChrome:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, transitions: bool = True) -> None:
+        # transitions=False 는 "어떻게 열렸나" 열이 없는 크롬이다. 실제 크롬엔 늘 있다.
         self.path = path
+        self.transitions = transitions
+        extra = (
+            ", transition INTEGER NOT NULL DEFAULT 0, from_visit INTEGER NOT NULL DEFAULT 0"
+            if transitions
+            else ""
+        )
         conn = sqlite3.connect(path)
         conn.executescript(
             "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, title TEXT);"
             "CREATE TABLE visits (id INTEGER PRIMARY KEY AUTOINCREMENT, url INTEGER NOT NULL,"
-            " visit_time INTEGER NOT NULL, originator_cache_guid TEXT);"
+            f" visit_time INTEGER NOT NULL, originator_cache_guid TEXT{extra});"
         )
         conn.commit()
         conn.close()
 
-    def visit(self, when: datetime, page: str, other_device: bool = False) -> int:
+    def visit(
+        self,
+        when: datetime,
+        page: str,
+        other_device: bool = False,
+        transition: int = LINK | CHAIN_START | CHAIN_END,
+        from_visit: int = 0,
+    ) -> int:
         conn = sqlite3.connect(self.path)
         url = f"https://example.com/{page}"
         row = conn.execute("SELECT id FROM urls WHERE url = ?", (url,)).fetchone()
@@ -46,10 +65,19 @@ class FakeChrome:
             if row
             else conn.execute("INSERT INTO urls (url, title) VALUES (?, ?)", (url, page)).lastrowid
         )
-        visit_id = conn.execute(
-            "INSERT INTO visits (url, visit_time, originator_cache_guid) VALUES (?, ?, ?)",
-            (url_id, to_webkit(when), "phone-guid" if other_device else ""),
-        ).lastrowid
+        guid = "phone-guid" if other_device else ""
+        if self.transitions:
+            visit_id = conn.execute(
+                "INSERT INTO visits"
+                " (url, visit_time, originator_cache_guid, transition, from_visit)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (url_id, to_webkit(when), guid, transition, from_visit),
+            ).lastrowid
+        else:
+            visit_id = conn.execute(
+                "INSERT INTO visits (url, visit_time, originator_cache_guid) VALUES (?, ?, ?)",
+                (url_id, to_webkit(when), guid),
+            ).lastrowid
         conn.commit()
         conn.close()
         assert visit_id is not None
@@ -110,6 +138,65 @@ def test_같은_칸의_같은_페이지는_하나로_접고_방문수는_그_줄
     assert by_text["a (example.com)"]["meta"]["visits"] == 2
     assert "visits" not in by_text["b (example.com)"]["meta"]
     assert by_text["a (example.com)"]["at"] == at(0).isoformat()
+
+
+# 어디서 넘어왔는지(from_visit)에 따라 스스로 다시 연 것도, 다른 페이지에서 넘어온 것도 된다.
+REDIRECTED = LINK | CHAIN_END | chrome_history.CLIENT_REDIRECT
+
+
+def test_켜_둔_탭이_스스로_다시_연_방문은_일부러_연_것으로_세지_않는다(chrome: FakeChrome) -> None:
+    # 2026-11-26 사고: 켜 둔 탭이 10분마다 자기 주소를 다시 열어(CLIENT_REDIRECT, 앞 방문이 같은
+    # 주소) 30분 칸마다 '3번 봄' 줄이 밤새 생겼고, 자비스가 그 페이지를 밤새 들여다본 걸로 읽었다.
+    prev = chrome.visit(at(0), "apply")  # 사람이 링크로 연 것
+    for minute in (10, 20, 30, 40, 50):
+        submit = FORM_SUBMIT | CHAIN_END | chrome_history.CLIENT_REDIRECT
+        prev = chrome.visit(at(minute), "apply", transition=submit, from_visit=prev)
+
+    traces = Collector(chrome).run(now=at(90)).traces
+
+    assert [(t["at"], t["meta"]["visits"], t["meta"]["opened"]) for t in traces] == [
+        (at(0).isoformat(), 3, 1),
+        (at(30).isoformat(), 3, 0),
+    ]
+
+
+def test_다른_주소에서_넘어온_CLIENT_REDIRECT_는_사람이_연_페이지의_도착점이다(
+    chrome: FakeChrome,
+) -> None:
+    # 짧은 주소를 눌러 기사로 넘어가면 기사 방문은 CLIENT_REDIRECT 다. 이것까지 거르면 기사를
+    # 잃는다.
+    short = chrome.visit(at(0), "short")
+    chrome.visit(at(0.1), "article", transition=REDIRECTED, from_visit=short)
+
+    traces = Collector(chrome).run(now=at(60)).traces
+
+    assert {t["text"]: t["meta"]["opened"] for t in traces} == {
+        "short (example.com)": 1,
+        "article (example.com)": 1,
+    }
+
+
+def test_새로고침은_누가_했는지_몰라_일부러_연_것으로_세지_않는다(chrome: FakeChrome) -> None:
+    # 사용자 결정(2026-11-26): 자동인지 사람인지 알기 어려운 행적은 뺀다.
+    chrome.visit(at(0), "a")
+    chrome.visit(at(5), "a", transition=chrome_history.RELOAD | CHAIN_START | CHAIN_END)
+    # 크롬은 표시를 부호 있는 32비트로 적는다 — 맨 위 비트(서버 리디렉트)가 서면 음수다.
+    chrome.visit(at(40), "a", transition=(chrome_history.RELOAD | 0x80000000) - 2**32)
+
+    traces = Collector(chrome).run(now=at(90)).traces
+
+    assert [(t["meta"].get("visits", 1), t["meta"]["opened"]) for t in traces] == [(2, 1), (1, 0)]
+
+
+def test_어떻게_열렸나_열이_없는_크롬은_다_일부러_연_것으로_센다(tmp_path: Path) -> None:
+    # 열이 없으면 가를 수 없다. 모르는 걸 저절로 열린 것이라 치고 버리지 않는다.
+    old = FakeChrome(tmp_path / "History", transitions=False)
+    old.visit(at(0), "a")
+    old.visit(at(10), "a")
+
+    traces = Collector(old).run(now=at(60)).traces
+
+    assert [(t["meta"]["visits"], t["meta"]["opened"]) for t in traces] == [(2, 2)]
 
 
 def test_안_닫힌_칸은_미루고_칸이_닫히면_한꺼번에_접는다(chrome: FakeChrome) -> None:
@@ -259,6 +346,28 @@ def test_보낼_상자에_적고_커서를_옮긴다(
     assert result["code"] == 0
     assert [(line["to"], line["kind"]) for line in result["lines"]] == [("traces", "web_visit")]
     assert result["state"][str(chrome.path)]["after_id"] == last
+
+
+def test_저절로_열린_줄도_보내고_몇_줄인지_적는다(
+    chrome: FakeChrome,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # 거르는 건 읽는 쪽이다. 수집기가 조용히 버리면 DB 에도 로그에도 안 남는다.
+    start = datetime.now(timezone.utc) - timedelta(hours=3)
+    prev = chrome.visit(start, "tab")
+    for k in range(1, 7):
+        when = start + timedelta(minutes=10 * k)
+        prev = chrome.visit(when, "tab", transition=REDIRECTED, from_visit=prev)
+
+    result = _run(chrome, tmp_path, monkeypatch)
+
+    sent = [t for line in result["lines"] for t in line["traces"]]
+    auto = sum(1 for t in sent if t["meta"]["opened"] == 0)
+    assert sum(int(t["meta"].get("visits", 1)) for t in sent) == 7
+    assert auto >= 1
+    assert f"저절로 열린 줄 {auto}개" in capsys.readouterr().out
 
 
 def test_다시_돌려도_같은_방문을_다시_적지_않는다(
